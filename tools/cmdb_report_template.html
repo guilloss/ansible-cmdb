@@ -150,6 +150,28 @@ td.path { font-family: var(--f-mono); font-size: 12px; word-break: break-all; co
 a .v { color: var(--ink); }
 a .v.um { color: var(--tag-ink); }
 a:hover .v { border-color: var(--accent); }
+.flowmap { padding: 8px; background: var(--surface-2); }
+.flowmap svg { display: block; }
+.fl { fill: none; stroke-width: 1.5; }
+.fl.dim, .fn.dim { opacity: .25; }
+.fl-base { stroke: var(--ink-2); }
+.fl-proxy { stroke: var(--accent); }
+.fl-net { stroke: var(--muted); stroke-dasharray: 2 4; }
+.fl-repl { stroke: var(--tag); stroke-dasharray: 6 4; }
+.fl-tip { fill: var(--muted); }
+.fn rect { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+.fn.ext rect { stroke-dasharray: 4 3; }
+.fn.focus rect { stroke: var(--ink); stroke-width: 2.5; }
+.fn.up rect { stroke: var(--risk); stroke-width: 2; fill: var(--risk-bg); }
+.fn.down rect { stroke: var(--tag); stroke-width: 2; fill: var(--tag-bg); }
+.fn .t1 { font-size: 13px; font-weight: 600; fill: var(--ink); }
+.fn .t2 { font-size: 11px; fill: var(--muted); }
+.flowkey .k { display: inline-block; width: 22px; height: 0; margin: 0 4px 3px 12px; border-top: 2px solid var(--ink-2); }
+.flowkey .k-proxy { border-color: var(--accent); }
+.flowkey .k-net { border-top-style: dotted; border-color: var(--muted); }
+.flowkey .k-repl { border-top-style: dashed; border-color: var(--tag); }
+.flowkey .k-up { border-color: var(--risk); }
+.flowkey .k-down { border-color: var(--tag); }
 .badge { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap; }
 .badge.risk { color: var(--risk); border-color: var(--risk); background: var(--risk-bg); }
 .badge.warn { color: var(--tag-ink); border-color: var(--tag); background: var(--tag-bg); }
@@ -382,7 +404,7 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers",
   "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
-  "runtime_services", "php_settings", "changes", "eol"];
+  "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores"];
 function applyScope() {
   const on = SCOPE.app || SCOPE.pf;
   const keep = (a, p) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf);
@@ -396,6 +418,10 @@ function applyScope() {
   // Un lien concerne le périmètre dès qu'un de ses deux côtés y est
   const LK = D0.links, lc = c => LK.cols.indexOf(c);
   D.links = on ? {cols: LK.cols, rows: LK.rows.filter(r => keep(r[lc("client_app")], r[lc("client_platform")]) || keep(r[lc("server_app")], r[lc("server_platform")]))} : LK;
+  const FL = D0.flows, fc = c => FL.cols.indexOf(c);
+  D.flows = on ? {cols: FL.cols, rows: FL.rows.filter(r => keep(r[fc("src_app")], r[fc("src_platform")]) || keep(r[fc("dst_app")], r[fc("dst_platform")]))} : FL;
+  const DR = D0.drift, dc = c => DR.cols.indexOf(c);
+  D.drift = on ? {cols: DR.cols, rows: DR.rows.filter(r => keep(r[dc("app")], r[dc("left_platform")]) || keep(r[dc("app")], r[dc("right_platform")]))} : DR;
   const s = D0.sw, ia = s.cols.indexOf("app"), ip = s.cols.indexOf("platform");
   D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(s.strings[r[ia]], s.strings[r[ip]])) : s.rows});
   const M = D0.matrix;
@@ -519,13 +545,14 @@ function searchHosts(q) {
 // ---------------------------------------------------------------- vues
 const ROUTES = [
   ["accueil", "Accueil"], ["serveurs", "Serveurs"], ["logiciels", "Logiciels"], ["versions", "Versions"],
-  ["bases", "Bases de données"], ["services", "Services réseau"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
-  ["materiel", "Matériel"], ["support", "Fins de support"], ["evolutions", "Évolutions"], ["alertes", "Alertes"],
+  ["bases", "Bases de données"], ["carte", "Carte des flux"], ["services", "Services réseau"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
+  ["materiel", "Matériel"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"], ["support", "Fins de support"],
+  ["evolutions", "Évolutions"], ["alertes", "Alertes"],
 ];
 function navCounts() {
   const a = D.alerts;
   return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
-    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length,
+    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, ecarts: rowsOf(D.drift).length,
     alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol};
 }
 function renderNav(route) {
@@ -657,7 +684,7 @@ function vServeur(key, params) {
   const host = h.hk;
   const tab = params.get("onglet") || "synthese";
   const tabs = [["synthese", "Synthèse"], ["reseau", "Réseau"], ["stockage", "Stockage et matériel"], ["composants", "Composants"],
-    ["exposition", "Ports et services"], ["bases", "Bases"], ["web", "Services réseau"], ["cles", "Clés"], ["evolutions", "Évolutions"], ["alertes", "Alertes"]];
+    ["exposition", "Ports et services"], ["bases", "Bases"], ["web", "Services réseau"], ["cles", "Clés"], ["dependances", "Dépendances"], ["durcissement", "Durcissement"], ["evolutions", "Évolutions"], ["alertes", "Alertes"]];
   const base = "serveur/" + encodeURIComponent(host);
   const others = rowsOf(D0.hosts).filter(x => x.host === h.host && x.hk !== h.hk);
   const dl = pairs => `<dl class="dl">${pairs.filter(p => p[1] != null && p[1] !== "").map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
@@ -734,6 +761,12 @@ function vServeur(key, params) {
       + `<h3>Modules activés</h3>` + modulesTable(hostRows("modules"), host);
   } else if (tab === "cles") {
     body = `<h3>Fichiers</h3>` + keysTable(hostRows("crypto_files"), host) + `<h3>Certificats</h3>` + certsTable(hostRows("crypto_certs"), host);
+  } else if (tab === "dependances") {
+    body = `<p class="hint"><a href="${link("carte", {serveur: host})}">Voir sur la carte</a></p>` + impactHtml(host);
+  } else if (tab === "durcissement") {
+    const sc = hostRows("hardening_scores");
+    body = `<div class="facts">${sc.map(x => `<div class="fact"><b>${x.score == null ? "–" : pct(x.score)}</b><span>niveau ${esc(x.level)}</span></div>`).join("")}</div>`
+      + hardeningTable(hostRows("hardening").filter(r => r.status !== "conforme"), host);
   } else if (tab === "evolutions") {
     body = changesTable(hostRows("changes"), host);
   } else if (tab === "alertes") {
@@ -1017,6 +1050,145 @@ function vEvolutions(params) {
     params, "Filtrer (serveur, élément…)");
 }
 
+// ---------------------------------------------------------------- carte des flux
+const nodeKey = (a, p, h, addr) => h ? hkey(a, p, h) : "ext:" + (addr || "inconnu");
+function flowEdges() {
+  return rowsOf(D.flows).map(o => ({...o, s: nodeKey(o.src_app, o.src_platform, o.src_host, o.src_addr),
+    d: nodeKey(o.dst_app, o.dst_platform, o.dst_host, o.dst_addr)}));
+}
+const nodeName = k => k.startsWith("ext:") ? k.slice(4) : hsplit(k).host;
+const nodeLink = k => k.startsWith("ext:") ? `<span class="mono">${esc(k.slice(4))}</span> <span class="badge muted">hors inventaire</span>` : hkLink(k);
+// La réplication ne crée pas de dépendance : un standby arrêté ne coupe pas le primaire
+function reach(start, edges, up) {
+  const seen = new Map([[start, {depth: 0, via: null, sure: true}]]), todo = [start];
+  while (todo.length) {
+    const cur = todo.shift(), info = seen.get(cur);
+    for (const e of edges) {
+      if (e.kind === "réplication") continue;
+      const from = up ? e.d : e.s, to = up ? e.s : e.d;
+      if (from === cur && !seen.has(to)) {
+        seen.set(to, {depth: info.depth + 1, via: e, sure: info.sure && e.kind !== "réseau"});
+        todo.push(to);
+      }
+    }
+  }
+  seen.delete(start);
+  return seen;
+}
+function impactList(map, empty) {
+  const rows = [...map.entries()].map(([k, v]) => ({k, depth: v.depth, sure: v.sure, kind: v.via.kind, port: v.via.port, detail: v.via.detail}));
+  return table([{k: "k", l: "Serveur", f: r => nodeLink(r.k), sortv: r => nodeName(r.k)}, {k: "depth", l: "Distance", cls: "num"},
+    {k: "kind", l: "Par", f: r => esc(r.kind) + (r.port ? " " + esc(r.port) : "")}, {k: "detail", l: "Détail"},
+    {k: "sure", l: "Certitude", f: r => r.sure ? "déclaré" : '<span class="badge muted">déduit du réseau</span>'}], rows.sort((a, b) => a.depth - b.depth), {sort: "depth", empty});
+}
+function impactHtml(key) {
+  const e = flowEdges();
+  return `<h3>Si ce serveur s'arrête, sont touchés</h3>` + impactList(reach(key, e, true), "Aucun serveur connu ne dépend de celui-ci.")
+    + `<h3>Ce serveur dépend de</h3>` + impactList(reach(key, e, false), "Aucune dépendance détectée.");
+}
+function flowSvg(edges, focus) {
+  const names = new Set();
+  edges.forEach(e => { names.add(e.s); names.add(e.d); });
+  const nodes = [...names];
+  if (!nodes.length) return '<div class="empty">Aucun flux dans ce périmètre.</div>';
+  if (nodes.length > 150) return `<div class="empty">${fmt(nodes.length)} serveurs : choisissez une application dans le bandeau ou filtrez pour afficher la carte.</div>`;
+  const rank = Object.fromEntries(nodes.map(n => [n, 0]));
+  const flow = edges.filter(e => e.kind !== "réplication" && e.s !== e.d);
+  for (let i = 0; i < Math.min(nodes.length, 12); i++)
+    for (const e of flow) if (rank[e.d] < rank[e.s] + 1) rank[e.d] = rank[e.s] + 1;   // borné : une boucle ne s'étire pas sans fin
+  // Un standby se range avec son primaire
+  for (const e of edges) if (e.kind === "réplication" && !flow.some(f => f.s === e.s || f.d === e.s)) rank[e.s] = rank[e.d];
+  const cols = {};
+  nodes.sort().forEach(n => (cols[rank[n]] = cols[rank[n]] || []).push(n));
+  const W = 200, H = 46, GX = 110, GY = 22, pos = {};
+  for (const [r, list] of Object.entries(cols)) list.forEach((n, i) => { pos[n] = {x: 12 + r * (W + GX), y: 12 + i * (H + GY)}; });
+  const width = 24 + (Math.max(...Object.keys(cols).map(Number)) + 1) * (W + GX) - GX + 50;
+  const height = 24 + Math.max(...Object.values(cols).map(l => l.length)) * (H + GY) - GY;
+  const up = focus ? reach(focus, edges, true) : new Map(), down = focus ? reach(focus, edges, false) : new Map();
+  const cls = n => n === focus ? "focus" : (up.has(n) ? "up" : (down.has(n) ? "down" : (focus ? "dim" : "")));
+  const lines = edges.filter(e => e.s !== e.d).map(e => {
+    const a = pos[e.s], b = pos[e.d], fw = a.x <= b.x;
+    const same = a.x === b.x;
+    const x1 = same || fw ? a.x + W : a.x, x2 = same ? b.x + W : (fw ? b.x : b.x + W), y1 = a.y + H / 2, y2 = b.y + H / 2, m = (x1 + x2) / 2;
+    const bend = same ? 44 : 0;
+    const on = !focus || [e.s, e.d].some(n => n === focus) || (up.has(e.s) && (up.has(e.d) || e.d === focus)) || (down.has(e.d) && (down.has(e.s) || e.s === focus));
+    return `<path class="fl fl-${e.kind === "base" ? "base" : (e.kind === "proxy" ? "proxy" : (e.kind === "réseau" ? "net" : "repl"))}${on ? "" : " dim"}" d="M${x1} ${y1} C${m + bend} ${y1} ${m + bend} ${y2} ${x2} ${y2}" marker-end="url(#fl-arrow)"><title>${esc(nodeName(e.s))} vers ${esc(nodeName(e.d))} : ${esc(e.kind)} ${esc(e.port || "")} ${esc(e.detail || "")}</title></path>`;
+  }).join("");
+  const boxes = nodes.map(n => {
+    const p = pos[n], ext = n.startsWith("ext:"), h = ext ? null : hsplit(n), name = nodeName(n), short = (/^[\d.:a-f]+$/i.test(name) ? name : name.split(".")[0]).slice(0, 24);
+    return `<a href="${link("carte", {serveur: n})}"><g class="fn ${cls(n)}${ext ? " ext" : ""}"><title>${esc(nodeName(n))}</title>
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="4"></rect>
+      <text x="${p.x + 10}" y="${p.y + 19}" class="t1">${esc(short)}</text>
+      <text x="${p.x + 10}" y="${p.y + 36}" class="t2">${esc(ext ? "hors inventaire" : h.app + " / " + h.pf)}</text></g></a>`;
+  }).join("");
+  return `<div class="tablewrap flowmap"><svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Carte des flux">
+    <defs><marker id="fl-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" class="fl-tip"></path></marker></defs>
+    ${lines}${boxes}</svg></div>
+    <p class="hint flowkey"><span class="k k-base"></span>base <span class="k k-proxy"></span>proxy <span class="k k-net"></span>réseau, déduit <span class="k k-repl"></span>réplication${focus ? ' <span class="k k-up"></span>touché s\'il s\'arrête <span class="k k-down"></span>dont il dépend' : ""}</p>`;
+}
+function flowsTable(rows) {
+  return table([{k: "s", l: "Source", f: e => nodeLink(e.s), sortv: e => nodeName(e.s)}, {k: "d", l: "Destination", f: e => nodeLink(e.d), sortv: e => nodeName(e.d)},
+    {k: "port", l: "Port", cls: "num"}, {k: "kind", l: "Nature"}, {k: "detail", l: "Détail"},
+    {k: "status", l: "État", f: e => e.status === "actif" ? '<span class="badge ok">actif</span>' : '<span class="badge muted">configuré</span>'}], rows, {empty: "Aucun flux."});
+}
+function vCarte(params) {
+  const focus = params.get("serveur") || "", all = flowEdges();
+  const tabs = [["carte", "Carte", m => {
+    const keep = m(all);
+    const shown = params.get("reseau") === "1" ? keep : keep.filter(e => e.kind !== "réseau" || e.s === focus || e.d === focus);
+    return `<div class="toolbar"><a class="btn ghost" href="${link("carte", {serveur: focus, onglet: "carte", reseau: params.get("reseau") === "1" ? "" : "1"})}">${params.get("reseau") === "1" ? "Masquer les flux seulement réseau" : "Afficher aussi les flux seulement réseau"}</a>
+      ${focus ? `<a class="btn ghost" href="${link("carte")}">Effacer la sélection</a>` : ""}</div>` + flowSvg(shown, focus)
+      + (focus ? `<h3>${esc(nodeName(focus))}</h3>` + impactHtml(focus) : '<p class="hint">Cliquez sur un serveur pour voir ce qui tombe s\'il s\'arrête.</p>');
+  }], ["flux", `Tous les flux (${fmt(all.length)})`, m => flowsTable(m(all))]];
+  return tabbed("carte", "Carte des flux", "Qui dépend de quoi, d'après les configurations et les connexions observées. Un flux peu fréquent peut manquer : avant une coupure, confirmez avec l'équipe applicative.",
+    tabs, params, "Filtrer (serveur, port, base…)");
+}
+
+// ---------------------------------------------------------------- écarts
+function driftTable(rows, twins) {
+  const side = (o, s) => twins ? esc(o[s + "_host"]) : esc(o[s + "_platform"]);
+  return table([{k: "app", l: "Application"}].concat(twins ? [{k: "left_platform", l: "Plate-forme"}] : []).concat([
+    {k: "left", l: "Côté A", f: o => side(o, "left"), sortv: o => o.left_host || o.left_platform}, {k: "right", l: "Côté B", f: o => side(o, "right"), sortv: o => o.right_host || o.right_platform},
+    {k: "kind", l: "Nature"}, {k: "item", l: "Élément", cls: "mono"},
+    {k: "left_value", l: "Valeur A", cls: "path", f: o => o.left_value == null ? '<span class="badge muted">absent</span>' : esc(o.left_value)},
+    {k: "right_value", l: "Valeur B", cls: "path", f: o => o.right_value == null ? '<span class="badge muted">absent</span>' : esc(o.right_value)}]), rows, {empty: "Aucun écart."});
+}
+function vEcarts(params) {
+  const rows = rowsOf(D.drift), pf = rows.filter(r => r.scope === "plates-formes"), tw = rows.filter(r => r.scope === "jumeaux");
+  return tabbed("ecarts", "Écarts", "Ce qui diffère entre les plates-formes d'une application, et entre des serveurs qui font le même métier (mêmes ports, mêmes composants). Exclusions : tools/cmdb_drift_ignore.txt.", [
+    ["pf", `Entre plates-formes (${fmt(pf.length)})`, m => driftTable(m(pf), false)],
+    ["jumeaux", `Entre serveurs jumeaux (${fmt(tw.length)})`, m => driftTable(m(tw), true)],
+  ], params, "Filtrer (application, composant…)");
+}
+
+// ---------------------------------------------------------------- durcissement
+const scoreBadge = v => v == null ? "" : `<span class="badge ${v < 50 ? "risk" : (v < 80 ? "warn" : "ok")}">${pct(v)}</span>`;
+const stateBadge = s => s === "conforme" ? '<span class="badge ok">conforme</span>' : (s === "non conforme" ? '<span class="badge risk">non conforme</span>' : '<span class="badge muted">non vérifiable</span>');
+function hardeningTable(rows, host) {
+  return table(hcolOf(host).concat([{k: "ref", l: "Reco.", cls: "mono"}, {k: "level", l: "Niveau"}, {k: "title", l: "Contrôle"}, {k: "status", l: "État", f: r => stateBadge(r.status)},
+    {k: "observed", l: "Observé", cls: "path"}, {k: "expected", l: "Attendu", cls: "path"}, {k: "note", l: "Remarque"}]), rows, {empty: "Aucun contrôle à afficher."});
+}
+function vDurcissement(params) {
+  const res = rowsOf(D.hardening), sc = rowsOf(D.hardening_scores), recos = rowsOf(D0.anssi);
+  const per = new Map();
+  for (const x of sc) { const e = per.get(x.hk) || {hk: x.hk, app: x.app, platform: x.platform, host: x.host}; e[x.level] = x.score; e.unknown = x.unknown; per.set(x.hk, e); }
+  const rules = new Map();
+  for (const r of res) { const e = rules.get(r.rule_id) || {ref: r.ref, level: r.level, title: r.title, ok: 0, ko: 0, un: 0}; e[r.status === "conforme" ? "ok" : (r.status === "non conforme" ? "ko" : "un")]++; rules.set(r.rule_id, e); }
+  const cov = recos.filter(r => r.coverage !== "non").length, full = recos.filter(r => r.coverage === "complet").length;
+  return tabbed("durcissement", "Durcissement", `Guide ANSSI-BP-028 v2.0. <b>${fmt(cov)} recommandations sur ${fmt(recos.length)} sont contrôlées</b>, dont ${fmt(full)} entièrement : ce score ne vaut pas audit.
+    Un contrôle non vérifiable, faute de droits ou de donnée, est exclu du calcul. Le niveau à viser dépend du système : un score bas à un niveau élevé n'est pas forcément un défaut.`, [
+    ["serveurs", `Par serveur (${fmt(per.size)})`, m => table([{k: "host", l: "Serveur", f: o => hostCell(o)}, {k: "minimal", l: "Minimal", cls: "num", f: o => scoreBadge(o["minimal"])},
+      {k: "intermédiaire", l: "Intermédiaire", cls: "num", f: o => scoreBadge(o["intermédiaire"])}, {k: "renforcé", l: "Renforcé", cls: "num", f: o => scoreBadge(o["renforcé"])},
+      {k: "élevé", l: "Élevé", cls: "num", f: o => scoreBadge(o["élevé"])}, {k: "unknown", l: "Non vérifiables", cls: "num"}], m([...per.values()]), {sort: "intermédiaire", empty: "Aucun serveur Linux évalué."})],
+    ["regles", "Par contrôle", m => table([{k: "ref", l: "Reco.", cls: "mono"}, {k: "level", l: "Niveau"}, {k: "title", l: "Contrôle"}, {k: "ko", l: "Non conformes", cls: "num", f: r => r.ko ? `<span class="badge risk">${fmt(r.ko)}</span>` : "0"},
+      {k: "ok", l: "Conformes", cls: "num"}, {k: "un", l: "Non vérifiables", cls: "num"}], m([...rules.values()]), {sort: "ko", dir: -1})],
+    ["ecarts", "Non-conformités", m => hardeningTable(m(res.filter(r => r.status === "non conforme")))],
+    ["couverture", "Couverture du guide", m => table([{k: "ref", l: "Reco.", cls: "mono"}, {k: "level", l: "Niveau"}, {k: "title", l: "Titre (anglais)"},
+      {k: "coverage", l: "Couverture", f: r => r.coverage === "complet" ? '<span class="badge ok">complète</span>' : (r.coverage === "partiel" ? '<span class="badge warn">partielle</span>' : '<span class="badge muted">non contrôlée</span>')},
+      {k: "note", l: "Remarque"}], m(recos))],
+  ], params, "Filtrer (serveur, reco., paramètre…)");
+}
+
 function alertsHtml(host) {
   const only = rs => host ? rs.filter(r => r.hk === host) : rs;
   const hcol = host ? [] : [{k: "host", l: "Serveur", f: o => hostCell(o)}];
@@ -1061,7 +1233,7 @@ function route() {
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,
-      materiel: vMateriel, alertes: vAlertes, bases: vBases, services: vServices, cles: vCles, support: vSupport, evolutions: vEvolutions}[r] || vAccueil)(params);
+      materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, cles: vCles, support: vSupport, evolutions: vEvolutions}[r] || vAccueil)(params);
   } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
   renderNav(r);
   $("#topbar").hidden = r === "accueil";

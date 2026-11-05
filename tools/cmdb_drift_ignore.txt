@@ -1,0 +1,6 @@
+# Écarts à ne pas signaler, un motif par ligne : nature:élément (jokers * et ?).
+# Natures : composant, système, correctif Oracle, module, réglage PHP, durcissement.
+# Exemples :
+# composant:linux-kernel
+# module:php opcache
+# réglage PHP:memory_limit

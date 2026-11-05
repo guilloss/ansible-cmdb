@@ -29,6 +29,11 @@ cmdb-ansible/
     ├── cmdb_unpack.py          # décodage du mode « flux » (collect_legacy.yml)
     ├── cmdb_shell_parse.py     # conversion des collectes shell (Linux et AIX) au format JSON commun
     ├── cmdb_extras.py          # consolidation : Oracle, liens vers les bases, clés, évolutions, fins de support
+    ├── cmdb_maps.py            # consolidation : carte des flux, écarts entre plates-formes et serveurs jumeaux
+    ├── cmdb_hardening.py       # consolidation : contrôles de durcissement ANSSI
+    ├── cmdb_anssi_rules.csv    # règles de durcissement (éditable)
+    ├── cmdb_anssi_recos.csv    # les 80 recommandations ANSSI-BP-028 et leur couverture
+    ├── cmdb_drift_ignore.txt   # écarts à ne pas signaler (éditable)
     └── cmdb_eol.csv            # référentiel des fins de support (éditable)
 tests/                          # python3 -m unittest discover -s tests -t .
 ```
@@ -279,6 +284,33 @@ Tout fichier repéré figure dans `crypto_files`, même illisible, hors magasins
 
 Le contenu d'une clé n'est jamais conservé ni transmis. Le collecteur shell n'en lit que l'en-tête et ne copie que les blocs `CERTIFICATE`. Alertes : `v_private_keys_exposed` (lisible par tous, ou PKCS#12 sans mot de passe), `v_certs_expiring` (moins de 90 jours). Une clé en clair lisible par son seul propriétaire n'est pas une alerte : c'est le cas normal d'un serveur web.
 
+## Carte des flux
+
+`app_flows` relie les serveurs entre eux, à partir des liens vers les bases (`base`, `réplication`), des proxys déclarés dans Apache, nginx et HAProxy (`proxy`) et des connexions observées (`réseau`, à l'exclusion des ports d'infrastructure : SSH, DNS, NTP, supervision…). Le rapport dessine la carte ; un clic sur un serveur montre ce qui est touché s'il s'arrête et ce dont il dépend. `build/graphes/<app>__<pf>.dot` donne le même graphe pour Graphviz (`dot -Tsvg`).
+
+Un flux rare (traitement mensuel, sauvegarde) peut être absent d'une photo de l'instant : l'absence de flux ne prouve pas l'absence de dépendance. La réplication n'entre pas dans l'analyse d'impact. Au-delà de 150 serveurs, le rapport demande de choisir une application.
+
+## Écarts
+
+`drift` compare, sans nouvelle collecte, les versions de composants, le système, les niveaux de correctifs Oracle, les modules, les réglages PHP et les contrôles de durcissement :
+
+- **entre plates-formes** d'une même application, deux à deux (par exemple prod et recette) ;
+- **entre serveurs jumeaux** d'une même plate-forme : ceux qui ont les mêmes ports d'écoute et les mêmes moteurs. Au-delà de deux, un serveur est comparé à la majorité du groupe.
+
+Les jumeaux sont déduits, pas déclarés : deux serveurs de rôles différents mais de même profil peuvent être rapprochés. `tools/cmdb_drift_ignore.txt` retire les écarts assumés.
+
+## Durcissement
+
+Contrôle des collectes selon le guide **ANSSI-BP-028 v2.0** (*Recommandations de configuration d'un système GNU/Linux*), sans rien exécuter de plus sur les serveurs.
+
+**Ce n'est pas un audit de conformité.** Seules 18 recommandations sur 80 sont contrôlées, dont 9 entièrement : paramètres noyau (R8, R9, R11, R12, R14), partitionnement (R28), sudo (R39, R40, R42, R43), SELinux et AppArmor (R45, R46), mises à jour, services hérités, journalisation (R33, R61, R62, R71, R73, R74). Le mot de passe de démarrage, la politique de mots de passe, les droits des fichiers sensibles, les options de compilation du noyau et bien d'autres ne le sont pas, faute de données. L'onglet « Couverture du guide » du rapport le détaille pour les 80, comme `tools/cmdb_anssi_recos.csv`.
+
+- **Score** : conformes / (conformes + non conformes), pour chaque niveau du guide (minimal, intermédiaire, renforcé, élevé), chaque niveau incluant les précédents. Le niveau à viser dépend du système : le guide ne demande pas à tous d'atteindre « élevé ».
+- **Non vérifiable** : donnée absente, en général faute de droits (`sudoers` et `sshd -T` exigent souvent root ; le collecteur shell ne relève pas `hidepid`). Un tel contrôle est exclu du score et compté à part : une collecte non privilégiée peut donc afficher un score flatteur sur peu de contrôles. Regarder aussi cette colonne.
+- **Faux positifs assumés** : `ip_forward=1` est normal sur un hôte de conteneurs ; une règle sudo `(ALL)` est fréquente pour les administrateurs ; `/proc` en `hidepid` rend les processus invisibles à la collecte elle-même. Écart à justifier, ou ligne à retirer de `tools/cmdb_anssi_rules.csv`.
+- **AIX** : hors périmètre, ce guide ne concerne que Linux.
+- **Provenance** : recommandations, niveaux et correspondance avec les contrôles relevés dans le projet ComplianceAsCode (`controls/anssi.yml`, 5 novembre 2026). Les valeurs attendues n'ont pas été comparées ligne à ligne au PDF de l'ANSSI, à faire avant tout usage officiel. Les réglages détaillés d'OpenSSH relèvent d'un autre guide ANSSI et ne sont pas contrôlés, hormis la connexion directe en root (R33).
+
 ## Évolutions
 
 Le magasin garde chaque collecte : `cmdb_build.py` compare les deux dernières de chaque serveur et alimente `changes` (paquets, composants, ports, comptes, correctifs Oracle, instances, modules, points d'entrée, clés). Ce qui apparaît avec une nouvelle version du collecteur n'est pas compté comme une évolution. `--no-history` désactive la comparaison.
@@ -366,6 +398,19 @@ SELECT host, cn, not_after, days_left, path FROM crypto_certs WHERE is_ca = 0 OR
 -- Ce qui a changé sur un serveur
 SELECT to_at, kind, change, item, before, after FROM changes WHERE host = 'web01.exemple.test';
 
+-- Qui appelle ce serveur ?
+SELECT COALESCE(src_host, src_addr) AS source, port, kind, detail, status FROM app_flows WHERE dst_host = 'app01.exemple.test';
+
+-- Écarts de composants entre prod et recette
+SELECT item, left_value, right_value FROM drift
+WHERE scope = 'plates-formes' AND app = 'APPDEMO' AND left_platform = 'prod' AND right_platform = 'recette' AND kind = 'composant';
+
+-- Serveurs les moins durcis au niveau intermédiaire
+SELECT app, platform, host, score, ok, ko, unknown FROM hardening_scores WHERE level = 'intermédiaire' ORDER BY score;
+
+-- Contrôles les plus souvent en échec sur le parc
+SELECT ref, title, non_conformes, non_verifiables FROM v_hardening_by_rule LIMIT 20;
+
 -- Une information brute non modélisée : recherche dans le document JSON d'origine
 SELECT host, json_extract(document, '$.security.crypto_policy') FROM raw_documents;
 ```
@@ -379,7 +424,7 @@ SELECT host, json_extract(document, '$.security.crypto_policy') FROM raw_documen
 - **Logiciels** : recherche dans tout l'inventaire (paquets, runtimes, jars, pip, npm, composer, applications web…), avec filtres par nature et par gestion (paquet de distribution ou non), vue « une ligne par installation » ou « regrouper par version », export CSV.
 - **Versions** : la matrice serveur × composant ; les installations hors paquet apparaissent en étiquettes ambre ; un clic sur une version liste les serveurs concernés.
 - **Serveurs** et **fiche serveur** : synthèse (application, plate-forme, passage, matériel, BIOS, série, visibilité de la collecte), réseau (interfaces, IP, MAC, MAC d'usine, pilotes et firmwares), stockage (systèmes de fichiers avec jauge d'occupation, disques) et matériel, composants, ports et services, alertes.
-- **Bases de données** : instances, liens applicatifs, `ORACLE_HOME`, correctifs, licences. **Services réseau** : points d'entrée, langages exposés, modules, réglages PHP. **Clés et certificats**, **Fins de support**, **Évolutions**. La fiche serveur reprend ces vues pour le serveur affiché.
+- **Bases de données** : instances, liens applicatifs, `ORACLE_HOME`, correctifs, licences. **Services réseau** : points d'entrée, langages exposés, modules, réglages PHP. **Carte des flux** et analyse d'impact, **Durcissement**, **Écarts**, **Clés et certificats**, **Fins de support**, **Évolutions**. La fiche serveur reprend ces vues pour le serveur affiché.
 - **Exposition**, **Matériel** (interfaces, systèmes de fichiers triés par occupation, disques, PCI, Fibre Channel, mémoire de tout le parc) et **Alertes**.
 
 Syntaxe de recherche : les mots se combinent (ET) ; `<2.17.1`, `<=`, `>`, `>=`, `=` comparent la version ; `serveur:`, `app:`, `pf:`, `famille:`, `cat:`, `chemin:`, `paquet:`, `purl:` restreignent un champ. Exemples : `log4j-core <2.17.1`, `famille:java <11`, `php <8 serveur:web`, `chemin:/opt =5.4.2`. Une adresse IP ou MAC tapée dans la recherche retrouve le serveur.
@@ -436,6 +481,7 @@ Les collecteurs y sont réellement exécutés (Python, dash, bash, busybox) sur 
 - **Nouveau format de chaîne de connexion** : `extract_db_refs` dans `cmdb_collector.py`, plus un cas dans `tests/test_db_refs.py` (`Secrets` pour vérifier qu'aucun identifiant ne sort). Le collecteur shell doit laisser passer les lignes utiles : voir `grab_dbcfg`.
 - **Nouveau produit web** : `parse_endpoints` ; **nouveau type de module** : `parse_modules`. Ajouter les fichiers à `grab_mod` côté shell.
 - **Fin de support** : une ligne dans `tools/cmdb_eol.csv`.
+- **Contrôle de durcissement** : une ligne dans `tools/cmdb_anssi_rules.csv` (types `sysctl`, `mount`, `sshd`, `sudo_default`, `service`, `package_absent`), ou une fonction dans `BUILTIN` de `cmdb_hardening.py` pour le type `check`.
 - **Nouvelle colonne de matrice** : ajouter la famille à `MATRIX_FAMILIES` ; pour la rattacher à des paquets OS, compléter `PKG_FAMILIES`.
 - Les règles de parsing étant côté consolidation, une amélioration s'applique à tout l'historique en relançant `cmdb_build.py`, sans recollecter.
 

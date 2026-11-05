@@ -18,6 +18,7 @@ import os
 import re
 import sqlite3
 
+import cmdb_hardening
 from cmdb_shell_parse import C
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +54,9 @@ CREATE TABLE runtime_services (host TEXT, proto TEXT, address TEXT, port INTEGER
   runtime TEXT, version TEXT, process TEXT, app_ref TEXT, options TEXT, exe TEXT);
 CREATE TABLE changes (host TEXT, from_run TEXT, to_run TEXT, from_at TEXT, to_at TEXT, kind TEXT, change TEXT, item TEXT,
   before TEXT, after TEXT);
+CREATE TABLE hardening_results (host TEXT, rule_id TEXT, ref TEXT, level TEXT, title TEXT, status TEXT, observed TEXT, expected TEXT,
+  note TEXT);
+CREATE TABLE hardening_scores (host TEXT, level TEXT, ok INTEGER, ko INTEGER, unknown INTEGER, score REAL);
 CREATE TABLE eol_status (host TEXT, product TEXT, cycle TEXT, version TEXT, location TEXT, managed INTEGER, eol TEXT,
   extended TEXT, days_left INTEGER, status TEXT);
 """
@@ -63,6 +67,17 @@ CREATE TABLE db_links (client_app TEXT, client_platform TEXT, client_host TEXT, 
   db_user TEXT, link_type TEXT, status TEXT, sources TEXT, evidence TEXT, connections INTEGER);
 CREATE INDEX ix_links_client ON db_links(client_app, client_platform, client_host);
 CREATE INDEX ix_links_server ON db_links(server_app, server_platform, server_host);
+CREATE TABLE app_flows (src_app TEXT, src_platform TEXT, src_host TEXT, src_addr TEXT, dst_app TEXT, dst_platform TEXT, dst_host TEXT,
+  dst_addr TEXT, port INTEGER, kind TEXT, detail TEXT, status TEXT);
+CREATE TABLE drift (scope TEXT, app TEXT, left_platform TEXT, right_platform TEXT, left_host TEXT, right_host TEXT, kind TEXT, item TEXT,
+  left_value TEXT, right_value TEXT);
+CREATE TABLE anssi_recommendations (ref TEXT, level TEXT, title TEXT, coverage TEXT, note TEXT);
+CREATE VIEW v_hardening_failures AS
+  SELECT app, platform, host, ref, level, title, observed, expected FROM hardening_results WHERE status = 'non conforme'
+  ORDER BY app, platform, host, ref;
+CREATE VIEW v_hardening_by_rule AS
+  SELECT rule_id, ref, level, title, SUM(status = 'conforme') AS conformes, SUM(status = 'non conforme') AS non_conformes,
+         SUM(status = 'non vérifiable') AS non_verifiables FROM hardening_results GROUP BY rule_id ORDER BY non_conformes DESC;
 CREATE VIEW v_oracle_homes_unused AS
   SELECT app, platform, host, home, product, version, patch_level FROM oracle_homes
   WHERE in_use = 0 AND product = 'database';
@@ -264,6 +279,17 @@ class ExtrasMixin(object):
         self.endpoints(host, doc, fs, listening)
         self.crypto(host, fs)
         self.runtime_details(host, doc, procs, net)
+        if cmdb_hardening.is_linux(doc):
+            for r, status, seen in cmdb_hardening.evaluate(doc, self.hardening_rules()):
+                self.add("hardening_results", (host, r["id"], r["ref"], r["level"], r["title"], status, seen, r["expected"], r["note"] or None))
+
+    _rules = None
+
+    @classmethod
+    def hardening_rules(cls):
+        if ExtrasMixin._rules is None:
+            ExtrasMixin._rules = cmdb_hardening.load_rules()
+        return ExtrasMixin._rules
 
     # -- Oracle -----------------------------------------------------------
     def oracle_homes(self, host, doc, procs):
@@ -715,6 +741,7 @@ TRACKED = (
     ("instance", "db_instances", ("engine", "instance"), ("status", "role"), None),
     ("module", "service_modules", ("product", "module"), (), None),
     ("point d'entrée", "endpoints", ("product", "kind", "port", "server_name", "location"), ("root", "backend"), None),
+    ("durcissement", "hardening_results", ("ref", "rule_id"), ("status",), "rule_id != '%s'" % cmdb_hardening.EOL_RULE),
     ("clé ou certificat", "crypto_files", ("path",), ("kind", "mode"), None),
     ("certificat", "crypto_certs", ("path", "alias", "sha256"), ("not_after",), None),
 )

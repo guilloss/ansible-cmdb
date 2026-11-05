@@ -17,7 +17,8 @@ def doc(host, app, pf, ip, run, at, **kw):
          "hardware": {"virtualization": "vmware", "lscpu_kv": {"Socket(s)": "2", "Core(s) per socket": "4", "Thread(s) per core": "2"}},
          "network": {"addresses": [{"ifname": "eth0", "family": "inet", "cidr": ip + "/24", "scope": "global"}], "interfaces": [],
                      "listening": [], "established": [], "hosts_file": ""},
-         "processes": {"list": []}, "packages": {"managers": {"rpm": []}}, "filesystem": {}, "oracle": {}, "runtimes": {"list": []}}
+         "processes": {"list": []}, "packages": {"managers": {"rpm": []}}, "filesystem": {}, "oracle": {}, "runtimes": {"list": []},
+         "kernel": {"sysctl": "kernel.sysrq = 1\nkernel.dmesg_restrict = 1\n"}, "security": {}, "accounts": {}, "services": {}}
     for k, v in kw.items():
         if k in ("listening", "established"):
             d["network"][k] = v
@@ -99,3 +100,19 @@ def write_store(root, docs):
         if files:
             with open(os.path.join(dirpath, files[-1]), "rb") as f, open(os.path.join(dirpath, "latest.json.gz"), "wb") as g:
                 g.write(f.read())
+
+
+def web_host():
+    """Frontal : proxy vers le serveur d'applications ; deux instances jumelles sur app1/app2."""
+    return doc("web1.exemple.test", "APPDEMO", "prod", "10.0.0.30", "r2", "2026-11-02T08:00:00Z",
+               filesystem={"endpoints": [{"product": "nginx", "kind": "proxy", "location": "/", "backend": "http://app1.exemple.test:8080/", "path": "/etc/nginx/nginx.conf"}]},
+               established=[{"direction": "out", "local_port": None, "remote_addr": "10.0.0.20", "remote_port": 8080, "process": "nginx", "count": 3},
+                            {"direction": "out", "local_port": None, "remote_addr": "10.0.0.11", "remote_port": 22, "process": "ssh", "count": 1}])
+
+
+def twin(host, ip, php="8.1.2", pf="prod", run="r2"):
+    return doc(host, "APPDEMO", pf, ip, run, "2026-11-02T08:00:00Z",
+               runtimes={"list": [{"probe": "php", "realpath": "/usr/bin/php", "outputs": [
+                   {"args": ["-v"], "rc": 0, "output": "PHP %s (cli)\n" % php}]}]},
+               processes=[{"pid": 50, "ppid": 1, "comm": "httpd", "cmdline": "/usr/sbin/httpd", "user": "apache"}],
+               listening=[{"proto": "tcp", "address": "0.0.0.0", "port": 8081, "pid": 50, "process": "httpd", "user": "apache"}])

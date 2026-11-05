@@ -35,6 +35,8 @@ from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmdb_extras  # noqa: E402
+import cmdb_hardening  # noqa: E402
+import cmdb_maps  # noqa: E402
 
 BUILD_VERSION = "1.2.0"
 
@@ -1327,6 +1329,12 @@ def main():
     for product, cycles in sorted(cmdb_extras.load_eol().items()):
         db.executemany("INSERT INTO eol_reference VALUES (?,?,?,?)", [(product, c, e, x) for c, (e, x) in sorted(cycles.items())])
     cmdb_extras.build_eol(db)
+    cmdb_hardening.apply_eol(db, Builder.hardening_rules())
+    cmdb_hardening.build_scores(db)
+    db.executemany("INSERT INTO anssi_recommendations VALUES (?,?,?,?,?)",
+                   [(r["ref"], r["level"], r["title"], r["coverage"], r["note"] or None) for r in cmdb_hardening.load_recos()])
+    cmdb_maps.build_flows(db)
+    cmdb_maps.build_drift(db)
     nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous,
                                          dict((k, v[0].get("meta") or {}) for k, v in docs.items()))
     db.commit()
@@ -1339,6 +1347,7 @@ def main():
     n = build_sboms(db, os.path.join(a.out, "sbom"), a.sbom_include_managed)
     stats = dict(db.execute("SELECT category, COUNT(*) FROM software GROUP BY category").fetchall())
     nflr = write_flrtvc(b.flrtvc, os.path.join(a.out, "flrtvc"))
+    ngraphs = cmdb_maps.write_dot(db, os.path.join(a.out, "graphes"), safe_name)
     apps = db.execute("SELECT app, platform, hosts FROM v_applications").fetchall()
     print("Hôtes consolidés : %d (%d collectes lues, %d écartées par les filtres)" % (len(docs), store.read, store.skipped))
     print("Applis / pf      : " + ", ".join("%s/%s=%d" % r for r in apps))
@@ -1355,6 +1364,11 @@ def main():
              one("SELECT COUNT(*) FROM v_oracle_patch_late")))
     print("Liens vers bases : %d | points d'entrée : %d | clés et certificats : %d fichiers"
           % (one("SELECT COUNT(*) FROM db_links"), one("SELECT COUNT(*) FROM endpoints"), one("SELECT COUNT(*) FROM crypto_files")))
+    print("Carte            : %d flux, %d graphes dans %s | écarts : %d"
+          % (one("SELECT COUNT(*) FROM app_flows"), ngraphs, os.path.join(a.out, "graphes"), one("SELECT COUNT(*) FROM drift")))
+    print("Durcissement     : %d serveur(s) évalués, %d contrôles non conformes"
+          % (one("SELECT COUNT(DISTINCT app || '|' || platform || '|' || host) FROM hardening_results"),
+             one("SELECT COUNT(*) FROM v_hardening_failures")))
     print("Évolutions       : %d (%d hôte(s) comparé(s)) | fins de support dépassées : %d"
           % (nchanges, len(store.previous), one("SELECT COUNT(*) FROM v_eol_expired")))
     unmanaged = db.execute("SELECT COUNT(*) FROM v_unmanaged_software").fetchone()[0]

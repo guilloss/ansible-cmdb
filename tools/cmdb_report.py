@@ -85,6 +85,11 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
                                   "ORDER BY %s, binary, key" % (",".join("'%s'" % k for k in PHP_KEYS), K)),
         "changes": table(db, "SELECT * FROM changes ORDER BY to_at DESC, %s, kind LIMIT 50000" % K),
         "eol": table(db, "SELECT * FROM eol_status ORDER BY days_left"),
+        "flows": table(db, "SELECT * FROM app_flows"),
+        "drift": table(db, "SELECT * FROM drift ORDER BY app, scope, kind, item"),
+        "hardening": table(db, "SELECT * FROM hardening_results ORDER BY %s, ref" % K),
+        "hardening_scores": table(db, "SELECT * FROM hardening_scores ORDER BY %s" % K),
+        "anssi": table(db, "SELECT * FROM anssi_recommendations"),
     }
     # Logiciels : table la plus volumineuse -> chaînes dédoublonnées (interning)
     strings, index = [], {}

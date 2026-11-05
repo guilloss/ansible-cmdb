@@ -1,0 +1,72 @@
+# Règles évaluées sur les collectes. Fichier éditable : retirer une ligne, ajuster une valeur attendue.
+# Recommandations : ANSSI-BP-028 v2.0, correspondance relevée dans ComplianceAsCode (controls/anssi.yml) le 2026-11-05.
+id;ref;level;title;type;target;expected;note
+R8-vm-mmap-min-addr;R8;intermédiaire;Paramètre noyau vm.mmap_min_addr;sysctl;vm.mmap_min_addr;65536;
+R9-kernel-dmesg-restrict;R9;intermédiaire;Paramètre noyau kernel.dmesg_restrict;sysctl;kernel.dmesg_restrict;1;
+R9-kernel-kptr-restrict;R9;intermédiaire;Paramètre noyau kernel.kptr_restrict;sysctl;kernel.kptr_restrict;2;
+R9-kernel-pid-max;R9;intermédiaire;Paramètre noyau kernel.pid_max;sysctl;kernel.pid_max;65536;
+R9-kernel-perf-cpu-time-max-percent;R9;intermédiaire;Paramètre noyau kernel.perf_cpu_time_max_percent;sysctl;kernel.perf_cpu_time_max_percent;1;
+R9-kernel-perf-event-max-sample-rate;R9;intermédiaire;Paramètre noyau kernel.perf_event_max_sample_rate;sysctl;kernel.perf_event_max_sample_rate;1;
+R9-kernel-perf-event-paranoid;R9;intermédiaire;Paramètre noyau kernel.perf_event_paranoid;sysctl;kernel.perf_event_paranoid;2;
+R9-kernel-randomize-va-space;R9;intermédiaire;Paramètre noyau kernel.randomize_va_space;sysctl;kernel.randomize_va_space;2;
+R9-kernel-sysrq;R9;intermédiaire;Paramètre noyau kernel.sysrq;sysctl;kernel.sysrq;0;
+R9-kernel-unprivileged-bpf-disabled;R9;intermédiaire;Paramètre noyau kernel.unprivileged_bpf_disabled;sysctl;kernel.unprivileged_bpf_disabled;1;
+R9-kernel-panic-on-oops;R9;intermédiaire;Paramètre noyau kernel.panic_on_oops;sysctl;kernel.panic_on_oops;1;
+R11-kernel-yama-ptrace-scope;R11;intermédiaire;Paramètre noyau kernel.yama.ptrace_scope;sysctl;kernel.yama.ptrace_scope;1;
+R12-net-core-bpf-jit-harden;R12;intermédiaire;Paramètre noyau net.core.bpf_jit_harden;sysctl;net.core.bpf_jit_harden;2;
+R12-net-ipv4-ip-forward;R12;intermédiaire;Paramètre noyau net.ipv4.ip_forward;sysctl;net.ipv4.ip_forward;0;Un hôte de conteneurs ou un routeur a besoin de ip_forward=1 : écart à justifier
+R12-net-ipv4-conf-all-accept-local;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.accept_local;sysctl;net.ipv4.conf.all.accept_local;0;
+R12-net-ipv4-conf-all-accept-redirects;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.accept_redirects;sysctl;net.ipv4.conf.all.accept_redirects;0;
+R12-net-ipv4-conf-default-accept-redirects;R12;intermédiaire;Paramètre noyau net.ipv4.conf.default.accept_redirects;sysctl;net.ipv4.conf.default.accept_redirects;0;
+R12-net-ipv4-conf-all-secure-redirects;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.secure_redirects;sysctl;net.ipv4.conf.all.secure_redirects;0;
+R12-net-ipv4-conf-default-secure-redirects;R12;intermédiaire;Paramètre noyau net.ipv4.conf.default.secure_redirects;sysctl;net.ipv4.conf.default.secure_redirects;0;
+R12-net-ipv4-conf-all-shared-media;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.shared_media;sysctl;net.ipv4.conf.all.shared_media;0;
+R12-net-ipv4-conf-default-shared-media;R12;intermédiaire;Paramètre noyau net.ipv4.conf.default.shared_media;sysctl;net.ipv4.conf.default.shared_media;0;
+R12-net-ipv4-conf-all-accept-source-route;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.accept_source_route;sysctl;net.ipv4.conf.all.accept_source_route;0;
+R12-net-ipv4-conf-default-accept-source-rout;R12;intermédiaire;Paramètre noyau net.ipv4.conf.default.accept_source_route;sysctl;net.ipv4.conf.default.accept_source_route;0;
+R12-net-ipv4-conf-all-arp-filter;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.arp_filter;sysctl;net.ipv4.conf.all.arp_filter;1;
+R12-net-ipv4-conf-all-arp-ignore;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.arp_ignore;sysctl;net.ipv4.conf.all.arp_ignore;2;
+R12-net-ipv4-conf-all-route-localnet;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.route_localnet;sysctl;net.ipv4.conf.all.route_localnet;0;
+R12-net-ipv4-conf-all-drop-gratuitous-arp;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.drop_gratuitous_arp;sysctl;net.ipv4.conf.all.drop_gratuitous_arp;1;
+R12-net-ipv4-conf-all-rp-filter;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.rp_filter;sysctl;net.ipv4.conf.all.rp_filter;1;
+R12-net-ipv4-conf-default-rp-filter;R12;intermédiaire;Paramètre noyau net.ipv4.conf.default.rp_filter;sysctl;net.ipv4.conf.default.rp_filter;1;
+R12-net-ipv4-conf-all-send-redirects;R12;intermédiaire;Paramètre noyau net.ipv4.conf.all.send_redirects;sysctl;net.ipv4.conf.all.send_redirects;0;
+R12-net-ipv4-conf-default-send-redirects;R12;intermédiaire;Paramètre noyau net.ipv4.conf.default.send_redirects;sysctl;net.ipv4.conf.default.send_redirects;0;
+R12-net-ipv4-icmp-ignore-bogus-error-respons;R12;intermédiaire;Paramètre noyau net.ipv4.icmp_ignore_bogus_error_responses;sysctl;net.ipv4.icmp_ignore_bogus_error_responses;1;
+R12-net-ipv4-ip-local-port-range;R12;intermédiaire;Paramètre noyau net.ipv4.ip_local_port_range;sysctl;net.ipv4.ip_local_port_range;32768 65535;
+R12-net-ipv4-tcp-rfc1337;R12;intermédiaire;Paramètre noyau net.ipv4.tcp_rfc1337;sysctl;net.ipv4.tcp_rfc1337;1;
+R12-net-ipv4-tcp-syncookies;R12;intermédiaire;Paramètre noyau net.ipv4.tcp_syncookies;sysctl;net.ipv4.tcp_syncookies;1;
+R14-fs-suid-dumpable;R14;intermédiaire;Paramètre noyau fs.suid_dumpable;sysctl;fs.suid_dumpable;0;
+R14-fs-protected-fifos;R14;intermédiaire;Paramètre noyau fs.protected_fifos;sysctl;fs.protected_fifos;2;
+R14-fs-protected-regular;R14;intermédiaire;Paramètre noyau fs.protected_regular;sysctl;fs.protected_regular;2;
+R14-fs-protected-symlinks;R14;intermédiaire;Paramètre noyau fs.protected_symlinks;sysctl;fs.protected_symlinks;1;
+R14-fs-protected-hardlinks;R14;intermédiaire;Paramètre noyau fs.protected_hardlinks;sysctl;fs.protected_hardlinks;1;
+R28-boot;R28;intermédiaire;Partition dédiée /boot et options de montage;mount;/boot;nosuid,nodev,noexec;
+R28-opt;R28;intermédiaire;Partition dédiée /opt et options de montage;mount;/opt;nosuid,nodev;
+R28-tmp;R28;intermédiaire;Partition dédiée /tmp et options de montage;mount;/tmp;nosuid,nodev,noexec;
+R28-srv;R28;intermédiaire;Partition dédiée /srv et options de montage;mount;/srv;nosuid,nodev;
+R28-home;R28;intermédiaire;Partition dédiée /home et options de montage;mount;/home;nosuid,nodev,noexec;
+R28-usr;R28;intermédiaire;Partition dédiée /usr et options de montage;mount;/usr;nodev;
+R28-var;R28;intermédiaire;Partition dédiée /var et options de montage;mount;/var;nosuid,nodev,noexec;
+R28-var-log;R28;intermédiaire;Partition dédiée /var/log et options de montage;mount;/var/log;nosuid,nodev,noexec;
+R28-var-tmp;R28;intermédiaire;Partition dédiée /var/tmp et options de montage;mount;/var/tmp;nosuid,nodev,noexec;
+R28-proc-hidepid;R28;intermédiaire;/proc monté avec hidepid;check;proc_hidepid;hidepid;Rend aussi les processus invisibles à la collecte non privilégiée
+R33-permitrootlogin;R33;intermédiaire;Pas de connexion SSH directe en root;sshd;permitrootlogin;no;
+R33-auditd-service;R33;intermédiaire;Traçabilité des actions d'administration (auditd);service;auditd.service;actif;
+R39-noexec;R39;intermédiaire;Directive sudo Defaults noexec;sudo_default;noexec;présent;
+R39-requiretty;R39;intermédiaire;Directive sudo Defaults requiretty;sudo_default;requiretty;présent;
+R39-use-pty;R39;intermédiaire;Directive sudo Defaults use_pty;sudo_default;use_pty;présent;
+R39-umask-0077;R39;intermédiaire;Directive sudo Defaults umask=0077;sudo_default;umask=0077;présent;
+R39-ignore-dot;R39;intermédiaire;Directive sudo Defaults ignore_dot;sudo_default;ignore_dot;présent;
+R39-env-reset;R39;intermédiaire;Directive sudo Defaults env_reset;sudo_default;env_reset;présent;
+R40-sudo-no-root-target;R40;intermédiaire;Sudo : pas de cible root ou ALL;check;sudo_no_root_target;aucune règle;Exige une revue : les règles d'administration ont souvent cette forme
+R42-sudo-no-negation;R42;intermédiaire;Sudo : pas de négation dans les commandes;check;sudo_no_negation;aucune règle;
+R43-sudo-explicit-args;R43;intermédiaire;Sudo : arguments explicites;check;sudo_explicit_args;aucune règle;
+R45-apparmor;R45;renforcé;AppArmor actif (familles Debian et SUSE);check;apparmor;profils chargés;
+R46-selinux;R46;élevé;SELinux en mode enforcing, politique targeted (famille Red Hat);check;selinux;enforcing, targeted;
+R61-os-supported;R61;minimal;Système encore couvert par des correctifs;check;os_supported;système supporté;
+R62-rsh-server-rsh-telnet-server-telnetd-tel;R62;minimal;Pas de service hérité non sécurisé;package_absent;rsh-server|rsh|telnet-server|telnetd|telnet|tftp-server|tftpd|tftpd-hpa|tftp|talk-server|talk|ypserv|ypbind|xinetd|sendmail;absents;
+R71-rsyslog-service-syslog-ng-service;R71;renforcé;Journalisation système active;service;rsyslog.service|syslog-ng.service;actif;
+R71-chronyd-service-chrony-service-ntpd-serv;R71;renforcé;Synchronisation horaire active;service;chronyd.service|chrony.service|ntpd.service|ntp.service|systemd-timesyncd.service;actif;
+R73-auditd-service;R73;renforcé;Service auditd actif;service;auditd.service;actif;
+R74-mta-local-only;R74;intermédiaire;Messagerie locale non exposée au réseau;check;mta_local_only;boucle locale uniquement;

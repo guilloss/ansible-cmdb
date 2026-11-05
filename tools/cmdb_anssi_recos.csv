@@ -1,0 +1,82 @@
+# ANSSI-BP-028 v2.0 : recommandations et niveaux, relevés dans ComplianceAsCode (controls/anssi.yml) le 2026-11-05.
+ref;level;title;coverage;note
+R1;renforcé;Hardware Support;non;
+R2;intermédiaire;Hardware configuration;non;
+R3;intermédiaire;UEFI Secure boot activation;non;
+R4;élevé;Replacing of preloaded keys;non;
+R5;intermédiaire;Boot loader password;non;
+R6;élevé;Protecting kernel command line parameters;non;
+R7;renforcé;IOMMU Configuration Guidelines;non;
+R8;intermédiaire;Memory configuration options;partiel;Paramètres de démarrage du noyau non contrôlés
+R9;intermédiaire;Kernel configuration options;complet;
+R10;renforcé;Disabling the loading of kernel modules;non;
+R11;intermédiaire;Yama module sysctl configuration;complet;
+R12;intermédiaire;IPv4 configuration options;complet;
+R13;intermédiaire;Disabling IPv6;non;
+R14;intermédiaire;File system configuration options;complet;
+R15;élevé;Compile options for memory management;non;
+R16;élevé;Compile options for kernel data structures;non;
+R17;élevé;Compile options for the memory allocator;non;
+R18;élevé;Compile options for the management of kernel module;non;
+R19;élevé;Compile options for abnormal situations;non;
+R20;élevé;Compile options for kernel security functions;non;
+R21;élevé;Compile options for the compiler plugins;non;
+R22;élevé;Compile options for the IP stack;non;
+R23;élevé;Compile options for various kernel behaviors;non;
+R24;élevé;Compile options for 32-bit architectures;non;
+R25;élevé;Compile options for x86_64 architectures;non;
+R26;élevé;Compile options for ARM architectures;non;
+R27;élevé;Compile options for ARM 64 architectures;non;
+R28;intermédiaire;Partitioning type;complet;
+R29;renforcé;Access Restrictions on /boot;non;
+R30;minimal;Removal of unused user accounts;non;
+R31;minimal;User password strength;non;
+R32;intermédiaire;Configuring a timeout on local user sessions;non;
+R33;intermédiaire;Use of dedicated administration accounts;partiel;Seuls root en SSH et auditd sont contrôlés
+R34;intermédiaire;Deactivation of service accounts;non;
+R35;intermédiaire;Uniqueness and exclusivity of system service accounts;non;
+R36;renforcé;Changing the default value of UMASK;non;
+R37;renforcé;Using access control features;non;
+R38;renforcé;Group dedicated to the use of sudo;non;
+R39;intermédiaire;Sudo configuration guidelines;complet;
+R40;intermédiaire;Privileges of target sudo users;complet;
+R41;renforcé;Limiting the number of commands requiring the use of the EXEC option;non;
+R42;intermédiaire;Good use of negation in a sudoers file;complet;
+R43;intermédiaire;Explicit arguments in sudo specifications;complet;
+R44;intermédiaire;Editing files with sudo;non;
+R45;renforcé;Enable AppArmor security profiles;partiel;Présence de profils seulement
+R46;élevé;Activate SELinux with the Targeted Policy;partiel;Booléens et confinement non contrôlés
+R47;élevé;Containment of unprivileged interactive users;non;
+R48;élevé;Setting SELinux booleans;non;
+R49;élevé;Uninstalling SELinux Policy Debugging Tools;non;
+R50;intermédiaire;Rights to access sensitive files and directories;non;
+R51;renforcé;Sensitive and trusted files;non;
+R52;intermédiaire;Securing access for named sockets and pipes;non;
+R53;minimal;Files or directories without a known user or group;non;
+R54;minimal;Sticky bit and write access rights;non;
+R55;intermédiaire;Temporary directories dedicated to accounts;non;
+R56;minimal;Executables with setuid and setgid bits;non;
+R57;renforcé;Executable with special rights setuid root and setgid root;non;
+R58;minimal;Installation of packages reduced to the bare necessities;non;
+R59;minimal;Official package repositories;non;
+R60;renforcé;Hardened package repositories;non;
+R61;minimal;Regular updates;partiel;Fin de support seulement, pas les mises à jour en attente
+R62;minimal;Minimization of installed services;partiel;Liste de services hérités seulement
+R63;intermédiaire;Minimization of services configuration;non;
+R64;renforcé;Least privilege for the services;non;
+R65;renforcé;Services partitioning;non;
+R66;élevé;Virtualization components hardening;non;
+R67;intermédiaire;Secure remote authentication with PAM;non;
+R68;minimal;Protecting stored passwords;non;
+R69;intermédiaire;Securing access to remote user databases;non;
+R70;intermédiaire;Separation of System Accounts and Directory Administrator;non;
+R71;renforcé;Implement a logging system;partiel;Service actif seulement, pas la centralisation
+R72;renforcé;Service Activity Logs;non;
+R73;renforcé;Logging activity by auditd;partiel;Service actif seulement, pas les règles
+R74;intermédiaire;Configuring the local messaging service;partiel;Port 25 seulement
+R75;intermédiaire;Messaging Aliases for Service Accounts;non;
+R76;élevé;Sealing and integrity of files;non;
+R77;élevé;Protection of the seals database;non;
+R78;renforcé;Network services partitioning;non;
+R79;intermédiaire;Hardening and monitoring of exposed services;non;
+R80;minimal;Minimization of network services;non;
