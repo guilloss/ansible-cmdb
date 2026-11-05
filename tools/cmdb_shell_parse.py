@@ -1111,10 +1111,95 @@ def parse_archives(text, idx):
     return roots
 
 
+def ls_mode(perm):
+    """-rw-r----- -> 0640"""
+    if len(perm or "") < 10:
+        return None
+    v = 0
+    for i, c in enumerate(perm[1:10]):
+        if c not in "-ST":
+            v |= 1 << (8 - i)
+    return "%04o" % v
+
+
+def parse_keytool(text):
+    """Sortie filtrée de keytool -list -v (LC_ALL=C)."""
+    certs, cur, alias = [], None, None
+    months = dict((m, i + 1) for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()))
+
+    def iso(s):
+        m = re.match(r"\w+ (\w+) (\d+) ([\d:]+) \S+ (\d{4})", s.strip())
+        if not m or m.group(1) not in months:
+            return None
+        return "%s-%02d-%02dT%sZ" % (m.group(4), months[m.group(1)], int(m.group(2)), m.group(3))
+    for line in (text or "").splitlines():
+        k, _, v = line.partition(":")
+        v = v.strip()
+        if k == "Alias name":
+            alias = v
+        elif k == "Owner":
+            cur = {"subject": v, "alias": alias, "cn": (re.search(r"CN=([^,]+)", v) or [None, None])[1]}
+            certs.append(cur)
+        elif cur is not None and k == "Issuer":
+            cur["issuer"] = v
+            cur["self_signed"] = v == cur["subject"]
+        elif cur is not None and k == "Serial number":
+            cur["serial"] = v
+        elif cur is not None and k == "Valid from":
+            a, _, b = v.partition(" until: ")
+            cur["not_before"], cur["not_after"] = iso(a), iso(b)
+    return certs
+
+
+def build_crypto(d, idx):
+    out = []
+    n = 0
+    for line in (d.scan("crypto.tsv") or "").splitlines():
+        n += 1
+        path, _, rest = line.partition("\t")
+        flags, _, ls = rest.partition("\t")
+        fl = [x for x in flags.split(",") if x]
+        kind = fl[0] if fl else "inconnu"
+        lsf = ls.split()
+        f = {"path": path, "kind": "illisible" if kind == "unreadable" else kind, "certs": [], "encrypted": None,
+             "has_private_key": None, "mode": ls_mode(lsf[0]) if lsf else None, "owner": lsf[2] if len(lsf) > 2 else None,
+             "size": int(lsf[4]) if len(lsf) > 4 and lsf[4].isdigit() else None}
+        if kind == "unreadable":
+            f["note"] = "illisible pour le compte de collecte"
+        key = [x[4:] for x in fl if x.startswith("key=")]
+        if kind == "pem":
+            f["has_private_key"] = bool(key)
+            if key:
+                f["key_type"] = key[0]
+                f["encrypted"] = "encrypted" in fl
+        if "emptypw" in fl:
+            f["empty_password"] = True
+        if kind == "pkcs12" and "encrypted" in fl:
+            f.update({"encrypted": True, "note": "protégé par un mot de passe : contenu non lu"})
+        if kind in ("jks", "jceks"):
+            f["note"] = "keytool absent : contenu non lu"
+            kt = d.scan("crypto/%d.keytool" % n)
+            if kt:
+                f["certs"] = parse_keytool(kt)
+                f["note"] = None
+                f["has_private_key"] = "PrivateKeyEntry" in kt
+        pem = d.scan("crypto/%d.pem" % n)
+        if pem:
+            f["certs"] = C.certs_from_pem(pem)
+        f["cert_count"] = len(f["certs"])
+        f["certs"] = f["certs"][:C.CRYPTO_MAX_CERTS]
+        o = lookup_owner(idx, path)
+        if o:
+            f["owner_pkg"] = o
+        out.append(f)
+    return out
+
+
 def build_filesystem(d, idx):
     sc = DumpScanner(d, idx)
     fs = sc.scan_filesystem()
     fs = strip_prefix(fs, d.fsroot)
+    fs["crypto_files"] = build_crypto(d, idx)
     fs["java_archives"] = parse_archives(d.cmd("archives"), idx)
     found_set = set((d.scan("found.lst") or "").splitlines())
     proc_set = set((d.scan("proc_archives.lst") or "").splitlines())

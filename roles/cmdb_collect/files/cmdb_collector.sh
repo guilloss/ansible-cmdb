@@ -430,6 +430,7 @@ section_misc() {
     cap sysctl sysctl -a
     cap boot ls -l /boot
     section_oracle
+    section_modules
     cap software_dirs sh -c 'for d in /opt /usr/local /srv /app /apps /applis /data /u01 /u02 /home /var/www /usr/share/java; do
         [ -d "$d" ] || continue; echo "== $d"; ls -1A "$d" 2>/dev/null | head -500
         for s in "$d"/*; do [ -d "$s" ] && [ ! -h "$s" ] && echo "-- $s: $(ls -1A "$s" 2>/dev/null | head -200 | tr "\n" " ")"; done
@@ -461,6 +462,90 @@ DBCFG_FIND="-o -name *.properties -o -name .env -o -name *.env -o -name .env.* -
  -o -name configuration.php -o -name config.inc.php -o -name settings.php -o -name settings.py -o -name local_settings.py \
  -o -name database.yml -o -name database.yaml -o -name database.php -o -name db.php -o -name parameters.yml \
  -o -name parameters.yaml -o -name web.config"
+
+# Fichiers de configuration dont seules les directives de chargement de modules sont copiées
+MOD_FIND="-o -name httpd.conf -o -name apache2.conf -o -name nginx.conf -o -name php.ini -o -name postgresql.conf \
+ -o -name postgresql.auto.conf -o -name redis.conf -o -name mysqld.cnf -o -name mariadb.cnf -o -name server.cnf -o -name haproxy.cfg \
+ -o -name ports.conf -o -name httpd-vhosts.conf -o -name httpd-ssl.conf -o -name vhosts.conf"
+# Clés et certificats (voir crypto_one)
+CRYPTO_FIND="-o -name *.key -o -name *.pem -o -name *.crt -o -name *.cer -o -name *.der -o -name *.p12 -o -name *.pfx \
+ -o -name *.jks -o -name *.keystore -o -name *.jceks -o -name *.bcfks -o -name *.kdb -o -name *.sth -o -name *.p7b \
+ -o -name *.p8 -o -name *.pk8 -o -name *.ppk -o -name *.truststore -o -name *.sso -o -name id_rsa -o -name id_dsa \
+ -o -name id_ecdsa -o -name id_ed25519 -o -name keystore -o -name truststore -o -name secring.gpg -o -name ssh_host_*_key"
+
+# grab_mod FICHIER... : seules les directives de chargement sont copiées (pas de secret dans ces lignes)
+grab_mod() {
+    for _f in "$@"; do
+        [ -f "$_f" ] && [ -r "$_f" ] || continue
+        _d="$W/fs${_f%/*}"
+        if [ "$_d" != "$_lastdir" ]; then mkdir -p "$_d" 2>/dev/null; _lastdir=$_d; fi
+        dd if="$_f" bs=1024 count=1024 2>/dev/null | grep -iE \
+            '^[ 	]*(LoadModule|load_module|extension|zend_extension|shared_preload_libraries|loadmodule|plugin[-_]load|</?VirtualHost|ServerName|ServerAlias|DocumentRoot|Listen|ProxyPass|SSLEngine|SSLCertificateFile|server[ 	]|server\{|server_name|root[ 	]|proxy_pass|ssl_certificate[ 	]|upstream[ 	]|location[ 	]|frontend[ 	]|backend[ 	]|bind[ 	])' >>"$W/fs$_f"
+    done
+}
+# Les répertoires de modules activés sont faits de liens symboliques, invisibles de "find -type f"
+section_modules() {
+    log "modules"
+    grab_mod /etc/apache2/mods-enabled/*.load /etc/httpd/conf.modules.d/*.conf /etc/nginx/modules-enabled/*.conf \
+        /etc/php.d/*.ini /etc/php/*/*/conf.d/*.ini /etc/php/conf.d/*.ini \
+        /etc/apache2/sites-enabled/* /etc/apache2/vhosts.d/*.conf /etc/httpd/conf.d/*.conf /etc/httpd/vhosts.d/*.conf \
+        /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf /opt/IBM/HTTPServer/conf/*.conf /usr/IBM/HTTPServer/conf/*.conf
+}
+
+# crypto_one FICHIER NUMERO : ce fichier est toujours mentionné. Seuls sortent les certificats
+# (publics) ; une clé privée n'est ni copiée ni décodée, on n'en lit que l'en-tête.
+crypto_one() {
+    _f=$1; _n=$2; _fl=""
+    _ls=$(ls -ld "$_f" 2>/dev/null)
+    if [ ! -r "$_f" ]; then printf '%s\t%s\t%s\n' "$_f" "unreadable" "$_ls" >>"$W/scan/crypto.tsv"; return; fi
+    _m=$(dd if="$_f" bs=1 count=4 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+    case "$_m" in
+        feedfeed|cececece)
+            case "$_m" in feedfeed) _fl=jks ;; *) _fl=jceks ;; esac
+            if have keytool; then
+                tmo 10 keytool -list -v -keystore "$_f" 2>/dev/null \
+                    | grep -E '^(Alias name|Entry type|Owner|Issuer|Serial number|Valid from)' >"$W/scan/crypto/$_n.keytool"
+            fi ;;
+        *)
+            if grep -- '-----BEGIN ' "$_f" >/dev/null 2>&1; then
+                _fl=pem
+                _k=$(grep -- '-----BEGIN .*PRIVATE KEY-----' "$_f" | head -1 | sed 's/^-----BEGIN //; s/ *PRIVATE KEY-----.*//')
+                if grep -- '-----BEGIN .*PRIVATE KEY-----' "$_f" >/dev/null 2>&1; then
+                    _fl="pem,key=${_k:-PKCS8}"
+                    grep -- 'ENCRYPTED' "$_f" >/dev/null 2>&1 && _fl="$_fl,encrypted"
+                fi
+                awk '/-----BEGIN (TRUSTED |X509 )?CERTIFICATE-----/ {p=1} p {print} /-----END (TRUSTED |X509 )?CERTIFICATE-----/ {p=0}' \
+                    "$_f" >"$W/scan/crypto/$_n.pem" 2>/dev/null
+            else
+                case "$_f" in
+                    *.p12|*.pfx)
+                        _fl=pkcs12
+                        if have openssl; then
+                            tmo 10 openssl pkcs12 -in "$_f" -nokeys -passin pass: 2>/dev/null >"$W/scan/crypto/$_n.pem"
+                            [ -s "$W/scan/crypto/$_n.pem" ] || tmo 10 openssl pkcs12 -in "$_f" -nokeys -passin pass: -legacy 2>/dev/null >"$W/scan/crypto/$_n.pem"
+                            if [ -s "$W/scan/crypto/$_n.pem" ]; then _fl="$_fl,emptypw"; else _fl="$_fl,encrypted"; fi
+                        fi ;;
+                    *.der|*.cer|*.crt)
+                        if have openssl; then
+                            tmo 10 openssl x509 -inform DER -in "$_f" -outform PEM 2>/dev/null >"$W/scan/crypto/$_n.pem" && _fl=der
+                        fi ;;
+                    *.kdb) _fl=gskit-kdb ;;
+                    *.sth) _fl=gskit-stash ;;
+                    *.sso) _fl=oracle-wallet ;;
+                esac
+            fi ;;
+    esac
+    printf '%s\t%s\t%s\n' "$_f" "$_fl" "$_ls" >>"$W/scan/crypto.tsv"
+}
+section_crypto() {
+    [ -s "$W/scan/crypto.lst" ] || return 0
+    log "clés et certificats"
+    mkdir "$W/scan/crypto" 2>/dev/null
+    _i=0
+    while IFS= read -r _c && [ "$_i" -lt 2000 ]; do
+        _i=$((_i + 1)); crypto_one "$_c" "$_i"
+    done <"$W/scan/crypto.lst"
+}
 
 # dbcfg_skip CHEMIN : mêmes exclusions que DB_CONFIG_SKIP_RX du collecteur Python
 dbcfg_skip() {
@@ -516,7 +601,7 @@ grab_dbcfg() {
         lo = tolower(l)
         if (lo ~ /pass|pwd|secret|token|credential|private/) next
         if (lo ~ /^[ \t]*\[/ || l ~ /^[^ \t].*:[ \t]*$/ ||
-            lo ~ /host|server|port|dbname|database|db_|sid|service|adapter|engine|driver|connection|description/) print substr(l, 1, 400)
+            lo ~ /host|server|port|dbname|database|db_|sid|service|adapter|engine|driver|connection|description|plugin|<connector|<context|<alias|appbase|protocol|sslenabled|socket-binding/ || lo ~ /^[ \t]*\/?>[ \t]*$/) print substr(l, 1, 400)
     }' >"$W/fs$1" 2>/dev/null
 }
 
@@ -546,7 +631,7 @@ do_find_simple() {
             -o -name perl -o -name postgres -o -name postmaster -o -name psql -o -name mysqld -o -name mariadbd \
             -o -name mysql -o -name mongod -o -name redis-server -o -name nginx -o -name httpd -o -name apache2 \
             -o -name haproxy -o -name openssl -o -name curl -o -name 'zabbix_agent*' -o -name db2ls -o -name dspmqver \
-            $DBCFG_FIND \) -print 2>/dev/null
+            $DBCFG_FIND $MOD_FIND $CRYPTO_FIND \) -print 2>/dev/null
     done
     set +f
 }
@@ -585,7 +670,7 @@ do_find() {
                 -o -name mariadbd -o -name mysql -o -name mongod -o -name redis-server -o -name nginx -o -name httpd \
                 -o -name apache2 -o -name haproxy -o -name openssl -o -name curl -o -name 'zabbix_agent*' \
                 -o -name db2ls -o -name dspmqver \) \) \
-            $DBCFG_FIND \) -print 2>/dev/null
+            $DBCFG_FIND $MOD_FIND $CRYPTO_FIND \) -print 2>/dev/null
     done
     set +f
 }
@@ -613,6 +698,17 @@ classify() {
                 continue ;;
             PG_VERSION) [ -d "$d/global" ] && grab_lim 1 "$f"; continue ;;
             comps.xml) grab_lim 16384 "$f"; continue ;;
+            httpd.conf|apache2.conf|nginx.conf|php.ini|postgresql.conf|postgresql.auto.conf|redis.conf|mysqld.cnf|mariadb.cnf|server.cnf|\
+            haproxy.cfg|ports.conf|httpd-vhosts.conf|httpd-ssl.conf|vhosts.conf)
+                grab_mod "$f"; continue ;;
+            *.key|*.pem|*.crt|*.cer|*.der|*.p12|*.pfx|*.jks|*.keystore|*.jceks|*.bcfks|*.kdb|*.sth|*.p7b|*.p8|*.pk8|*.ppk|\
+            *.truststore|*.sso|id_rsa|id_dsa|id_ecdsa|id_ed25519|keystore|truststore|secring.gpg|ssh_host_*_key)
+                case "$f" in
+                    /etc/ssl/certs/*|/etc/pki/ca-trust/*|/etc/pki/tls/certs/ca-*|/etc/ca-certificates/*|/usr/share/ca-certificates/*|\
+                    /usr/share/pki/*|/usr/share/doc/*|*/certifi/*|/usr/lib/ssl/certs/*) ;;
+                    *) printf '%s\n' "$f" >>"$W/scan/crypto.lst" ;;
+                esac
+                continue ;;
             pom.properties) grab "$f"; continue ;;
             tnsnames.ora) case "$f" in */samples/*) ;; *) grab_lim 256 "$f" ;; esac; continue ;;
             *.properties|.env|*.env|.env.*|application*.y*ml|bootstrap*.y*ml|*-jdbc.xml|*datasource*.xml|*datasource*.y*ml|\
@@ -650,6 +746,7 @@ section_filesystem() {
     echo $? >"$W/scan/find.rc"
     log "find terminé : $(wc -l <"$W/scan/found.lst") fichiers"
     classify <"$W/scan/found.lst"
+    section_crypto
 }
 
 # ---------------------------------------------------------------------------
@@ -1095,8 +1192,10 @@ probe_args() {   # une ligne par jeu d'arguments
     case "$1" in
         java) echo "-version" ;;
         python) echo "-V" ;;
-        php) printf '%s\n' "-v" "-m" ;;
-        php-fpm|haproxy|httpd|squid|bind|proftpd) echo "-v" ;;
+        php) printf '%s\n' "-v" "-m" "-i" ;;
+        php-fpm) printf '%s\n' "-v" "-i" ;;
+        httpd) printf '%s\n' "-v" "-M" ;;
+        haproxy|squid|bind|proftpd) echo "-v" ;;
         node) echo "--version" ;;
         perl) echo "-v" ;;
         postfix) echo "-h mail_version" ;;
@@ -1135,6 +1234,22 @@ trusted() {
 realpath_of() {
     _r=$(readlink -f "$1" 2>/dev/null)
     [ -n "$_r" ] && echo "$_r" || echo "$1"
+}
+
+# php -i : l'environnement et les valeurs ressemblant à un secret ne quittent pas le serveur
+# (même règle que phpinfo_filter du collecteur Python)
+php_filter() {
+    awk '
+    $0 == "Environment" || $0 == "PHP Variables" { skip = 1; next }
+    skip { if ($0 ~ /^[A-Z][A-Za-z ]*$/) skip = 0; else next }
+    /^\$_/ { next }
+    {
+        i = index($0, "=>")
+        if (i > 0 && tolower(substr($0, 1, i)) ~ /pass|secret|token|_key[^a-z_]/) { print substr($0, 1, i + 1) " ***"; next }
+        l = $0
+        gsub(/:\/\/[^\/@ ]*@/, "://***@", l)
+        print l
+    }'
 }
 
 section_probes() {
@@ -1186,7 +1301,11 @@ section_probes() {
         probe_args "$_name" | while IFS= read -r _a; do
             printf '@@ARGS\t%s\n' "$_a" >>"$_out"
             # shellcheck disable=SC2086
-            tmo "$EXEC_TIMEOUT" "$_rp" $_a >>"$_out" 2>&1
+            if [ "$_a" = "-i" ]; then
+                tmo "$EXEC_TIMEOUT" "$_rp" $_a 2>&1 | php_filter >>"$_out"
+            else
+                tmo "$EXEC_TIMEOUT" "$_rp" $_a >>"$_out" 2>&1
+            fi
             printf '\n@@RC\t%s\n' "$?" >>"$_out"
         done
     done

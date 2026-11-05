@@ -56,6 +56,28 @@ class Fixture(unittest.TestCase):
             os.makedirs(os.path.dirname(p), exist_ok=True)
             with open(p, "w") as f:
                 f.write(text)
+        key, crt = os.path.join(cls.root, "tls", "srv.key"), os.path.join(cls.root, "tls", "srv.crt")
+        os.makedirs(os.path.dirname(key))
+        subprocess.check_call(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "9",
+                               "-subj", "/CN=t.exemple.test"], stderr=subprocess.DEVNULL)
+        os.chmod(key, 0o644)
+        with open(key) as f:
+            cls.keyline = f.read().splitlines()[2]
+        for name, pw in (("vide.p12", ""), ("prot.p12", "motdepasse")):
+            subprocess.check_call(["openssl", "pkcs12", "-export", "-inkey", key, "-in", crt, "-out", os.path.join(cls.root, "tls", name),
+                                   "-passout", "pass:" + pw])
+        ferme = os.path.join(cls.root, "tls", "ferme.key")
+        shutil.copy(key, ferme)
+        os.chmod(ferme, 0)
+        for rel, text in (("web/httpd.conf", "# LoadModule off_module x.so\nLoadModule ssl_module modules/mod_ssl.so\nServerAdmin a@b\n"),
+                          ("nginx/modules.conf/nginx.conf", "load_module modules/ngx_stream_module.so;\n"),
+                          ("web/php.ini", ";extension=off\nextension=mbstring\n"),
+                          ("web/postgresql.conf", "shared_preload_libraries = 'pg_stat_statements'\n"),
+                          ("web/redis.conf", "requirepass %s\n" % SECRET)):
+            p = os.path.join(cls.root, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                f.write(text)
         # Vrai processus dont la ligne de commande désigne l'ORACLE_HOME
         os.makedirs(os.path.join(cls.home, "bin"))
         fake = os.path.join(cls.home, "bin", "tnslsnr")
@@ -66,6 +88,7 @@ class Fixture(unittest.TestCase):
     def tearDownClass(cls):
         cls.proc.kill()
         cls.proc.wait()
+        os.chmod(os.path.join(cls.root, "tls", "ferme.key"), 0o600)
         shutil.rmtree(cls.root, ignore_errors=True)
 
     def check(self, doc):
@@ -83,6 +106,40 @@ class Fixture(unittest.TestCase):
         self.assertEqual(h["listeners"][0]["port"], 1521)
         self.assertEqual(h["tns_refs"][0]["host"], "ora2.exemple.test")
         self.assertNotIn(SECRET, json.dumps(doc))
+        crypto = dict((os.path.basename(c["path"]), c) for c in doc["filesystem"]["crypto_files"])
+        self.assertEqual(crypto["srv.key"]["has_private_key"], True)
+        self.assertFalse(crypto["srv.key"]["encrypted"])
+        self.assertEqual(crypto["srv.key"]["mode"], "0644")
+        self.assertEqual(crypto["srv.crt"]["certs"][0]["cn"], "t.exemple.test")
+        self.assertEqual(crypto["vide.p12"]["certs"][0]["cn"], "t.exemple.test")
+        self.assertTrue(crypto["vide.p12"]["empty_password"])
+        self.assertEqual(crypto["prot.p12"]["certs"], [])
+        self.assertIn("mot de passe", crypto["prot.p12"]["note"])
+        self.assertEqual(crypto["ferme.key"]["kind"], "illisible")
+        self.assertNotIn(self.keyline, json.dumps(doc))
+        eps = doc["filesystem"]["endpoints"]
+        vh = [e for e in eps if e["kind"] == "vhost" and e["product"] == "apache"][0]
+        self.assertEqual((vh["server_name"], vh["port"], vh["tls"]), ("www.exemple.test", 443, True))
+        self.assertIn(("tomcat", 8443, True), [(e["product"], e.get("port"), e.get("tls")) for e in eps if e["kind"] == "connector"])
+        self.assertIn(("nginx", "app.exemple.test"), [(e["product"], e.get("server_name")) for e in eps])
+        self.assertIn("10.0.0.2:8080", [e.get("backend") for e in eps])
+        mods = set((m["product"], m["module"]) for m in doc["filesystem"]["service_modules"])
+        self.assertEqual(mods, {("apache", "ssl_module"), ("nginx", "ngx_stream_module"), ("php", "mbstring"),
+                                ("postgresql", "pg_stat_statements")})
+
+
+class PhpFilter(unittest.TestCase):
+    def test_parite_shell(self):
+        from tests.test_endpoints import Phpinfo
+        src = open(SHELL_COLLECTOR, encoding="utf-8").read()
+        fn = src[src.index("php_filter() {"):src.index("section_probes() {")]
+        for shell in ("dash", "bash"):
+            out = subprocess.run([shell, "-c", fn + "\nphp_filter"], input=Phpinfo.T.encode(), stdout=subprocess.PIPE).stdout.decode()
+            self.assertNotIn("S3cr3t", out)
+            self.assertNotIn("mdp", out)
+            self.assertIn("memory_limit => 128M", out)
+            self.assertIn("mysql.default_password => ***", out)
+            self.assertIn("PHP License", out)
 
 
 class Python(Fixture):
@@ -106,7 +163,9 @@ class Shell(Fixture):
         with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
             for m in tf:
                 if m.isfile():
-                    self.assertNotIn(SECRET.encode(), tf.extractfile(m).read(), m.name)
+                    data = tf.extractfile(m).read()
+                    self.assertNotIn(SECRET.encode(), data, m.name)
+                    self.assertNotIn(self.keyline.encode(), data, m.name)
         self.check(cmdb_shell_parse.convert(raw))
 
     def test_dash(self):

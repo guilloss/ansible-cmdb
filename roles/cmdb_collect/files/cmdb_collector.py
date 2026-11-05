@@ -330,8 +330,8 @@ PY_PROBE_CODE = (
 PROBES = [
     ("java", r"^java$", [(["-XshowSettings:properties", "-version"], None), (["-version"], None)], "first"),
     ("python", r"^(python([23](\.\d+)?[mtd]?)?|platform-python)$", [(["-c", PY_PROBE_CODE], None)], "all"),
-    ("php", r"^php(\d+(\.\d+)?)?$|^php-cgi(\d+(\.\d+)?)?$", [(["-v"], None), (["-m"], None), (["-i"], r"(?i)version|openssl|curl|libxml|pcre|sqlite|zlib|configuration file|loaded")], "all"),
-    ("php-fpm", r"^php-?fpm(\d+(\.\d+)?)?$", [(["-v"], None)], "all"),
+    ("php", r"^php(\d+(\.\d+)?)?$|^php-cgi(\d+(\.\d+)?)?$", [(["-v"], None), (["-m"], None), (["-i"], "PHPINFO")], "all"),
+    ("php-fpm", r"^php-?fpm(\d+(\.\d+)?)?$", [(["-v"], None), (["-i"], "PHPINFO")], "all"),
     ("node", r"^(node|nodejs)$", [(["--version"], None), (["-p", "JSON.stringify(process.versions)"], None)], "all"),
     ("ruby", r"^ruby(\d+(\.\d+)*)?$", [(["--version"], None)], "all"),
     ("perl", r"^perl(5[\d.]*)?$", [(["-e", 'print "$^V\\n"'], None)], "all"),
@@ -345,7 +345,7 @@ PROBES = [
     ("redis", r"^redis-server$", [(["--version"], None)], "all"),
     ("memcached", r"^memcached$", [(["-V"], None)], "all"),
     ("nginx", r"^nginx$", [(["-V"], None)], "all"),
-    ("httpd", r"^(httpd|apache2)$", [(["-v"], None)], "all"),
+    ("httpd", r"^(httpd|apache2)$", [(["-v"], None), (["-M"], None)], "all"),
     ("haproxy", r"^haproxy$", [(["-vv"], None)], "all"),
     ("varnish", r"^varnishd$", [(["-V"], None)], "all"),
     ("squid", r"^squid$", [(["-v"], None)], "all"),
@@ -1316,6 +1316,570 @@ def oracle_home_facts(home, read, ls):
             f["listeners"].append({"name": name, "host": hosts[i] if i < len(hosts) else None, "port": int(p) if p.isdigit() else None})
     f["tns_refs"] = extract_db_refs(read("network/admin/tnsnames.ora"), "tnsnames.ora")
     return f
+
+
+# --------------------------------------------------------------------------
+# Modules activés (Apache, IHS, nginx, PHP, PostgreSQL, Redis, MySQL)
+# Seules les directives de chargement sont lues. Partagé avec cmdb_shell_parse.py.
+# --------------------------------------------------------------------------
+MODULE_FILES = set(["httpd.conf", "apache2.conf", "nginx.conf", "php.ini", "postgresql.conf", "postgresql.auto.conf",
+                    "redis.conf", "my.cnf", "mysqld.cnf", "mariadb.cnf", "server.cnf"])
+_MODULE_LINE_RX = re.compile(r"^[ \t]*(LoadModule|load_module|zend_extension|extension|shared_preload_libraries|loadmodule|"
+                             r"plugin[-_]load(?:[-_]add)?)\b[ \t]*=?[ \t]*(.*?)[ \t]*;?[ \t]*$", re.I | re.M)
+
+
+def is_module_config(path, lname):
+    if re.search(r"/usr/share/|/samples?/|/docs?/|/examples?/", path):
+        return False
+    if lname in MODULE_FILES:
+        return True
+    if lname.endswith(".load"):
+        return "/mods-enabled/" in path
+    if lname.endswith(".conf"):
+        return "/conf.modules.d/" in path or "/modules-enabled/" in path
+    if lname.endswith(".ini"):
+        return "/php.d/" in path or ("/conf.d/" in path and "/php" in path)
+    return False
+
+
+def parse_modules(text, path):
+    """Directives actives d'un fichier -> [{product, module, value}]"""
+    out = []
+    apache = "ihs" if "/HTTPServer/" in path else "apache"
+    for m in _MODULE_LINE_RX.finditer(text or ""):
+        word, val = m.group(1).lower(), m.group(2).split("#")[0].strip().strip("\"'")
+        if not val:
+            continue
+        if word == "loadmodule" and path.lower().endswith("redis.conf"):
+            out.append({"product": "redis", "module": val.split()[0].rsplit("/", 1)[-1], "value": val})
+        elif word == "loadmodule":
+            p = val.split()
+            if len(p) >= 2:
+                out.append({"product": apache, "module": p[0], "value": p[1]})
+        elif word == "load_module":
+            name = val.rsplit("/", 1)[-1]
+            out.append({"product": "nginx", "module": re.sub(r"\.so$", "", name), "value": val})
+        elif word in ("extension", "zend_extension"):
+            val = val.split(";")[0].strip().strip("\"'")
+            name = val.rsplit("/", 1)[-1]
+            out.append({"product": "php", "module": re.sub(r"\.(so|dll)$", "", name), "value": val})
+        elif word == "shared_preload_libraries":
+            for lib in re.split(r"[,\s]+", val):
+                if lib.strip("'\""):
+                    out.append({"product": "postgresql", "module": lib.strip("'\""), "value": None})
+        else:
+            for item in val.split(";"):
+                name = item.split("=")[0].strip()
+                if name:
+                    out.append({"product": "mysql", "module": re.sub(r"\.so$", "", name), "value": item.strip()})
+    return out
+
+
+# --------------------------------------------------------------------------
+# Clés et certificats : tout fichier repéré est mentionné. On en tire ce qui est
+# public (sujet, émetteur, dates, empreinte du certificat), JAMAIS le contenu d'une
+# clé. Aucun mot de passe n'est essayé, hormis le mot de passe vide pour PKCS#12.
+# Partagé avec cmdb_shell_parse.py.
+# --------------------------------------------------------------------------
+CRYPTO_EXT = (".key", ".pem", ".crt", ".cer", ".der", ".p12", ".pfx", ".jks", ".keystore", ".jceks", ".bcfks", ".kdb",
+              ".sth", ".p7b", ".p8", ".pk8", ".ppk", ".truststore", ".sso")
+CRYPTO_NAMES = set(["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "keystore", "truststore", "secring.gpg"])
+CRYPTO_TRUST_RX = re.compile(r"/etc/ssl/certs/|/etc/pki/ca-trust/|/etc/pki/tls/certs/ca-|/etc/ca-certificates/|"
+                             r"/usr/share/ca-certificates/|/usr/share/pki/|/usr/share/doc/|/certifi/|/usr/lib/ssl/certs")
+CRYPTO_MAX_READ = 2 << 20
+CRYPTO_MAX_FILES = 20000
+CRYPTO_MAX_CERTS = 20
+CRYPTO_MAX_P12 = 200
+_OID_NAMES = {"2.5.4.3": "CN", "2.5.4.5": "serialNumber", "2.5.4.6": "C", "2.5.4.7": "L", "2.5.4.8": "ST", "2.5.4.10": "O",
+              "2.5.4.11": "OU", "1.2.840.113549.1.9.1": "emailAddress", "0.9.2342.19200300.100.1.25": "DC"}
+_OID_SIG = {"1.2.840.113549.1.1.4": "md5WithRSA", "1.2.840.113549.1.1.5": "sha1WithRSA", "1.2.840.113549.1.1.11": "sha256WithRSA",
+            "1.2.840.113549.1.1.12": "sha384WithRSA", "1.2.840.113549.1.1.13": "sha512WithRSA", "1.2.840.113549.1.1.10": "rsassaPss",
+            "1.2.840.10045.4.1": "ecdsaWithSHA1", "1.2.840.10045.4.3.2": "ecdsaWithSHA256", "1.2.840.10045.4.3.3": "ecdsaWithSHA384",
+            "1.2.840.10045.4.3.4": "ecdsaWithSHA512", "1.3.101.112": "ed25519", "1.2.840.10040.4.3": "dsaWithSHA1"}
+_OID_CURVE = {"1.2.840.10045.3.1.7": "P-256", "1.3.132.0.34": "P-384", "1.3.132.0.35": "P-521"}
+
+
+def _der_tlv(b, i):
+    """-> (étiquette, début de la valeur, fin de la valeur)"""
+    tag = b[i]
+    i += 1
+    n = b[i]
+    i += 1
+    if n & 0x80:
+        k = n & 0x7f
+        if not 0 < k <= 4:
+            raise ValueError("longueur DER")
+        n = 0
+        for x in b[i:i + k]:
+            n = (n << 8) | x
+        i += k
+    if i + n > len(b):
+        raise ValueError("DER tronqué")
+    return tag, i, i + n
+
+
+def _der_children(b, start, end):
+    out = []
+    while start < end:
+        t, s, e = _der_tlv(b, start)
+        out.append((t, s, e))
+        start = e
+    return out
+
+
+def _der_oid(b, s, e):
+    first = b[s]
+    parts = [min(first // 40, 2), first - 40 * min(first // 40, 2)]
+    v = 0
+    for x in b[s + 1:e]:
+        v = (v << 7) | (x & 0x7f)
+        if not x & 0x80:
+            parts.append(v)
+            v = 0
+    return ".".join(str(p) for p in parts)
+
+
+def _der_string(b, t, s, e):
+    raw = bytes(b[s:e])
+    try:
+        if t == 0x1e:
+            return raw.decode("utf-16-be")
+        return raw.decode("utf-8")
+    except UnicodeError:
+        return raw.decode("latin-1")
+
+
+def _der_name(b, s, e):
+    parts = []
+    for _t, rs, re_ in _der_children(b, s, e):
+        for _t2, as_, ae in _der_children(b, rs, re_):
+            kids = _der_children(b, as_, ae)
+            oid = _der_oid(b, kids[0][1], kids[0][2])
+            parts.append((_OID_NAMES.get(oid, oid), _der_string(b, *kids[1])))
+    return parts
+
+
+def _der_time(b, t, s, e):
+    v = bytes(b[s:e]).decode("ascii")
+    if t == 0x17:
+        v = ("19" if int(v[:2]) >= 50 else "20") + v
+    return "%s-%s-%sT%s:%s:%sZ" % (v[0:4], v[4:6], v[6:8], v[8:10], v[10:12], v[12:14])
+
+
+def x509_facts(der):
+    """Certificat DER -> champs publics, ou None s'il n'est pas lisible."""
+    try:
+        b = bytearray(der)
+        _t, s, e = _der_tlv(b, 0)
+        top = _der_children(b, s, e)
+        tbs = _der_children(b, top[0][1], top[0][2])
+        i = 1 if tbs[0][0] == 0xa0 else 0
+        serial = "".join("%02x" % x for x in b[tbs[i][1]:tbs[i][2]])
+        sig_kids = _der_children(b, top[1][1], top[1][2])
+        sig = _der_oid(b, sig_kids[0][1], sig_kids[0][2])
+        issuer = _der_name(b, tbs[i + 2][1], tbs[i + 2][2])
+        val = _der_children(b, tbs[i + 3][1], tbs[i + 3][2])
+        subject = _der_name(b, tbs[i + 4][1], tbs[i + 4][2])
+        f = {"subject": ",".join("%s=%s" % x for x in subject), "issuer": ",".join("%s=%s" % x for x in issuer),
+             "cn": ([v for k, v in subject if k == "CN"] or [None])[0], "not_before": _der_time(b, *val[0]),
+             "not_after": _der_time(b, *val[1]), "serial": serial, "sig_alg": _OID_SIG.get(sig, sig), "sans": [], "is_ca": False,
+             "self_signed": subject == issuer, "sha256": hashlib.sha256(bytes(b[0:e])).hexdigest()}
+        spki = _der_children(b, tbs[i + 5][1], tbs[i + 5][2])
+        alg = _der_children(b, spki[0][1], spki[0][2])
+        oid = _der_oid(b, alg[0][1], alg[0][2])
+        if oid == "1.2.840.113549.1.1.1":
+            f["key_alg"] = "RSA"
+            _t, ks, ke = _der_tlv(b, spki[1][1] + 1)
+            mod = _der_children(b, ks, ke)[0]
+            n = mod[2] - mod[1]
+            f["key_bits"] = (n - 1 if b[mod[1]] == 0 else n) * 8
+        elif oid == "1.2.840.10045.2.1":
+            f["key_alg"] = "EC"
+            curve = _der_oid(b, alg[1][1], alg[1][2])
+            f["key_curve"] = _OID_CURVE.get(curve, curve)
+        else:
+            f["key_alg"] = {"1.3.101.112": "Ed25519", "1.2.840.10040.4.1": "DSA"}.get(oid, oid)
+        for t, xs, xe in tbs[i + 6:]:
+            if t != 0xa3:
+                continue
+            _t, es, ee = _der_tlv(b, xs)
+            for _t2, ys, ye in _der_children(b, es, ee):
+                kids = _der_children(b, ys, ye)
+                ext = _der_oid(b, kids[0][1], kids[0][2])
+                vt, vs, ve = kids[-1]
+                if ext == "2.5.29.17":
+                    _t3, ss, se = _der_tlv(b, vs)
+                    for gt, gs, ge in _der_children(b, ss, se):
+                        if gt == 0x82:
+                            f["sans"].append(bytes(b[gs:ge]).decode("ascii", "replace"))
+                        elif gt == 0x87 and ge - gs == 4:
+                            f["sans"].append(".".join(str(x) for x in b[gs:ge]))
+                elif ext == "2.5.29.19":
+                    _t3, ss, se = _der_tlv(b, vs)
+                    bc = _der_children(b, ss, se)
+                    f["is_ca"] = bool(bc and bc[0][0] == 1 and b[bc[0][1]] != 0)
+        return f
+    except (IndexError, ValueError, UnicodeError, TypeError):
+        return None
+
+
+def certs_from_pem(text):
+    out = []
+    for m in re.finditer(r"-----BEGIN (?:TRUSTED |X509 )?CERTIFICATE-----(.*?)-----END", text or "", re.S):
+        try:
+            c = x509_facts(base64.b64decode(re.sub(r"\s", "", m.group(1)).encode("ascii")))
+        except (ValueError, TypeError, UnicodeError):
+            c = None
+        if c:
+            out.append(c)
+    return out
+
+
+def _java_store(data, f):
+    """JKS / JCEKS : alias et certificats sont en clair, les clés restent chiffrées et ne sont pas lues."""
+    magic, _ver, count = struct.unpack(">III", data[:12])
+    i = 12
+
+    def utf():
+        n = struct.unpack(">H", data[i[0]:i[0] + 2])[0]
+        v = data[i[0] + 2:i[0] + 2 + n].decode("utf-8", "replace")
+        i[0] += 2 + n
+        return v
+
+    def u32():
+        v = struct.unpack(">I", data[i[0]:i[0] + 4])[0]
+        i[0] += 4
+        return v
+
+    def cert(alias):
+        utf()
+        n = u32()
+        c = x509_facts(data[i[0]:i[0] + n])
+        i[0] += n
+        if c:
+            c["alias"] = alias
+            f["certs"].append(c)
+    i = [i]
+    f["entries"] = count
+    f["has_private_key"] = False
+    for _n in range(min(count, 500)):
+        tag = u32()
+        alias = utf()
+        i[0] += 8
+        if tag == 1:
+            f["has_private_key"] = True
+            f["encrypted"] = True
+            n = u32()
+            i[0] += n
+            for _c in range(u32()):
+                cert(alias)
+        elif tag == 2:
+            cert(alias)
+        else:
+            f["note"] = "entrées de clé secrète : lecture arrêtée"
+            f["has_private_key"] = True
+            f["encrypted"] = True
+            break
+
+
+def _crypto_openssh(text, f):
+    m = re.search(r"-----BEGIN OPENSSH PRIVATE KEY-----(.*?)-----END", text, re.S)
+    f["has_private_key"] = True
+    if not m:
+        return
+    raw = base64.b64decode(re.sub(r"\s", "", m.group(1)).encode("ascii"))
+    i = len(b"openssh-key-v1\0")
+
+    def s(i):
+        n = struct.unpack(">I", raw[i:i + 4])[0]
+        return raw[i + 4:i + 4 + n], i + 4 + n
+    cipher, i = s(i)
+    _kdf, i = s(i)
+    _opts, i = s(i)
+    i += 4
+    blob, i = s(i)
+    f["encrypted"] = cipher != b"none"
+    f["key_type"] = blob[4:4 + struct.unpack(">I", blob[:4])[0]].decode("ascii", "replace")
+
+
+def crypto_facts(data, lname):
+    """Contenu d'un fichier (bytes) -> description. Ne retient rien du contenu d'une clé."""
+    f = {"kind": "inconnu", "has_private_key": None, "encrypted": None, "certs": []}
+    try:
+        if data[:4] in (b"\xfe\xed\xfe\xed", b"\xce\xce\xce\xce"):
+            f["kind"] = "jks" if data[:1] == b"\xfe" else "jceks"
+            _java_store(data, f)
+        elif b"-----BEGIN " in data[:1 << 20]:
+            text = data.decode("latin-1")
+            f["kind"] = "pem"
+            keys = re.findall(r"-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----", text)
+            if "OPENSSH PRIVATE KEY" in keys:
+                f["key_type"] = "openssh"
+                _crypto_openssh(text, f)
+            elif keys:
+                f["has_private_key"] = True
+                f["key_type"] = keys[0].replace(" PRIVATE KEY", "").replace("PRIVATE KEY", "").strip() or "PKCS8"
+                f["encrypted"] = "ENCRYPTED" in keys[0] or "Proc-Type: 4,ENCRYPTED" in text
+            else:
+                f["has_private_key"] = False
+            f["certs"] = certs_from_pem(text)
+        elif data[:21] == b"PuTTY-User-Key-File-2" or data[:21] == b"PuTTY-User-Key-File-3":
+            m = re.search(br"Encryption: (\S+)", data)
+            f.update({"kind": "ppk", "has_private_key": True, "encrypted": bool(m and m.group(1) != b"none")})
+        elif lname.endswith((".p12", ".pfx")):
+            f["kind"] = "pkcs12"
+        elif lname.endswith(".kdb"):
+            f["kind"] = "gskit-kdb"
+        elif lname.endswith(".sth"):
+            f.update({"kind": "gskit-stash", "note": "mot de passe de base de clés, récupérable par quiconque lit ce fichier"})
+        elif lname == "cwallet.sso" or lname.endswith(".sso"):
+            f.update({"kind": "oracle-wallet", "has_private_key": None, "note": "portefeuille à ouverture automatique, sans mot de passe"})
+        elif data[:1] == b"\x30":
+            c = x509_facts(data)
+            if c:
+                f.update({"kind": "der", "has_private_key": False, "certs": [c]})
+            else:
+                f["kind"] = "der-inconnu"
+    except (struct.error, IndexError, ValueError, TypeError, UnicodeError) as e:
+        f["note"] = "format non décodé : %s" % type(e).__name__
+    f["cert_count"] = len(f["certs"])
+    f["certs"] = f["certs"][:CRYPTO_MAX_CERTS]
+    return f
+
+
+def is_crypto_file(path, lname):
+    if not (lname.endswith(CRYPTO_EXT) or lname in CRYPTO_NAMES or re.match(r"^ssh_host_\w+_key$", lname)):
+        return False
+    return not CRYPTO_TRUST_RX.search(path)
+
+
+# --------------------------------------------------------------------------
+# Points d'entrée : virtualhosts, connecteurs, proxys (Apache, IHS, nginx, Tomcat,
+# JBoss/WildFly, HAProxy). Seules les directives utiles sont retenues.
+# Partagé avec cmdb_shell_parse.py.
+# --------------------------------------------------------------------------
+WEB_FILES = set(["httpd.conf", "apache2.conf", "ports.conf", "ssl.conf", "httpd-vhosts.conf", "httpd-ssl.conf", "vhosts.conf",
+                 "nginx.conf", "haproxy.cfg", "server.xml", "standalone.xml", "standalone-ha.xml", "standalone-full.xml",
+                 "standalone-full-ha.xml", "domain.xml"])
+
+
+def is_web_config(path, lname):
+    if re.search(r"/usr/share/|/samples?/|/docs?/|/examples?/|/tests?/|/site-packages/|/node_modules/", path):
+        return False
+    if lname in WEB_FILES or "/sites-enabled/" in path:
+        return True
+    if lname.endswith(".conf"):
+        return bool(re.search(r"/vhosts\.d/|/(httpd|apache2?|nginx|HTTPServer)/conf\.d/|/nginx/conf\.d/", path))
+    return False
+
+
+def _web_url(url):
+    """Retire d'une URL de proxy tout identifiant éventuel."""
+    m = re.match(r"^([a-z][a-z0-9+]*://)(?:[^/@]*@)?(.*)$", url, re.I)
+    return m.group(1) + m.group(2) if m else url
+
+
+def _listen_addr(text):
+    """*:443, 10.0.0.1:80, [::]:80, 8080 -> (adresse, port)"""
+    text = text.strip()
+    m = re.match(r"^\[([^\]]*)\]:(\d+)$", text) or re.match(r"^([^:]*):(\d+)$", text)
+    if m:
+        return m.group(1) or None, int(m.group(2))
+    return (None, int(text)) if text.isdigit() else (text or None, None)
+
+
+def _ep_apache(text, product):
+    out, cur = [], None
+
+    def ep(**kw):
+        d = {"product": product}
+        d.update(kw)
+        out.append(d)
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s[0] == "#":
+            continue
+        low = s.lower()
+        m = re.match(r"^<virtualhost\s+([^>]+)>", low)
+        if m:
+            cur = {"addrs": s[s.index(" "):].strip(" >\t").split(), "aliases": [], "name": None, "root": None, "tls": False,
+                   "cert": None, "proxies": []}
+            continue
+        if low.startswith("</virtualhost"):
+            if cur:
+                for a in cur["addrs"]:
+                    addr, port = _listen_addr(a)
+                    ep(kind="vhost", address=addr, port=port, server_name=cur["name"], aliases=cur["aliases"], root=cur["root"],
+                       tls=cur["tls"] or port == 443, cert=cur["cert"])
+                for loc, url in cur["proxies"]:
+                    ep(kind="proxy", server_name=cur["name"], location=loc, backend=url)
+            cur = None
+            continue
+        p = s.split()
+        k = p[0].lower()
+        if k == "listen" and len(p) > 1 and cur is None:
+            addr, port = _listen_addr(p[1])
+            ep(kind="listen", address=addr, port=port, tls=len(p) > 2 and p[2].lower() == "https")
+        elif k in ("proxypass", "proxypassmatch") and len(p) > 2 and p[2] != "!":
+            if cur is not None:
+                cur["proxies"].append((p[1], _web_url(p[2])))
+            else:
+                ep(kind="proxy", location=p[1], backend=_web_url(p[2]))
+        elif cur is not None and len(p) > 1:
+            if k == "servername":
+                cur["name"] = re.sub(r"^https?://|:\d+$", "", p[1])
+            elif k == "serveralias":
+                cur["aliases"].extend(p[1:])
+            elif k == "documentroot":
+                cur["root"] = p[1].strip('"')
+            elif k == "sslengine":
+                cur["tls"] = p[1].lower() == "on"
+            elif k == "sslcertificatefile":
+                cur["cert"] = p[1].strip('"')
+    return out
+
+
+def _ep_nginx(text):
+    out, cur, ups = [], None, {}
+
+    def flush(c):
+        if not c:
+            return
+        for addr, port, tls in c["listen"] or [(None, None, False)]:
+            out.append({"product": "nginx", "kind": "vhost", "address": addr, "port": port, "server_name": (c["names"] or [None])[0],
+                        "aliases": c["names"][1:], "root": c["root"], "tls": tls or bool(c["cert"]), "cert": c["cert"]})
+        for loc, url in c["proxies"]:
+            out.append({"product": "nginx", "kind": "proxy", "server_name": (c["names"] or [None])[0], "location": loc, "backend": url})
+    upstream, loc = None, None
+    for line in text.splitlines():
+        s = line.split("#")[0].strip()
+        if not s:
+            continue
+        m = re.match(r"^upstream\s+(\S+)\s*\{", s)
+        if m:
+            flush(cur)
+            cur, upstream = None, m.group(1)
+            ups[upstream] = []
+            continue
+        if re.match(r"^server\s*\{", s):
+            flush(cur)
+            upstream = None
+            cur = {"listen": [], "names": [], "root": None, "cert": None, "proxies": []}
+            continue
+        v = s.rstrip(";").split()
+        if upstream and v[0] == "server" and len(v) > 1:
+            ups[upstream].append(v[1])
+        if cur is None or len(v) < 2:
+            continue
+        if v[0] == "listen":
+            addr, port = _listen_addr(v[1])
+            cur["listen"].append((addr, port, "ssl" in v[2:]))
+        elif v[0] == "server_name":
+            cur["names"].extend(x for x in v[1:] if x != "_")
+        elif v[0] == "root":
+            cur["root"] = v[1]
+        elif v[0] == "ssl_certificate":
+            cur["cert"] = v[1]
+        elif v[0] == "location":
+            loc = v[-2] if v[-1] == "{" and len(v) > 2 else v[-1]
+        elif v[0] == "proxy_pass":
+            cur["proxies"].append((loc, _web_url(v[1])))
+    flush(cur)
+    for e in out:
+        m = re.match(r"^https?://([^/:]+)", e.get("backend") or "")
+        if m and m.group(1) in ups:
+            e["backend"] = "%s (%s)" % (e["backend"], ", ".join(ups[m.group(1)]))
+    return out
+
+
+def _ep_tomcat(text):
+    out = []
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S) if PY3 else re.compile(r"<!--.*?-->", re.S).sub("", text)
+    for m in re.finditer(r"<Connector\b([^>]*)>", text):
+        a = xml_attrs(m.group(1))
+        port = a.get("port")
+        out.append({"product": "tomcat", "kind": "connector", "port": int(port) if (port or "").isdigit() else None, "address": a.get("address"),
+                    "protocol": a.get("protocol"), "tls": a.get("SSLEnabled") == "true" or a.get("scheme") == "https"})
+    host = None
+    for m in re.finditer(r"<(Host|Context|Alias)\b([^>]*)>(?:([^<]*)</Alias>)?", text):
+        a = xml_attrs(m.group(2))
+        if m.group(1) == "Host":
+            host = a.get("name")
+            out.append({"product": "tomcat", "kind": "vhost", "server_name": host, "root": a.get("appBase"), "aliases": []})
+        elif m.group(1) == "Alias" and out and m.group(3):
+            for e in reversed(out):
+                if e["kind"] == "vhost":
+                    e["aliases"].append(m.group(3).strip())
+                    break
+        elif m.group(1) == "Context":
+            out.append({"product": "tomcat", "kind": "context", "server_name": host, "location": a.get("path"), "root": a.get("docBase")})
+    return out
+
+
+def _ep_jboss(text):
+    out = []
+    for m in re.finditer(r"<socket-binding\b([^>]*)>", text):
+        a = dict(re.findall(r'([\w-]+)="([^"]*)"', m.group(1)))
+        name = a.get("name") or ""
+        pm = re.search(r"(\d+)\}?$", a.get("port") or "")
+        if pm and re.match(r"^(http|https|ajp|management)", name):
+            out.append({"product": "jboss", "kind": "connector", "port": int(pm.group(1)), "protocol": name, "tls": "https" in name})
+    return out
+
+
+def _ep_haproxy(text):
+    out, sect, name = [], None, None
+    for line in text.splitlines():
+        s = line.split("#")[0].strip()
+        p = s.split()
+        if not p:
+            continue
+        if p[0] in ("frontend", "backend", "listen", "defaults", "global"):
+            sect, name = p[0], (p[1] if len(p) > 1 else None)
+        elif p[0] == "bind" and len(p) > 1 and sect in ("frontend", "listen"):
+            for one in p[1].split(","):
+                addr, port = _listen_addr(one)
+                out.append({"product": "haproxy", "kind": "frontend", "server_name": name, "address": addr, "port": port,
+                            "tls": "ssl" in p[2:]})
+        elif p[0] == "server" and len(p) > 2 and sect in ("backend", "listen"):
+            out.append({"product": "haproxy", "kind": "proxy", "server_name": name, "location": p[1], "backend": p[2]})
+    return out
+
+
+def parse_endpoints(text, path):
+    if not text:
+        return []
+    name = path.rsplit("/", 1)[-1].lower()
+    if name == "haproxy.cfg":
+        return _ep_haproxy(text)
+    if name == "server.xml":
+        return _ep_tomcat(text)
+    if name.startswith("standalone") or name == "domain.xml":
+        return _ep_jboss(text)
+    if "nginx" in path:
+        return _ep_nginx(text)
+    return _ep_apache(text, "ihs" if "/HTTPServer/" in path else "apache")
+
+
+def phpinfo_filter(text):
+    """Sortie de php -i : l'environnement et les valeurs ressemblant à un secret sont retirés.
+    Même règle que la fonction php_filter du collecteur shell."""
+    out, skip = [], False
+    for line in (text or "").splitlines():
+        if line in ("Environment", "PHP Variables"):
+            skip = True
+            continue
+        if skip:
+            if re.match(r"^[A-Z][A-Za-z ]*$", line) and "=>" not in line:
+                skip = False
+            else:
+                continue
+        if line.startswith("$_"):
+            continue
+        if re.search(r"pass|secret|token|_key\b", line.split("=>")[0], re.I) and "=>" in line:
+            line = line.split("=>")[0] + "=> ***"
+        out.append(re.sub(r"(://)[^/@\s]*@", r"\1***@", line))
+    return "\n".join(out)
 
 
 class Collector(object):
@@ -2309,8 +2873,9 @@ class Collector(object):
         res = dict((k, []) for k in (
             "java_archives", "maven_exploded", "jdk_homes", "python_packages", "python_venvs", "conda_packages",
             "npm_packages", "node_apps", "npm_lockfiles", "composer_installed", "composer_locks", "ruby_gems",
-            "dotnet_deps", "webapps", "js_libraries", "native_libs", "db_datadirs", "db_refs"))
-        stats = {"files": 0, "dirs": 0, "walk_errors": 0, "truncated": False, "db_config_files": 0, "db_config_unreadable": 0}
+            "dotnet_deps", "webapps", "js_libraries", "native_libs", "db_datadirs", "db_refs", "service_modules", "crypto_files", "endpoints"))
+        stats = {"files": 0, "dirs": 0, "walk_errors": 0, "truncated": False, "db_config_files": 0, "db_config_unreadable": 0,
+                 "crypto_files": 0, "p12_attempts": 0}
         t0 = time.time()
         deadline = t0 + a.scan_max_seconds
         excludes = set(a.exclude or [])
@@ -2410,6 +2975,16 @@ class Collector(object):
                     lf = f.lower()
                     if is_db_config(path, lf):
                         self._db_config(path, lf, res, stats, add_owner)
+                    if is_module_config(path, lf) and os.path.isfile(path):
+                        for mod in parse_modules(read_text(path, 1 << 20), path):
+                            mod["path"] = path
+                            res["service_modules"].append(mod)
+                    if is_web_config(path, lf) and os.path.isfile(path):
+                        for ep in parse_endpoints(read_text(path, 2 << 20), path):
+                            ep["path"] = path
+                            res["endpoints"].append(ep)
+                    if is_crypto_file(path, lf):
+                        self._crypto_file(path, lf, res, stats, add_owner)
                     if lf.endswith(ARCHIVE_EXT):
                         if not is_regular(path):
                             continue
@@ -2599,6 +3174,38 @@ class Collector(object):
             r["path"] = path
             res["db_refs"].append(add_owner(r, path))
 
+    def _crypto_file(self, path, lname, res, stats, add_owner):
+        """Fichier de clé ou de certificat : mentionné dans tous les cas, jamais copié."""
+        if not is_regular(path) or stats["crypto_files"] >= CRYPTO_MAX_FILES:
+            return
+        stats["crypto_files"] += 1
+        st = os.lstat(path)
+        data = read_bytes(path, CRYPTO_MAX_READ)
+        f = crypto_facts(data, lname) if data is not None else {
+            "kind": "illisible", "has_private_key": None, "encrypted": None, "certs": [], "cert_count": 0,
+            "note": "illisible pour le compte de collecte"}
+        if f["kind"] == "pkcs12" and stats["p12_attempts"] < CRYPTO_MAX_P12:
+            stats["p12_attempts"] += 1
+            self._pkcs12(path, f)
+        f.update({"path": path, "size": st.st_size, "mode": "%04o" % stat.S_IMODE(st.st_mode), "owner": uid_name(st.st_uid),
+                  "gid": st.st_gid, "mtime": now_iso(st.st_mtime)})
+        res["crypto_files"].append(add_owner(f, path))
+
+    def _pkcs12(self, path, f):
+        """Mot de passe vide uniquement : aucun autre n'est essayé. -nokeys : seuls les certificats sortent."""
+        f["has_private_key"] = None
+        if not which("openssl"):
+            f["note"] = "openssl absent : contenu non lu"
+            return
+        for extra in ([], ["-legacy"]):
+            out = run_out(["openssl", "pkcs12", "-in", path, "-nokeys", "-passin", "pass:"] + extra, 10)
+            certs = certs_from_pem(out)
+            if certs:
+                f.update({"certs": certs[:CRYPTO_MAX_CERTS], "cert_count": len(certs), "empty_password": True})
+                return
+        f["encrypted"] = True
+        f["note"] = "protégé par un mot de passe : contenu non lu"
+
     def resolve_db_hosts(self, refs):
         """Noms des serveurs de bases résolus depuis la cible (getent, budget limité)."""
         if not which("getent"):
@@ -2748,11 +3355,13 @@ class Collector(object):
                 if r is None:
                     break
                 text = ((r["out"] or "") + ("\n" if r["out"] and r["err"] else "") + (r["err"] or ""))
-                if flt:
+                if flt == "PHPINFO":
+                    text = phpinfo_filter(text)
+                elif flt:
                     frx = re.compile(flt)
                     text = "\n".join(l for l in text.splitlines() if frx.search(l))
                 outs.append({"args": args if name != "python" else ["-c", "<probe>"], "rc": r["rc"],
-                             "timeout": r["timeout"], "output": text[:65536]})
+                             "timeout": r["timeout"], "output": text[:524288 if flt == "PHPINFO" else 65536]})
                 if spec[3] == "first" and r["rc"] == 0:
                     break
             entry["outputs"] = outs
