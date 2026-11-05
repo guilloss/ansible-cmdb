@@ -33,7 +33,10 @@ import tarfile
 import uuid
 from urllib.parse import quote
 
-BUILD_VERSION = "1.1.0"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cmdb_extras  # noqa: E402
+
+BUILD_VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Règles de normalisation
@@ -190,7 +193,7 @@ MATRIX_FAMILIES = [
     "aix", "linux-kernel", "glibc", "openssl", "openssh", "sudo", "systemd", "polkit", "xz",
     "java", "php", "php-fpm", "python", "node", "ruby", "perl", "go", "dotnet",
     "websphere", "websphere-nd", "ihs", "websphere-plugin", "db2", "ibm-mq", "sendmail",
-    "postgresql", "postgresql-datadir", "mysql", "mariadb", "mysql-datadir", "mongodb", "redis", "memcached",
+    "oracle-database", "oracle-grid", "oracle-client", "postgresql", "postgresql-datadir", "mysql", "mariadb", "mysql-datadir", "mongodb", "redis", "memcached",
     "nginx", "httpd", "tomcat", "jboss-wildfly-keycloak", "haproxy", "varnish", "squid",
     "docker", "podman", "containerd", "runc", "kubelet",
     "log4j-core", "log4j", "spring-core", "spring-webmvc", "spring-boot", "struts2-core", "jackson-databind",
@@ -305,8 +308,10 @@ class Store(object):
     dans le chemin : un fichier déplacé ou renommé reste correctement rattaché.
     Pour chaque clé on garde la collecte la plus récente (meta.started_at)."""
 
-    def __init__(self, default_app=NA, default_platform=NA, apps=None, platforms=None, hosts=None):
+    def __init__(self, default_app=NA, default_platform=NA, apps=None, platforms=None, hosts=None, history=True):
         self.docs = {}       # clé -> (doc, facts, source)
+        self.previous = {}   # clé -> (doc, source) : avant-dernière collecte, pour les évolutions
+        self.history = history
         self.runs = {}       # run_id -> manifeste
         self.default_app, self.default_platform = default_app, default_platform
         self.filters = (apps or [], platforms or [], hosts or [])
@@ -316,7 +321,7 @@ class Store(object):
     def _match(v, pats):
         return not pats or any(fnmatch.fnmatchcase(v, p) for p in pats)
 
-    def offer(self, doc, facts, source, fallback_host):
+    def offer(self, doc, facts, source, fallback_host, counted=True):
         meta = doc.get("meta") or {}
         tags = meta.get("tags") or {}
         key = (tags.get("app") or self.default_app, tags.get("platform") or self.default_platform,
@@ -324,10 +329,24 @@ class Store(object):
         if not all(self._match(v, f) for v, f in zip(key, self.filters)):
             self.skipped += 1
             return
-        self.read += 1
+        if counted:
+            self.read += 1
         cur = self.docs.get(key)
-        if cur is None or (meta.get("started_at") or "") >= ((cur[0].get("meta") or {}).get("started_at") or ""):
+        stamp = meta.get("started_at") or ""
+        if cur is None or stamp >= ((cur[0].get("meta") or {}).get("started_at") or ""):
+            if cur is not None and (cur[0].get("meta") or {}).get("run_id") != meta.get("run_id"):
+                self._offer_previous(key, cur[0], cur[2])
             self.docs[key] = (doc, facts, source)
+        elif (cur[0].get("meta") or {}).get("run_id") != meta.get("run_id"):
+            self._offer_previous(key, doc, source)
+
+    def _offer_previous(self, key, doc, source):
+        if not self.history:
+            return
+        stamp = (doc.get("meta") or {}).get("started_at") or ""
+        old = self.previous.get(key)
+        if old is None or stamp >= ((old[0].get("meta") or {}).get("started_at") or ""):
+            self.previous[key] = (doc, source)
 
     def add_manifest(self, m, source):
         """_runs/<run_id>/_run.json (en-tête) ou _runs/<run_id>/<app>__<pf>__<hôte>.json (statut d'un hôte)."""
@@ -376,6 +395,17 @@ class Store(object):
                 except (OSError, ValueError):
                     facts = None
             self.offer(doc, facts, path, os.path.basename(d))
+            if self.history:
+                # Collectes horodatées : la plus récente dont le passage diffère de celui de latest
+                for f in reversed(cands):
+                    if f == "latest.json.gz" or f == "%s.json.gz" % rid:
+                        continue
+                    try:
+                        with gzip.open(os.path.join(d, f), "rb") as fh:
+                            self.offer(json.loads(fh.read().decode("utf-8")), None, os.path.join(d, f), os.path.basename(d), counted=False)
+                    except (OSError, ValueError) as e:
+                        print("ERREUR lecture %s : %s" % (f, e), file=sys.stderr)
+                    break
 
     def add_lot(self, lot):
         """Lot transféré depuis une autre plate-forme : lu sans extraction sur disque."""
@@ -481,11 +511,16 @@ CREATE VIEW v_applications AS
          GROUP_CONCAT(DISTINCT os_pretty) AS os
   FROM hosts GROUP BY app, platform ORDER BY app, platform;
 """
+SCHEMA += cmdb_extras.SCHEMA_HOST
 # Toutes les tables de données portent l'application et la plate-forme en tête
 SCHEMA = re.sub(r"CREATE TABLE (\w+) \(host TEXT", r"CREATE TABLE \1 (app TEXT, platform TEXT, host TEXT", SCHEMA)
 SCHEMA += """
 CREATE TABLE runs (run_id TEXT, app TEXT, platform TEXT, host TEXT, status TEXT, collector TEXT, started_at TEXT,
   file TEXT, detail TEXT, manifest TEXT);
+"""
+SCHEMA += cmdb_extras.SCHEMA_GLOBAL
+SCHEMA += """
+CREATE TABLE eol_reference (product TEXT, cycle TEXT, eol TEXT, extended TEXT);
 """
 
 
@@ -493,7 +528,7 @@ CREATE TABLE runs (run_id TEXT, app TEXT, platform TEXT, host TEXT, status TEXT,
 # Extraction
 # ---------------------------------------------------------------------------
 
-class Builder(object):
+class Builder(cmdb_extras.ExtrasMixin):
 
     def __init__(self, db):
         self.db = db
@@ -583,6 +618,7 @@ class Builder(object):
         self.filesystem(host, doc, fs)
         self.go_binaries(host, doc)
         self.process_artifacts(host, doc)
+        self.extras(host, doc)
 
     def hardware(self, host, doc):
         """Tables matériel ; renvoie les colonnes matériel ajoutées à "hosts"."""
@@ -1251,11 +1287,12 @@ def main():
                     help="Inclure aussi dans les SBOM les composants appartenant à un paquet OS (doublons, faux positifs)")
     ap.add_argument("--no-raw-documents", action="store_true", help="Ne pas stocker les documents JSON bruts dans SQLite")
     ap.add_argument("--no-report", action="store_true", help="Ne pas générer le rapport HTML")
+    ap.add_argument("--no-history", action="store_true", help="Ne pas comparer aux collectes précédentes")
     ap.add_argument("--report-exclude-categories", default="",
                     help="Catégories à exclure du rapport HTML pour l'alléger (ex. go-module,npm-package)")
     a = ap.parse_args()
 
-    store = Store(a.default_app, a.default_platform, a.app, a.platform, a.host)
+    store = Store(a.default_app, a.default_platform, a.app, a.platform, a.host, history=not a.no_history)
     dirs = a.store + a.raw
     lots = sorted(set(p for pat in a.lot for p in (glob.glob(pat) or [pat])))
     if not dirs and not lots:
@@ -1285,6 +1322,13 @@ def main():
             b.rows["raw_documents"] = []
         b.flush()
     write_runs(db, store)
+    cmdb_extras.oracle_fleet(db)
+    cmdb_extras.build_db_links(db)
+    for product, cycles in sorted(cmdb_extras.load_eol().items()):
+        db.executemany("INSERT INTO eol_reference VALUES (?,?,?,?)", [(product, c, e, x) for c, (e, x) in sorted(cycles.items())])
+    cmdb_extras.build_eol(db)
+    nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous,
+                                         dict((k, v[0].get("meta") or {}) for k, v in docs.items()))
     db.commit()
     db.close()
     os.replace(tmp, dbpath)
@@ -1305,6 +1349,14 @@ def main():
     if nflr:
         print("FLRTVC (AIX)     : %d hôte(s) dans %s" % (nflr, os.path.join(a.out, "flrtvc")))
     print("Composants       : " + ", ".join("%s=%d" % kv for kv in sorted(stats.items())))
+    one = lambda sql: db.execute(sql).fetchone()[0]
+    print("Oracle           : %d ORACLE_HOME, %d instances, %d en retard de correctifs"
+          % (one("SELECT COUNT(*) FROM oracle_homes"), one("SELECT COUNT(*) FROM db_instances WHERE engine = 'oracle'"),
+             one("SELECT COUNT(*) FROM v_oracle_patch_late")))
+    print("Liens vers bases : %d | points d'entrée : %d | clés et certificats : %d fichiers"
+          % (one("SELECT COUNT(*) FROM db_links"), one("SELECT COUNT(*) FROM endpoints"), one("SELECT COUNT(*) FROM crypto_files")))
+    print("Évolutions       : %d (%d hôte(s) comparé(s)) | fins de support dépassées : %d"
+          % (nchanges, len(store.previous), one("SELECT COUNT(*) FROM v_eol_expired")))
     unmanaged = db.execute("SELECT COUNT(*) FROM v_unmanaged_software").fetchone()[0]
     risky = db.execute("SELECT COUNT(*) FROM v_java_risky").fetchone()[0]
     restart = db.execute("SELECT COUNT(DISTINCT app || '|' || platform || '|' || host || ':' || pid) "
