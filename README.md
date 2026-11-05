@@ -27,7 +27,10 @@ cmdb-ansible/
     ├── cmdb_report.py          # génération du rapport HTML (appelé par cmdb_build.py)
     ├── cmdb_report_template.html # gabarit du rapport (HTML/CSS/JS sans dépendance)
     ├── cmdb_unpack.py          # décodage du mode « flux » (collect_legacy.yml)
-    └── cmdb_shell_parse.py     # conversion des collectes shell (Linux et AIX) au format JSON commun
+    ├── cmdb_shell_parse.py     # conversion des collectes shell (Linux et AIX) au format JSON commun
+    ├── cmdb_extras.py          # consolidation : Oracle, liens vers les bases, clés, évolutions, fins de support
+    └── cmdb_eol.csv            # référentiel des fins de support (éditable)
+tests/                          # python3 -m unittest discover -s tests -t .
 ```
 
 ## Prérequis
@@ -200,6 +203,12 @@ Certaines informations ci-dessous exigent root et manquent donc en collecte non 
 | PHP | `vendor/composer/installed.json`, `composer.lock` ; WordPress, Drupal, Joomla, GLPI, Moodle, MediaWiki, Nextcloud, phpMyAdmin, SPIP, Dolibarr, Roundcube, LimeSurvey, Matomo, CodeIgniter, Zend Framework 1, Smarty, PHPMailer | Applications et frameworks déposés à la main |
 | Autres écosystèmes | Gems Ruby, `*.deps.json` .NET, binaires Go (section `.go.buildinfo` : version de Go et modules), bibliothèques JS en vrac (jQuery, Bootstrap, AngularJS, Moment, TinyMCE…), `.so` hors répertoires système (OpenSSL/curl/zlib embarqués) | Composants vendorisés |
 | Données | Répertoires de données PostgreSQL (`PG_VERSION`) et MySQL/MariaDB, inventaire Oracle (`oratab`, `inventory.xml`, `comps.xml`) | Version réelle du cluster |
+| Oracle | Pour chaque `ORACLE_HOME` (oratab, inventaire central, `olr.loc`, processus) : produit, version, édition, correctifs (`comps.xml`, `inventory/oneoffs`, `.patch_storage`), OPatch, listeners, `tnsnames.ora`, SID configurés | Niveau de correctif réel (voir « Oracle ») |
+| Références de bases | Moteur, hôte, port et base trouvés dans les configurations applicatives. Jamais d'identifiant | Liens applicatifs (voir « Liens vers les bases ») |
+| Modules | Directives de chargement d'Apache, IHS, nginx, PHP, PostgreSQL, Redis, MySQL ; `httpd -M`, `php -m`, `nginx -V` | Ce qui est réellement activé |
+| Points d'entrée | Virtualhosts, connecteurs, contextes et proxys d'Apache, IHS, nginx, Tomcat, JBoss, HAProxy ; `.war` déployés | Ce que le serveur présente, et vers quoi il relaie |
+| Clés et certificats | Tout fichier `.key`, `.pem`, `.crt`, `.p12`, `.jks`, `.keystore`, `.kdb`, `.sth`, `cwallet.sso`, `id_rsa`… : droits, propriétaire, protection ; DN, CN, SAN, dates, algorithmes des certificats | Voir « Clés et certificats » |
+| Réglages PHP | `php -i` et `php-fpm -i` complets, sans l'environnement ni les secrets | Équivalent d'un `phpinfo()`, sans rien déposer sur le serveur |
 | Processus | Ligne de commande (secrets masqués), exécutable et paquet propriétaire, utilisateur, unité systemd, conteneur, variables d'environnement utiles (liste blanche), bibliothèques chargées, **fichiers supprimés encore mappés**, archives Java ouvertes | Ce qui tourne réellement ; processus à redémarrer après correctif |
 | Réseau | Interfaces avec MAC, MAC d'usine (même membre d'un agrégat), type (physique, bond, bridge, VLAN…), rattachements, débit, MTU, pilote, version et firmware (`ethtool -i`), carte PCI ; adresses **avec leur interface** et leurs alias ; routes, DNS, ports en écoute, connexions établies agrégées | Exposition, cartographie des flux, firmwares de cartes |
 | Services | Unités systemd (ExecStart, utilisateur, état), timers, SysV, cron, `at` | |
@@ -210,9 +219,73 @@ Certaines informations ci-dessous exigent root et manquent donc en collecte non 
 
 ## Sécurité et impact sur les serveurs
 
-- **Lecture seule** : rien n'est modifié sur la cible hormis un répertoire temporaire supprimé en fin d'exécution. Priorité basse (`nice 19`, `ionice` idle), budget de temps sur le parcours disque, pas de descente dans les systèmes de fichiers réseau ni dans les données de bases (PostgreSQL, MySQL), les dépôts Git ou les caches `.m2/.gradle/.npm`.
+- **Lecture seule** : rien n'est modifié sur la cible hormis un répertoire temporaire supprimé en fin d'exécution. Le collecteur shell utilise `TMPDIR` s'il est défini. Sont en plus lus : les fichiers de configuration applicatifs (limités aux références de bases) et les fichiers de clés (seules les métadonnées sont retenues). Priorité basse (`nice 19`, `ionice` idle), budget de temps sur le parcours disque, pas de descente dans les systèmes de fichiers réseau ni dans les données de bases (PostgreSQL, MySQL), les dépôts Git ou les caches `.m2/.gradle/.npm`.
 - **Exécution de binaires** : seuls les ELF (et une courte liste de scripts appartenant à un paquet) dont le nom correspond à une sonde connue sont exécutés, avec un environnement propre, et **seulement si le binaire et tous ses répertoires parents sont sous le contrôle de root** (ou du compte de collecte lui-même) et non modifiables par d'autres. Un binaire déposé par un autre compte n'est jamais exécuté, puisqu'il ferait tourner son code sous l'identité du compte de collecte ; sa version est alors lue par empreinte statique. Un lien symbolique homonyme vers un autre programme n'est pas suivi. (Si le collecteur est un jour lancé en root hors de ces playbooks, un binaire non fiable est exécuté sous l'identité de son propriétaire, jamais en root.)
 - **Secrets** : les mots de passe, jetons et identifiants dans les URL sont masqués (`***`) dans les lignes de commande, `ExecStart`, crontabs, fichiers de dépôts et `profile.d`. Les variables d'environnement des processus sont filtrées par liste blanche (`JAVA_HOME`, `CATALINA_HOME`, `PATH`…). Le masquage est heuristique : **les fichiers produits restent sensibles** (comptes, sudoers, règles de pare-feu, cartographie réseau) et doivent être protégés et classifiés en conséquence.
+
+## Oracle
+
+Aucune connexion aux bases et aucune exécution d'`opatch` : il appartient au compte `oracle`, il échapperait donc à la règle d'exécution ci-dessus, et il écrit dans `cfgtoollogs`. Seuls des fichiers sont lus.
+
+Le collecteur tourne sous un compte non privilégié : ce qu'il voit dépend des droits sur chaque serveur. La colonne `visibility` de `oracle_homes` l'indique :
+
+| Valeur | Sens |
+|---|---|
+| `complet` | `comps.xml` lisible : liste complète des correctifs. Ajouter le compte de collecte au groupe `oinstall` donne en général ce niveau |
+| `partiel` | Seuls les noms de répertoires des correctifs sont visibles : numéros connus, descriptions absentes |
+| `aucun` | `ORACLE_HOME` illisible ; la version est déduite du chemin. Le rapport affiche « non visible » plutôt qu'un niveau faux |
+
+- **Niveau de correctif** (`patch_level`) : la Release Update, le PSU ou le Bundle Patch le plus récent, avec sa date tirée du numéro de version. `behind_fleet` signale un home plus ancien qu'un autre de la même branche sur le parc. Oracle n'étant pas couvert par les scanners de SBOM, cette comparaison remplace le croisement CVE ; `famille:oracle-database <19.23` fonctionne dans la recherche du rapport.
+- **Limite importante** : un binaire corrigé ne prouve pas que `datapatch` a été passé sur la base. Seule une requête SQL pourrait le vérifier, et l'outil n'en fait aucune.
+- **Instances** (`db_instances`) : `oratab` confronté aux processus `*_pmon_*`, soit démarrée, arrêtée, ou démarrée hors `oratab`. Rôle standby déduit de `mrp0`/`pr00`, RAC de `lms0`, Grid de `ocssd`. Avec `hidepid`, l'état est « inconnu ». PostgreSQL, MySQL, MongoDB et Redis y figurent aussi.
+- **Licences** (`oracle_licence`) : édition, cœurs, partitionnement, estimation avec les facteurs de cœur x86 (0,5) et POWER (1,0). **Purement indicatif** : les options utilisées ne sont pas visibles sans SQL, et une VM ne dit rien du cluster qu'Oracle peut exiger de licencier. L'édition est lue dans l'inventaire ; la vérifier.
+
+## Liens vers les bases
+
+La table `db_links` répond à « quels serveurs utilisent cette base ? » et « de quelles bases dépend cette application ? ». Elle couvre Oracle, PostgreSQL, MySQL/MariaDB, SQL Server, DB2, MongoDB, Redis, pgbouncer et pgpool, en combinant :
+
+| Source | Apporte | Limite |
+|---|---|---|
+| Connexions établies, côté client et côté serveur | Ce qui se passe réellement, y compris les clients hors inventaire | Photo de l'instant de la collecte |
+| Titres des processus PostgreSQL (`postgres: compte base 10.0.0.5(4500) idle`) | Base, compte et client, sans se connecter ; réplication via `walsender` | Invisible avec `hidepid` |
+| Configurations applicatives | Les liens inactifs au moment du passage | Une configuration peut être obsolète |
+| Alias TNS et `tnsnames.ora` | Résolution d'un `jdbc:oracle:thin:@ALIAS` | Le fichier doit être sur le serveur client |
+| Lignes de commande | `-Dspring.datasource.url=jdbc:...` | |
+
+`status` vaut `actif` si le lien a été observé, `configuré` s'il n'existe que dans un fichier. Un client ou un serveur hors de l'inventaire est conservé avec son adresse. Les noms sont résolus depuis la cible (`getent`, 40 noms et 30 secondes au plus, collecteur Python) ou par `/etc/hosts` ; le collecteur shell ne résout pas, et un alias DNS inconnu reste alors « hors inventaire ». Un même IP privé sur deux plates-formes est rattaché de préférence à la plate-forme du client.
+
+Formats reconnus : JDBC (PostgreSQL, MySQL, MariaDB, Oracle sous toutes ses formes, SQL Server, DB2), URI (`postgres://`, SQLAlchemy, `mongodb://`, `redis://`), PDO, libpq, ADO.NET, `.env` et variables `DB_*`/`PG*`, WordPress, Rails, Django, ODBC, `pg_service.conf`, `my.cnf`, pgbouncer, `tnsnames.ora`, descripteurs Oracle en ligne.
+
+**Secrets** : seuls moteur, hôte, port et base sortent du serveur. Le collecteur Python n'en retient rien d'autre ; le collecteur shell, qui n'interprète pas, expurge ces fichiers sur le serveur avant de les transmettre. Les tests vérifient qu'un mot de passe placé dans chaque format n'apparaît ni dans l'archive ni dans le JSON. Fichiers lus : 256 Ko au plus, 20 000 fichiers au plus ; les répertoires d'exemples, de tests et de dépendances sont ignorés.
+
+## Services réseau
+
+- **Points d'entrée** (`endpoints`) : virtualhosts, ports, TLS, certificat, racine, alias et cibles de proxy. `listening` indique si le port est réellement en écoute. Les directives `Include` ne sont pas suivies : les fichiers sont trouvés par leur emplacement habituel (`sites-enabled`, `conf.d`, `vhosts.d`).
+- **Langages exposés** (`runtime_services`) : pour chaque port en écoute, le langage qui répond (Java, Python, Node, PHP, Ruby, Perl, .NET), sa version, l'application (classe principale, jar, script) et les options de JVM.
+- **Modules** (`service_modules`) : `source` précise la configuration ou la commande. Les directives entourées de `<IfModule>` sont comptées comme actives.
+- **Réglages PHP** (`runtime_settings`) : tout `php -i` et `php-fpm -i`. `php-fpm -i` reflète la configuration du service, là où `php -i` reflète celle de la ligne de commande. Une configuration propre à un virtualhost (`php_admin_value`, `.user.ini`) n'y figure pas : aucune page `phpinfo()` n'est déposée ni appelée.
+
+## Clés et certificats
+
+Tout fichier repéré figure dans `crypto_files`, même illisible, hors magasins de confiance du système (`/etc/ssl/certs`, `ca-trust`, `certifi`).
+
+| Format | Sans mot de passe, on obtient |
+|---|---|
+| PEM, DER | Certificats complets ; présence d'une clé, type, chiffrée ou non |
+| JKS, JCEKS | Alias et certificats (en clair dans ces formats) ; collecteur shell : uniquement si `keytool` est présent |
+| PKCS#12 | **Mot de passe vide uniquement** via `openssl`, aucun autre n'est essayé. Un succès est une anomalie signalée. Sinon : « protégé par un mot de passe » |
+| Clés OpenSSH, PuTTY | Type, chiffrée ou non |
+| GSKit `.kdb`, `.sth`, portefeuille Oracle `.sso` | Mentionnés. `.sth` et `.sso` signalés : ils donnent accès sans mot de passe |
+
+Le contenu d'une clé n'est jamais conservé ni transmis. Le collecteur shell n'en lit que l'en-tête et ne copie que les blocs `CERTIFICATE`. Alertes : `v_private_keys_exposed` (lisible par tous, ou PKCS#12 sans mot de passe), `v_certs_expiring` (moins de 90 jours). Une clé en clair lisible par son seul propriétaire n'est pas une alerte : c'est le cas normal d'un serveur web.
+
+## Évolutions
+
+Le magasin garde chaque collecte : `cmdb_build.py` compare les deux dernières de chaque serveur et alimente `changes` (paquets, composants, ports, comptes, correctifs Oracle, instances, modules, points d'entrée, clés). Ce qui apparaît avec une nouvelle version du collecteur n'est pas compté comme une évolution. `--no-history` désactive la comparaison.
+
+## Fins de support
+
+`tools/cmdb_eol.csv` donne les dates par produit et par cycle : `eol_status` les applique aux systèmes et composants, `v_eol_expired` liste les dépassements. Ce fichier est un relevé de <https://endoflife.date> du 5 novembre 2026, à tenir à jour et à confirmer auprès des éditeurs. Pour un composant issu d'un paquet de distribution (`managed = 1`), la date amont est indicative : le support suit celui du système, et le rapport n'en fait pas une alerte.
 
 ## Résultats de la consolidation (`build/`)
 
@@ -270,6 +343,29 @@ FROM filesystems WHERE used_pct >= 85 ORDER BY used_pct DESC;
 SELECT * FROM runs r WHERE status != 'ok' AND started_at = (SELECT MAX(started_at) FROM runs x
   WHERE x.app = r.app AND x.platform = r.platform AND x.host = r.host);
 
+-- Quelles applications utilisent cette base ?
+SELECT client_host, client_addr, database, db_user, status, sources FROM db_links
+WHERE server_host = 'pg01.exemple.test' ORDER BY status, client_host;
+
+-- De quelles bases dépend une application ?
+SELECT DISTINCT client_host, engine, COALESCE(server_host, server_addr) AS serveur, port, database, status
+FROM db_links WHERE client_app = 'APPDEMO' AND client_platform = 'prod';
+
+-- Niveau de correctif Oracle du parc
+SELECT product, patch_level, COUNT(*) AS homes FROM oracle_homes GROUP BY product, patch_level ORDER BY patch_level;
+
+-- ORACLE_HOME dont on ne connaît pas le niveau (droits insuffisants)
+SELECT * FROM v_oracle_patch_unknown;
+
+-- Tous les virtualhosts en TLS
+SELECT host, product, server_name, port, cert FROM endpoints WHERE kind = 'vhost' AND tls = 1;
+
+-- Certificats par expiration
+SELECT host, cn, not_after, days_left, path FROM crypto_certs WHERE is_ca = 0 ORDER BY days_left;
+
+-- Ce qui a changé sur un serveur
+SELECT to_at, kind, change, item, before, after FROM changes WHERE host = 'web01.exemple.test';
+
 -- Une information brute non modélisée : recherche dans le document JSON d'origine
 SELECT host, json_extract(document, '$.security.crypto_policy') FROM raw_documents;
 ```
@@ -283,6 +379,7 @@ SELECT host, json_extract(document, '$.security.crypto_policy') FROM raw_documen
 - **Logiciels** : recherche dans tout l'inventaire (paquets, runtimes, jars, pip, npm, composer, applications web…), avec filtres par nature et par gestion (paquet de distribution ou non), vue « une ligne par installation » ou « regrouper par version », export CSV.
 - **Versions** : la matrice serveur × composant ; les installations hors paquet apparaissent en étiquettes ambre ; un clic sur une version liste les serveurs concernés.
 - **Serveurs** et **fiche serveur** : synthèse (application, plate-forme, passage, matériel, BIOS, série, visibilité de la collecte), réseau (interfaces, IP, MAC, MAC d'usine, pilotes et firmwares), stockage (systèmes de fichiers avec jauge d'occupation, disques) et matériel, composants, ports et services, alertes.
+- **Bases de données** : instances, liens applicatifs, `ORACLE_HOME`, correctifs, licences. **Services réseau** : points d'entrée, langages exposés, modules, réglages PHP. **Clés et certificats**, **Fins de support**, **Évolutions**. La fiche serveur reprend ces vues pour le serveur affiché.
 - **Exposition**, **Matériel** (interfaces, systèmes de fichiers triés par occupation, disques, PCI, Fibre Channel, mémoire de tout le parc) et **Alertes**.
 
 Syntaxe de recherche : les mots se combinent (ET) ; `<2.17.1`, `<=`, `>`, `>=`, `=` comparent la version ; `serveur:`, `app:`, `pf:`, `famille:`, `cat:`, `chemin:`, `paquet:`, `purl:` restreignent un champ. Exemples : `log4j-core <2.17.1`, `famille:java <11`, `php <8 serveur:web`, `chemin:/opt =5.4.2`. Une adresse IP ou MAC tapée dans la recherche retrouve le serveur.
@@ -316,6 +413,7 @@ Les images de conteneurs (table `containers`) sont à scanner séparément (`tri
 
 ## Limites connues
 
+- Les fonctions Oracle, liens, modules, points d'entrée et clés ont été validées sur des fichiers et des collectes fabriqués, pas sur de vrais serveurs Oracle, Tomcat ou AIX : les formats d'inventaire Oracle viennent de la documentation et d'exemples, à confronter à vos fichiers. Le collecteur shell a été exécuté sous dash, bash, `bash --posix` et busybox, pas sous ksh.
 - Les binaires compilés statiquement (hors Go) et les bibliothèques C recopiées sous un autre nom ne sont pas identifiés ; OpenSSL, curl et zlib embarqués le sont par recherche de chaînes.
 - Les versions issues de noms de fichiers (jars sans `pom.properties`, bibliothèques JS) sont des indices, pas des preuves ; le SHA-1 des archives permet une identification exacte a posteriori (recherche par empreinte sur Maven Central).
 - Le format de buildinfo des binaires Go antérieurs à Go 1.18 n'est pas décodé (signalé comme tel).
@@ -323,10 +421,21 @@ Les images de conteneurs (table `containers`) sont à scanner séparément (`tri
 - AIX : validé en environnement simulé seulement (voir « AIX ») ; `df` y porte sur tous les systèmes de fichiers montés, réseau compris, sous le délai maximal de la commande.
 - Testé de bout en bout sur Ubuntu 24.04, en root et sous un compte non privilégié (playbooks compris) : collecteur Python exécuté en 3.8 et 3.13 ; collecteur shell exécuté sous bash, `bash --posix`, dash et busybox (y compris dans un environnement réduit à busybox, sans Python, unzip ni base64). La compatibilité Python 2.6/2.7/3.6 du collecteur et Python 2.3 de l'inspecteur Java embarqué dans le shell est vérifiée par analyse statique (`vermin`) et, pour ce dernier, par un harnais simulant la sémantique des chaînes Python 2. À confirmer sur un hôte réel de chaque génération (CentOS 4/5/6/7, Debian 7) avant généralisation.
 
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+Les collecteurs y sont réellement exécutés (Python, dash, bash, busybox) sur une arborescence fabriquée, les clés sont produites par `openssl`, et le JavaScript du rapport tourne sous Node sur chaque page si `node` est installé.
+
 ## Étendre
 
 - **Nouvelle sonde de version** : ajouter une ligne à `PROBES` dans `cmdb_collector.py` (nom, regex du nom de binaire, arguments) et, si besoin, une regex dans `PROBE_VERSION_RX` de `cmdb_build.py`.
 - **Nouvelle application PHP** : une ligne dans `WEBAPP_RULES` (fichier, suffixe de répertoire, produit, regex).
+- **Nouveau format de chaîne de connexion** : `extract_db_refs` dans `cmdb_collector.py`, plus un cas dans `tests/test_db_refs.py` (`Secrets` pour vérifier qu'aucun identifiant ne sort). Le collecteur shell doit laisser passer les lignes utiles : voir `grab_dbcfg`.
+- **Nouveau produit web** : `parse_endpoints` ; **nouveau type de module** : `parse_modules`. Ajouter les fichiers à `grab_mod` côté shell.
+- **Fin de support** : une ligne dans `tools/cmdb_eol.csv`.
 - **Nouvelle colonne de matrice** : ajouter la famille à `MATRIX_FAMILIES` ; pour la rattacher à des paquets OS, compléter `PKG_FAMILIES`.
 - Les règles de parsing étant côté consolidation, une amélioration s'applique à tout l'historique en relançant `cmdb_build.py`, sans recollecter.
 

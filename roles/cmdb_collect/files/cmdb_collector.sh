@@ -199,7 +199,7 @@ bin_match() {   # FICHIER MOTIF_BRE -> première occurrence
 
 # Nature d'un fichier exécutable : elf (Linux), xcoff (AIX 32/64 bits) ou autre
 bin_kind() {
-    _bk=$(dd if="$1" bs=4 count=1 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+    _bk=$(dd if="$1" bs=4 count=1 2>/dev/null | od -A n -t x1 2>/dev/null | tr -d ' \n')
     case "$_bk" in 7f454c46*) echo elf ;; 01df*|01f7*) echo xcoff ;; *) echo other ;; esac
 }
 is_bin() { case "$(bin_kind "$1")" in elf|xcoff) return 0 ;; esac; return 1; }

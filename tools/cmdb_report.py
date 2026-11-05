@@ -25,6 +25,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "cmdb_report_template.html")
 
 
+# Réglages PHP repris dans le rapport ; tous les autres restent dans runtime_settings
+PHP_KEYS = ("PHP Version", "Server API", "Loaded Configuration File", "expose_php", "display_errors", "allow_url_fopen", "allow_url_include",
+            "disable_functions", "open_basedir", "memory_limit", "upload_max_filesize", "post_max_size", "max_execution_time",
+            "session.cookie_secure", "session.cookie_httponly", "opcache.enable", "date.timezone")
+
+
 def table(db, sql, params=()):
     cur = db.execute(sql, params)
     return {"cols": [c[0] for c in cur.description], "rows": [list(r) for r in cur]}
@@ -65,6 +71,20 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
             WHERE r.status != 'ok' AND r.started_at = (SELECT MAX(started_at) FROM runs x
                   WHERE x.app = r.app AND x.platform = r.platform AND x.host = r.host)
             ORDER BY r.app, r.platform, r.host"""),
+        "oracle_homes": table(db, "SELECT * FROM oracle_homes ORDER BY %s, home" % K),
+        "oracle_patches": table(db, "SELECT * FROM oracle_patches ORDER BY %s, home, patch_date DESC" % K),
+        "db_instances": table(db, "SELECT * FROM db_instances ORDER BY %s, engine, instance" % K),
+        "oracle_licence": table(db, "SELECT * FROM oracle_licence ORDER BY %s" % K),
+        "links": table(db, "SELECT * FROM db_links ORDER BY engine, server_host, client_host"),
+        "modules": table(db, "SELECT * FROM service_modules ORDER BY %s, product, module" % K),
+        "endpoints": table(db, "SELECT * FROM endpoints ORDER BY %s, product, kind, port" % K),
+        "crypto_files": table(db, "SELECT * FROM crypto_files ORDER BY %s, path" % K),
+        "crypto_certs": table(db, "SELECT * FROM crypto_certs ORDER BY days_left"),
+        "runtime_services": table(db, "SELECT * FROM runtime_services ORDER BY %s, port" % K),
+        "php_settings": table(db, "SELECT app, platform, host, runtime, binary, key, value FROM runtime_settings WHERE key IN (%s) "
+                                  "ORDER BY %s, binary, key" % (",".join("'%s'" % k for k in PHP_KEYS), K)),
+        "changes": table(db, "SELECT * FROM changes ORDER BY to_at DESC, %s, kind LIMIT 50000" % K),
+        "eol": table(db, "SELECT * FROM eol_status ORDER BY days_left"),
     }
     # Logiciels : table la plus volumineuse -> chaînes dédoublonnées (interning)
     strings, index = [], {}

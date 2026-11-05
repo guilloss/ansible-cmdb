@@ -380,7 +380,9 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 
 // ---------------------------------------------------------------- périmètre
 const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers",
-  "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed"];
+  "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
+  "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
+  "runtime_services", "php_settings", "changes", "eol"];
 function applyScope() {
   const on = SCOPE.app || SCOPE.pf;
   const keep = (a, p) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf);
@@ -391,6 +393,9 @@ function applyScope() {
     const ia = t.cols.indexOf("app"), ip = t.cols.indexOf("platform");
     D[k] = on ? {cols: t.cols, rows: t.rows.filter(r => keep(r[ia], r[ip]))} : t;
   }
+  // Un lien concerne le périmètre dès qu'un de ses deux côtés y est
+  const LK = D0.links, lc = c => LK.cols.indexOf(c);
+  D.links = on ? {cols: LK.cols, rows: LK.rows.filter(r => keep(r[lc("client_app")], r[lc("client_platform")]) || keep(r[lc("server_app")], r[lc("server_platform")]))} : LK;
   const s = D0.sw, ia = s.cols.indexOf("app"), ip = s.cols.indexOf("platform");
   D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(s.strings[r[ia]], s.strings[r[ip]])) : s.rows});
   const M = D0.matrix;
@@ -444,8 +449,14 @@ function prepare() {
     errors: rowsOf(D.errors).length,
     failed: rowsOf(D.runs_failed).length,
     fsfull: D.fsfull.length,
+    keys: rowsOf(D.crypto_files).filter(keyExposed).length,
+    certs: rowsOf(D.crypto_certs).filter(c => !c.is_ca && c.days_left != null && c.days_left <= 30).length,
+    oracle: rowsOf(D.oracle_homes).filter(oracleLate).length,
+    eol: rowsOf(D.eol).filter(e => e.status === "expiré" && (!e.managed || e.location === "système")).length,
   };
 }
+const keyExposed = f => (f.has_private_key || ["gskit-stash", "oracle-wallet", "pkcs12"].includes(f.kind)) && (f.world_readable || f.empty_password);
+const oracleLate = h => h.present && ["database", "grid"].includes(h.product) && (h.patch_age_days >= 200 || h.behind_fleet);
 function lowerStrings() { if (!D0.sw.lower) D0.sw.lower = D0.sw.strings.map(x => x.toLowerCase()); return D0.sw.lower; }
 const swHk = r => hkey(SW.strings[r[SW.C.app]], SW.strings[r[SW.C.platform]], SW.strings[r[SW.C.host]]);
 function swVal(r, k) { return SW.strings[r[SW.C[k]]]; }
@@ -508,12 +519,14 @@ function searchHosts(q) {
 // ---------------------------------------------------------------- vues
 const ROUTES = [
   ["accueil", "Accueil"], ["serveurs", "Serveurs"], ["logiciels", "Logiciels"], ["versions", "Versions"],
-  ["exposition", "Exposition"], ["materiel", "Matériel"], ["alertes", "Alertes"],
+  ["bases", "Bases de données"], ["services", "Services réseau"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
+  ["materiel", "Matériel"], ["support", "Fins de support"], ["evolutions", "Évolutions"], ["alertes", "Alertes"],
 ];
 function navCounts() {
   const a = D.alerts;
-  return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length,
-    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull};
+  return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
+    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length,
+    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol};
 }
 function renderNav(route) {
   const c = navCounts();
@@ -543,11 +556,15 @@ function vAccueil() {
     ["deleted", a.deleted, "risk", "Binaires supprimés encore en cours d'exécution", "Version lue en mémoire ; mise à jour non prise en compte", "alertes"],
     ["restart", a.restart, "warn", "Processus à redémarrer", "Bibliothèques remplacées sur disque, ancienne version encore chargée", "alertes"],
     ["reboot", a.reboot, "warn", "Serveurs à redémarrer", "Noyau ou bibliothèques système mis à jour", "alertes"],
+    ["keys", a.keys, "risk", "Clés privées exposées", "Lisibles par tous les comptes, ou PKCS#12 sans mot de passe", "cles"],
+    ["certs", a.certs, "warn", "Certificats expirés ou à moins de 30 jours", "Certificats hors autorités", "cles?onglet=certs"],
+    ["oracle", a.oracle, "warn", "ORACLE_HOME en retard de correctifs", "Plus de 200 jours, ou plus ancien que le reste du parc", "bases?onglet=homes"],
+    ["eol", a.eol, "warn", "Fins de support dépassées", "Systèmes et composants hors paquet", "support"],
     ["fsfull", a.fsfull, "warn", "Systèmes de fichiers presque pleins", "Occupation ou inodes à 90 % ou plus", "alertes"],
     ["failed", a.failed, "warn", "Serveurs non collectés au dernier passage", "Injoignables ou en échec : la fiche affichée est plus ancienne", "alertes"],
     ["partial", a.partial, "", "Collectes partielles", "Sans root ou parcours disque interrompu : couverture réduite", "serveurs"],
   ];
-  const famBlocks = ["java", "php", "python", "openssl", "nginx", "httpd", "postgresql", "tomcat"]
+  const famBlocks = ["oracle-database", "postgresql", "java", "php", "python", "openssl", "nginx", "httpd", "tomcat"]
     .map(f => ({f, items: famVersions(f)})).filter(x => x.items.length).slice(0, 4);
   return `<section class="hero">
     <h2>Quel serveur fait tourner quoi, et dans quelle version&nbsp;?</h2>
@@ -557,7 +574,7 @@ function vAccueil() {
       <button class="btn" type="submit">Rechercher</button>
     </form>
     <div class="examples"><span class="hint">Exemples :</span>
-      ${["log4j-core <2.17.1", "famille:java <11", "php <8", "openssl 1.0", "jquery <3.5", "struts", "tomcat"].map(x => `<a href="${link("logiciels", {q: x})}">${esc(x)}</a>`).join("")}
+      ${["log4j-core <2.17.1", "famille:oracle-database <19.23", "famille:java <11", "php <8", "openssl 1.0", "jquery <3.5", "struts", "tomcat"].map(x => `<a href="${link("logiciels", {q: x})}">${esc(x)}</a>`).join("")}
     </div>
   </section>
   <div class="facts">
@@ -572,7 +589,7 @@ function vAccueil() {
   <div class="cols">
     <section><h3>À traiter</h3><ul class="todo">
       ${todo.map(([k, n, cls, t, d, r]) => `<li class="${n ? cls : "clear"}"><span class="n">${fmt(n)}</span>
-        <span><a class="t" href="${link(r)}">${esc(t)}</a><br><span class="d">${n ? esc(d) : "Rien à signaler."}</span></span></li>`).join("")}
+        <span><a class="t" href="${r.includes("?") ? link(r.split("?")[0], Object.fromEntries(new URLSearchParams(r.split("?")[1]))) : link(r)}">${esc(t)}</a><br><span class="d">${n ? esc(d) : "Rien à signaler."}</span></span></li>`).join("")}
     </ul></section>
     <section><h3>Répartition</h3>
       ${bars(Object.entries(osCount).sort((x, y) => y[1] - x[1]).slice(0, 8).map(([l, v]) => ({label: l, value: v, href: link("serveurs", {q: l})})), {title: "Systèmes d'exploitation (serveurs)", unit: "serveur(s)"})}
@@ -640,7 +657,7 @@ function vServeur(key, params) {
   const host = h.hk;
   const tab = params.get("onglet") || "synthese";
   const tabs = [["synthese", "Synthèse"], ["reseau", "Réseau"], ["stockage", "Stockage et matériel"], ["composants", "Composants"],
-    ["exposition", "Ports et services"], ["alertes", "Alertes"]];
+    ["exposition", "Ports et services"], ["bases", "Bases"], ["web", "Services réseau"], ["cles", "Clés"], ["evolutions", "Évolutions"], ["alertes", "Alertes"]];
   const base = "serveur/" + encodeURIComponent(host);
   const others = rowsOf(D0.hosts).filter(x => x.host === h.host && x.hk !== h.hk);
   const dl = pairs => `<dl class="dl">${pairs.filter(p => p[1] != null && p[1] !== "").map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
@@ -708,6 +725,17 @@ function vServeur(key, params) {
       {k: "description", l: "Description"}], hostRows("services"), {sort: "unit", empty: "Aucun service actif relevé (systemd absent ou collecte shell sur système SysV)."})
       + (hostRows("containers").length ? `<h3>Conteneurs et images</h3>` + table([{k: "engine", l: "Moteur"}, {k: "kind", l: "Type"},
       {k: "name", l: "Nom"}, {k: "image", l: "Image"}, {k: "status", l: "État"}], hostRows("containers")) : "");
+  } else if (tab === "bases") {
+    const mine = rowsOf(D.links).filter(l => hkey(l.client_app, l.client_platform, l.client_host) === host || hkey(l.server_app, l.server_platform, l.server_host) === host);
+    body = `<h3>Instances</h3>` + instancesTable(hostRows("db_instances"), host) + (hostRows("oracle_homes").length ? `<h3>ORACLE_HOME</h3>` + oracleHomesTable(hostRows("oracle_homes"), host) : "")
+      + `<h3>Liens avec des bases</h3>` + linksTable(mine);
+  } else if (tab === "web") {
+    body = `<h3>Points d'entrée</h3>` + endpointsTable(hostRows("endpoints"), host) + `<h3>Langages exposés</h3>` + runtimesTable(hostRows("runtime_services"), host)
+      + `<h3>Modules activés</h3>` + modulesTable(hostRows("modules"), host);
+  } else if (tab === "cles") {
+    body = `<h3>Fichiers</h3>` + keysTable(hostRows("crypto_files"), host) + `<h3>Certificats</h3>` + certsTable(hostRows("crypto_certs"), host);
+  } else if (tab === "evolutions") {
+    body = changesTable(hostRows("changes"), host);
   } else if (tab === "alertes") {
     body = alertsHtml(host);
   }
@@ -852,11 +880,151 @@ function vMateriel(params) {
     ${body}`;
 }
 
+
+// ---------------------------------------------------------------- pages à onglets
+function tabbed(route, title, lede, tabs, params, placeholder) {
+  const tab = params.get("onglet") || tabs[0][0];
+  const f = (params.get("q") || "").toLowerCase();
+  const m = rows => f ? rows.filter(o => Object.values(o).join(" ").toLowerCase().includes(f)) : rows;
+  const cur = tabs.find(t => t[0] === tab) || tabs[0];
+  return `<h2>${esc(title)}</h2><p class="lede">${lede}</p>
+    <div class="tabs">${tabs.map(([k, l]) => `<a href="${link(route, {onglet: k})}"${k === cur[0] ? ' aria-current="page"' : ""}>${esc(l)}</a>`).join("")}</div>
+    <div class="toolbar"><input type="text" id="pgfilter" value="${esc(f)}" placeholder="${esc(placeholder)}" aria-label="Filtrer"></div>
+    ${cur[2](m)}`;
+}
+const hcolOf = host => host ? [] : [{k: "host", l: "Serveur", f: o => hostCell(o)}];
+const day = v => v ? esc(String(v).slice(0, 10)) : "";
+const yes = (v, cls) => v ? `<span class="badge ${cls || ""}">oui</span>` : (v === 0 ? "non" : "");
+
+function oracleHomesTable(rows, host) {
+  return table(hcolOf(host).concat([
+    {k: "home", l: "ORACLE_HOME", cls: "path"}, {k: "product", l: "Produit"}, {k: "version", l: "Version"}, {k: "edition", l: "Édition"},
+    {k: "patch_level", l: "Niveau de correctif", f: h => h.patch_level ? `<b>${esc(h.patch_level)}</b>` : (h.visibility === "complet" ? "aucun correctif trimestriel" : '<span class="badge warn">non visible</span>')},
+    {k: "patch_date", l: "Date", f: h => day(h.patch_date)},
+    {k: "patch_age_days", l: "Âge (jours)", cls: "num", f: h => h.patch_age_days == null ? "" : (oracleLate(h) ? `<span class="badge warn">${fmt(h.patch_age_days)}</span>` : fmt(h.patch_age_days))},
+    {k: "behind_fleet", l: "Retard sur le parc", f: h => h.behind_fleet ? '<span class="badge warn">oui</span>' : ""},
+    {k: "visibility", l: "Visibilité", f: h => h.visibility === "complet" ? "complète" : `<span class="badge warn">${esc(h.visibility)}</span>`},
+    {k: "in_use", l: "Utilisé", f: h => h.in_use ? "oui" : '<span class="badge muted">non</span>'},
+    {k: "opatch_version", l: "OPatch"}]), rows, {empty: "Aucun ORACLE_HOME."});
+}
+function instancesTable(rows, host) {
+  return table(hcolOf(host).concat([
+    {k: "engine", l: "Moteur"}, {k: "instance", l: "Instance", cls: "mono"},
+    {k: "status", l: "État", f: i => i.status === "démarrée" ? '<span class="badge ok">démarrée</span>' : `<span class="badge warn">${esc(i.status)}</span>`},
+    {k: "role", l: "Rôle"}, {k: "cluster", l: "Cluster"}, {k: "version", l: "Version"}, {k: "patch_level", l: "Correctif"},
+    {k: "ports", l: "Ports"}, {k: "home", l: "Home ou données", cls: "path", f: i => esc(i.home || i.datadir || "")}]), rows, {empty: "Aucune instance détectée."});
+}
+const side = (app, pf, host, addr) => host ? hostLabel(app, pf, host) : `<span class="mono">${esc(addr || "inconnu")}</span> <span class="badge muted">hors inventaire</span>`;
+function linksTable(rows) {
+  return table([
+    {k: "client_host", l: "Client", f: o => side(o.client_app, o.client_platform, o.client_host, o.client_addr), sortv: o => o.client_host || o.client_addr},
+    {k: "client_process", l: "Processus"},
+    {k: "server_host", l: "Serveur de base", f: o => side(o.server_app, o.server_platform, o.server_host, o.server_addr), sortv: o => o.server_host || o.server_addr},
+    {k: "engine", l: "Moteur"}, {k: "port", l: "Port", cls: "num"}, {k: "database", l: "Base", cls: "mono"}, {k: "db_user", l: "Compte"},
+    {k: "link_type", l: "Nature"}, {k: "status", l: "État", f: o => o.status === "actif" ? '<span class="badge ok">actif</span>' : '<span class="badge muted">configuré</span>'},
+    {k: "sources", l: "Preuves", f: o => esc(o.sources) + (o.evidence ? `<br><span class="cat">${esc(o.evidence.split("\n")[0])}</span>` : "")}], rows,
+    {empty: "Aucun lien détecté."});
+}
+function vBases(params) {
+  const inst = rowsOf(D.db_instances), homes = rowsOf(D.oracle_homes), links = rowsOf(D.links);
+  return tabbed("bases", "Bases de données", "Instances, correctifs Oracle et applications clientes, sans aucune connexion aux bases. "
+    + "« Actif » signifie observé pendant la collecte, « configuré » trouvé dans une configuration.", [
+    ["instances", `Instances (${fmt(inst.length)})`, m => instancesTable(m(inst))],
+    ["liens", `Liens applicatifs (${fmt(links.length)})`, m => linksTable(m(links))],
+    ["homes", `ORACLE_HOME (${fmt(homes.length)})`, m => oracleHomesTable(m(homes))],
+    ["patches", "Correctifs Oracle", m => table(hcolOf().concat([{k: "home", l: "ORACLE_HOME", cls: "path"}, {k: "patch_id", l: "Correctif", cls: "mono"}, {k: "kind", l: "Nature"},
+      {k: "version", l: "Version"}, {k: "patch_date", l: "Date", f: p => day(p.patch_date)}, {k: "description", l: "Description"}]), m(rowsOf(D.oracle_patches)), {empty: "Aucun correctif relevé."})],
+    ["licences", "Licences Oracle", m => `<p class="hint">Estimation indicative, à valider : elle ne remplace pas une revue de licences. Facteurs de cœur : x86 0,5 ; POWER 1,0.</p>` + table(hcolOf().concat([
+      {k: "editions", l: "Édition"}, {k: "instances", l: "Instances", cls: "num"}, {k: "arch", l: "Architecture"}, {k: "sockets", l: "Sockets", cls: "num"}, {k: "cores", l: "Cœurs", cls: "num"},
+      {k: "partitioning", l: "Partitionnement"}, {k: "entitled_capacity", l: "Capacité LPAR", cls: "num"}, {k: "core_factor", l: "Facteur", cls: "num"},
+      {k: "processor_licences_indicative", l: "Licences processeur", cls: "num"}, {k: "remark", l: "Remarque"}]), m(rowsOf(D.oracle_licence)), {empty: "Aucune installation Oracle Database."})],
+  ], params, "Filtrer (serveur, base, instance, version…)");
+}
+function endpointsTable(rows, host) {
+  return table(hcolOf(host).concat([
+    {k: "product", l: "Produit"}, {k: "kind", l: "Nature"}, {k: "server_name", l: "Nom", f: e => `<b>${esc(e.server_name || "")}</b>` + (e.aliases ? `<br><span class="cat">${esc(e.aliases)}</span>` : "")},
+    {k: "port", l: "Port", cls: "num", f: e => esc(e.port) + (e.listening === 0 ? ' <span class="badge muted">pas en écoute</span>' : "")}, {k: "address", l: "Adresse", cls: "mono"},
+    {k: "tls", l: "TLS", f: e => e.tls ? '<span class="badge ok">oui</span>' : ""}, {k: "location", l: "Chemin", cls: "mono"}, {k: "backend", l: "Vers", cls: "path"},
+    {k: "root", l: "Racine", cls: "path"}, {k: "path", l: "Fichier", cls: "path"}]), rows, {empty: "Aucun point d'entrée relevé."});
+}
+function modulesTable(rows, host) {
+  return table(hcolOf(host).concat([{k: "product", l: "Produit"}, {k: "module", l: "Module", cls: "mono"}, {k: "source", l: "Source"}, {k: "value", l: "Fichier chargé", cls: "path"}, {k: "path", l: "Déclaré dans", cls: "path"}]), rows, {empty: "Aucun module relevé."});
+}
+function runtimesTable(rows, host) {
+  return table(hcolOf(host).concat([{k: "port", l: "Port", cls: "num"}, {k: "address", l: "Adresse", cls: "mono"}, {k: "exposed", l: "Exposé", f: r => r.exposed ? '<span class="badge warn">réseau</span>' : "local"},
+    {k: "runtime", l: "Langage"}, {k: "version", l: "Version"}, {k: "app_ref", l: "Application", cls: "path"}, {k: "options", l: "Options", cls: "path"}, {k: "user", l: "Compte"}, {k: "exe", l: "Exécutable", cls: "path"}]), rows, {empty: "Aucun langage derrière un port en écoute."});
+}
+function vServices(params) {
+  const eps = rowsOf(D.endpoints);
+  return tabbed("services", "Services réseau", "Ce que présentent les serveurs web et d'applications, quel langage répond derrière chaque port, et ce qui est chargé.", [
+    ["endpoints", `Points d'entrée (${fmt(eps.length)})`, m => endpointsTable(m(eps))],
+    ["runtimes", "Langages exposés", m => runtimesTable(m(rowsOf(D.runtime_services)))],
+    ["modules", "Modules activés", m => modulesTable(m(rowsOf(D.modules)))],
+    ["php", "Réglages PHP", m => `<p class="hint">Extrait de php -i et php-fpm -i. Le détail complet est dans la table runtime_settings.</p>` + table(hcolOf().concat([{k: "runtime", l: "Binaire", f: r => esc(r.runtime)}, {k: "binary", l: "Chemin", cls: "path"},
+      {k: "key", l: "Réglage", cls: "mono"}, {k: "value", l: "Valeur", cls: "path"}]), m(rowsOf(D.php_settings)), {empty: "Aucun réglage PHP relevé."})],
+  ], params, "Filtrer (serveur, nom, port, module…)");
+}
+const keyState = f => {
+  if (f.empty_password) return '<span class="badge risk">⚠ sans mot de passe</span>';
+  if (f.has_private_key && f.encrypted === 0) return '<span class="badge warn">en clair</span>';
+  if (f.encrypted) return '<span class="badge ok">chiffrée</span>';
+  return "";
+};
+function keysTable(rows, host) {
+  return table(hcolOf(host).concat([{k: "path", l: "Fichier", cls: "path"}, {k: "kind", l: "Format"}, {k: "key_type", l: "Clé"}, {k: "encrypted", l: "Protection", f: keyState},
+    {k: "mode", l: "Droits", cls: "mono", f: f => f.world_readable ? `<span class="badge risk">⚠ ${esc(f.mode)}</span>` : esc(f.mode)}, {k: "owner", l: "Propriétaire"},
+    {k: "cert_count", l: "Certificats", cls: "num"}, {k: "note", l: "Remarque"}]), rows, {empty: "Aucun fichier."});
+}
+function certsTable(rows, host) {
+  return table(hcolOf(host).concat([{k: "cn", l: "CN", f: c => `<b>${esc(c.cn || "")}</b>` + (c.sans ? `<br><span class="cat">${esc(c.sans)}</span>` : "")}, {k: "subject", l: "DN", cls: "path"}, {k: "issuer", l: "Émetteur", cls: "path"},
+    {k: "not_after", l: "Expiration", f: c => day(c.not_after)},
+    {k: "days_left", l: "Jours restants", cls: "num", f: c => c.days_left == null ? "" : (c.days_left < 0 ? `<span class="badge risk">expiré</span>` : (c.days_left <= 30 ? `<span class="badge warn">${fmt(c.days_left)}</span>` : fmt(c.days_left)))},
+    {k: "key_alg", l: "Clé", f: c => esc([c.key_alg, c.key_bits].filter(Boolean).join(" "))}, {k: "sig_alg", l: "Signature"}, {k: "alias", l: "Alias"}, {k: "path", l: "Fichier", cls: "path"}]), rows, {sort: "days_left", empty: "Aucun certificat lu."});
+}
+function vCles(params) {
+  const files = rowsOf(D.crypto_files);
+  const keys = files.filter(f => f.has_private_key || ["gskit-kdb", "gskit-stash", "oracle-wallet", "pkcs12", "illisible"].includes(f.kind));
+  return tabbed("cles", "Clés et certificats", "Tout fichier repéré est mentionné, même illisible. Le contenu d'une clé n'est jamais collecté. "
+    + "Seul le mot de passe vide est essayé sur les PKCS#12.", [
+    ["cles", `Clés et magasins (${fmt(keys.length)})`, m => keysTable(m(keys))],
+    ["certs", `Certificats (${fmt(rowsOf(D.crypto_certs).length)})`, m => certsTable(m(rowsOf(D.crypto_certs)))],
+    ["tout", `Tous les fichiers (${fmt(files.length)})`, m => keysTable(m(files))],
+  ], params, "Filtrer (serveur, chemin, CN…)");
+}
+function vSupport(params) {
+  const rows = rowsOf(D.eol);
+  const cols = [{k: "host", l: "Serveur", f: o => hostCell(o)}, {k: "product", l: "Produit"}, {k: "cycle", l: "Cycle"}, {k: "version", l: "Version"},
+    {k: "eol", l: "Fin de support"}, {k: "extended", l: "Support étendu"},
+    {k: "days_left", l: "Jours restants", cls: "num", f: e => e.days_left < 0 ? `<span class="badge risk">${fmt(e.days_left)}</span>` : (e.status === "bientôt" ? `<span class="badge warn">${fmt(e.days_left)}</span>` : fmt(e.days_left))},
+    {k: "managed", l: "Origine", f: e => e.location === "système" ? "système" : (e.managed ? '<span title="Le support suit celui de la distribution">paquet de distribution</span>' : "hors paquet")},
+    {k: "location", l: "Emplacement", cls: "path"}];
+  return tabbed("support", "Fins de support", "Dates issues de tools/cmdb_eol.csv, à confirmer auprès de l'éditeur. Pour un paquet de distribution, la date amont est indicative : le support suit celui du système.", [
+    ["depasse", `Dépassées (${fmt(rows.filter(e => e.status === "expiré").length)})`, m => table(cols, m(rows.filter(e => e.status === "expiré")), {sort: "days_left", empty: "Aucune."})],
+    ["bientot", `Moins de 6 mois (${fmt(rows.filter(e => e.status === "bientôt").length)})`, m => table(cols, m(rows.filter(e => e.status === "bientôt")), {sort: "days_left", empty: "Aucune."})],
+    ["tout", "Tout", m => table(cols, m(rows), {sort: "days_left"})],
+  ], params, "Filtrer (serveur, produit, version…)");
+}
+function changesTable(rows, host) {
+  return table(hcolOf(host).concat([{k: "to_at", l: "Constaté le", f: c => day(c.to_at)}, {k: "kind", l: "Nature"},
+    {k: "change", l: "Évolution", f: c => `<span class="badge ${c.change === "retrait" ? "warn" : (c.change === "ajout" ? "ok" : "")}">${esc(c.change)}</span>`},
+    {k: "item", l: "Élément", cls: "path"}, {k: "before", l: "Avant", cls: "path"}, {k: "after", l: "Après", cls: "path"}]), rows, {empty: "Aucune évolution : au moins deux collectes sont nécessaires."});
+}
+function vEvolutions(params) {
+  const rows = rowsOf(D.changes);
+  const kinds = [...new Set(rows.map(c => c.kind))].sort();
+  return tabbed("evolutions", "Évolutions", "Différences entre les deux dernières collectes de chaque serveur.",
+    [["tout", `Toutes (${fmt(rows.length)})`, m => changesTable(m(rows))]].concat(kinds.map(k => [k, k, m => changesTable(m(rows.filter(c => c.kind === k)))])),
+    params, "Filtrer (serveur, élément…)");
+}
+
 function alertsHtml(host) {
   const only = rs => host ? rs.filter(r => r.hk === host) : rs;
   const hcol = host ? [] : [{k: "host", l: "Serveur", f: o => hostCell(o)}];
   const H = host ? D.H.filter(h => h.hk === host) : D.H;
-  return `<h3>Archives Java à risque</h3>` + table(hcol.concat([
+  return `<h3>Clés privées exposées</h3>` + keysTable(only(rowsOf(D.crypto_files).filter(keyExposed)), host)
+    + `<h3>Certificats expirés ou à moins de 30 jours</h3>` + certsTable(only(rowsOf(D.crypto_certs).filter(c => !c.is_ca && c.days_left != null && c.days_left <= 30)), host)
+    + `<h3>ORACLE_HOME en retard de correctifs</h3>` + oracleHomesTable(only(rowsOf(D.oracle_homes).filter(oracleLate)), host)
+    + `<h3>Archives Java à risque</h3>` + table(hcol.concat([
       {k: "marker", l: "Indice", f: r => `<span class="badge risk">⚠ ${esc(r.marker)}</span>`}, {k: "archive", l: "Archive", cls: "path"}]),
       only(rowsOf(D.java_risky)), {empty: "Aucune archive à risque détectée."})
     + `<h3>Binaires supprimés encore en cours d'exécution</h3>` + table(hcol.concat([
@@ -893,7 +1061,7 @@ function route() {
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,
-      materiel: vMateriel, alertes: vAlertes}[r] || vAccueil)(params);
+      materiel: vMateriel, alertes: vAlertes, bases: vBases, services: vServices, cles: vCles, support: vSupport, evolutions: vEvolutions}[r] || vAccueil)(params);
   } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
   renderNav(r);
   $("#topbar").hidden = r === "accueil";
@@ -909,7 +1077,7 @@ function bindView(r, params) {
   if (hs) hs.onsubmit = e => { e.preventDefault(); go("logiciels", {q: $("#hq").value}); };
   const filterInput = (sel, rt, extra) => { const el = $(sel); if (!el) return; let to;
     el.oninput = () => { clearTimeout(to); to = setTimeout(() => { const p = Object.fromEntries(params); p.q = el.value; history.replaceState(null, "", link(rt, p)); route(); const n = $(sel); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); }; };
-  filterInput("#hostfilter", "serveurs"); filterInput("#mxfilter", "versions"); filterInput("#expfilter", "exposition"); filterInput("#hwfilter", "materiel");
+  filterInput("#hostfilter", "serveurs"); filterInput("#mxfilter", "versions"); filterInput("#expfilter", "exposition"); filterInput("#hwfilter", "materiel"); filterInput("#pgfilter", r);
   if (r === "logiciels") {
     const upd = () => go("logiciels", {q: params.get("q") || "", cat: $("#f-cat").value, gestion: $("#f-gestion").value, vue: $("#f-vue").value});
     ["#f-cat", "#f-gestion", "#f-vue"].forEach(s => $(s).onchange = upd);

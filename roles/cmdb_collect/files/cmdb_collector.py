@@ -1794,7 +1794,7 @@ def _ep_nginx(text):
 
 def _ep_tomcat(text):
     out = []
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.S) if PY3 else re.compile(r"<!--.*?-->", re.S).sub("", text)
+    text = re.compile(r"<!--.*?-->", re.S).sub("", text)
     for m in re.finditer(r"<Connector\b([^>]*)>", text):
         a = xml_attrs(m.group(1))
         port = a.get("port")
