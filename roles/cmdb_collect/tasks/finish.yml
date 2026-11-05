@@ -1,0 +1,92 @@
+---
+# ---------------------------------------------------------------------------
+# Fin de passage : manifeste (statut de chaque hôte, y compris injoignables),
+# lot transférable optionnel, puis échec visible des hôtes non collectés.
+#   <cmdb_store>/_runs/<run_id>/_run.json                  en-tête du passage
+#   <cmdb_store>/_runs/<run_id>/<app>__<pf>__<hôte>.json   statut par hôte
+#   <cmdb_store>/_lots/<run_id>.tar.gz                     si cmdb_lot=true
+# ---------------------------------------------------------------------------
+
+- name: Créer le répertoire du manifeste
+  ansible.builtin.file:
+    path: "{{ cmdb_store_dir }}/_runs/{{ cmdb_run_id }}"
+    state: directory
+    mode: "0750"
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Statut de l'hôte dans le manifeste
+  ansible.builtin.copy:
+    dest: "{{ cmdb_store_dir }}/_runs/{{ cmdb_run_id }}/{{ cmdb_app }}__{{ cmdb_platform }}__{{ inventory_hostname }}.json"
+    content: >-
+      {{ {'run_id': cmdb_run_id, 'host': inventory_hostname, 'app': cmdb_app, 'platform': cmdb_platform,
+          'status': cmdb_status, 'collector': cmdb_collector_kind | default(None),
+          'file': cmdb_result_rel | default(None), 'detail': None if cmdb_status == 'ok' else cmdb_status_detail,
+          'tags': cmdb_tags} | to_nice_json }}
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+
+- name: Statut des hôtes injoignables ou en échec avant la collecte
+  ansible.builtin.copy:
+    dest: >-
+      {{ cmdb_store_dir }}/_runs/{{ cmdb_run_id }}/{{ hostvars[item].cmdb_app | default('NA') }}__{{
+      hostvars[item].cmdb_platform | default('NA') }}__{{ item }}.json
+    content: >-
+      {{ {'run_id': cmdb_run_id, 'host': item, 'app': hostvars[item].cmdb_app | default(None),
+          'platform': hostvars[item].cmdb_platform | default(None),
+          'status': 'failed' if (hostvars[item].cmdb_status | default('')) == 'pending'
+                    else ('invalid_tags' if (hostvars[item].cmdb_status | default('')) == 'invalid_tags' else 'unreachable'),
+          'collector': None, 'file': None,
+          'detail': hostvars[item].cmdb_status_detail | default('injoignable, ou échec avant la collecte (connexion, faits Ansible)')}
+         | to_nice_json }}
+    mode: "0640"
+  loop: "{{ ansible_play_hosts_all | difference(ansible_play_hosts) }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: En-tête du manifeste
+  ansible.builtin.copy:
+    dest: "{{ cmdb_store_dir }}/_runs/{{ cmdb_run_id }}/_run.json"
+    content: >-
+      {{ {'run_id': cmdb_run_id, 'started_at': cmdb_run_started,
+          'finished_at': now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ'), 'play': ansible_play_name,
+          'controller_user': lookup('ansible.builtin.env', 'USER') | default(None),
+          'limit': ansible_limit | default(None), 'hosts_total': ansible_play_hosts_all | length,
+          'hosts_ok': ansible_play_hosts | map('extract', hostvars, 'cmdb_status') | select('equalto', 'ok') | list | length}
+         | to_nice_json }}
+    mode: "0640"
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Constituer le lot transférable du passage
+  when: cmdb_lot | bool
+  run_once: true
+  delegate_to: localhost
+  become: false
+  block:
+    - name: Créer le répertoire des lots
+      ansible.builtin.file:
+        path: "{{ cmdb_store_dir }}/_lots"
+        state: directory
+        mode: "0750"
+
+    - name: Archiver les collectes et le manifeste du passage
+      ansible.builtin.command:
+        argv: >-
+          {{ ['tar', '-czf', cmdb_store_dir ~ '/_lots/' ~ cmdb_run_id ~ '.tar.gz', '-C', cmdb_store_dir,
+              '_runs/' ~ cmdb_run_id]
+             + (ansible_play_hosts | map('extract', hostvars, 'cmdb_lot_files') | flatten | list) }}
+      changed_when: true
+
+    - name: Lot prêt
+      ansible.builtin.debug:
+        msg: "Lot à transférer : {{ cmdb_store_dir }}/_lots/{{ cmdb_run_id }}.tar.gz"
+
+- name: Signaler les collectes en échec
+  ansible.builtin.fail:
+    msg: "Collecte CMDB en échec sur {{ inventory_hostname }} : {{ cmdb_status_detail }}"
+  when: cmdb_status != 'ok'

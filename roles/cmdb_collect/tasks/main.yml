@@ -1,0 +1,135 @@
+---
+# ---------------------------------------------------------------------------
+# Rôle cmdb_collect : dépose le collecteur, l'exécute (async, priorité basse),
+# rapatrie le JSON compressé sur le contrôleur, nettoie.
+# Aucune modification persistante n'est faite sur la cible.
+# ---------------------------------------------------------------------------
+
+- name: Contexte du passage (étiquetage application / plate-forme, identifiant, stockage)
+  ansible.builtin.import_tasks: context.yml
+
+- name: Enregistrer l'intégralité des faits Ansible
+  ansible.builtin.copy:
+    content: "{{ ansible_facts | to_nice_json }}"
+    dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.ansible_facts.json"
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+  when: cmdb_save_ansible_facts | bool
+
+- name: Collecte
+  block:
+    - name: Vérifier que la cible relève de ce playbook (Linux, Python 2.7 ou >= 3.6)
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.system | default('Linux') == 'Linux'
+          - >-
+            ansible_facts.python is not defined or
+            (ansible_facts.python.version.major == 2 and ansible_facts.python.version.minor >= 7) or
+            (ansible_facts.python.version.major == 3 and ansible_facts.python.version.minor >= 6)
+        fail_msg: >-
+          {{ ansible_facts.system | default('?') }} / Python {{ ansible_facts.python.version.major | default('?') }}.{{
+          ansible_facts.python.version.minor | default('?') }} : utilisez collect_legacy.yml (AIX, Linux anciens)
+        quiet: true
+
+    - name: Créer un répertoire temporaire distant
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: .cmdb
+      register: cmdb_remote_tmp
+
+    - name: Déposer le collecteur
+      ansible.builtin.copy:
+        src: cmdb_collector.py
+        dest: "{{ cmdb_remote_tmp.path }}/cmdb_collector.py"
+        mode: "0700"
+
+    - name: Construire la ligne de commande du collecteur
+      ansible.builtin.set_fact:
+        cmdb_argv: >-
+          {{
+            [cmdb_python, cmdb_remote_tmp.path ~ '/cmdb_collector.py',
+             '--output', cmdb_remote_tmp.path ~ '/cmdb.json.gz',
+             '--host-label', inventory_hostname,
+             '--scan-max-seconds', cmdb_scan_max_seconds | string,
+             '--exec-timeout', cmdb_exec_timeout | string,
+             '--exec-max-seconds', cmdb_exec_max_seconds | string,
+             '--hash-max-mb', cmdb_hash_max_mb | string]
+            + cmdb_tag_argv
+            + ([] if cmdb_scan_filesystem | bool else ['--no-scan-filesystem'])
+            + ([] if cmdb_exec_probes | bool else ['--no-exec-probes'])
+            + ([] if cmdb_hash_archives | bool else ['--no-hash-archives'])
+            + ([] if cmdb_file_owners | bool else ['--no-file-owners'])
+            + ([] if cmdb_nice | bool else ['--no-nice'])
+            + (['--include-network-fs'] if cmdb_include_network_fs | bool else [])
+            + (['--include-container-storage'] if cmdb_include_container_storage | bool else [])
+            + (['--pending-updates'] if cmdb_pending_updates | bool else [])
+            + (cmdb_scan_roots | map('regex_replace', '^', '--scan-root=') | list)
+            + (cmdb_scan_replace_excludes | map('regex_replace', '^', '--exclude=') | list)
+            + (cmdb_scan_extra_excludes | map('regex_replace', '^', '--extra-exclude=') | list)
+          }}
+
+    - name: Exécuter le collecteur (lecture seule, priorité basse)
+      ansible.builtin.command:
+        argv: "{{ cmdb_argv }}"
+      async: "{{ cmdb_async_timeout }}"
+      poll: "{{ cmdb_async_poll }}"
+      register: cmdb_job
+      changed_when: false
+
+    - name: Résumé de la collecte
+      ansible.builtin.debug:
+        msg: "{{ cmdb_job.stdout | from_json }}"
+
+    - name: Rapatrier le résultat sur le contrôleur
+      ansible.builtin.fetch:
+        src: "{{ cmdb_remote_tmp.path }}/cmdb.json.gz"
+        dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.json.gz"
+        flat: true
+
+    - name: Mettre à jour la copie « latest »
+      ansible.builtin.copy:
+        src: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.json.gz"
+        dest: "{{ cmdb_host_dir }}/latest.json.gz"
+        remote_src: true
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    - name: Collecte réussie
+      ansible.builtin.set_fact:
+        cmdb_status: ok
+        cmdb_collector_kind: python
+        cmdb_result_rel: "{{ cmdb_rel_dir }}/{{ cmdb_run_id }}.json.gz"
+        cmdb_lot_files: >-
+          {{ [cmdb_rel_dir ~ '/' ~ cmdb_run_id ~ '.json.gz']
+             + ([cmdb_rel_dir ~ '/' ~ cmdb_run_id ~ '.ansible_facts.json'] if cmdb_save_ansible_facts | bool else []) }}
+
+  rescue:
+    - name: Tracer l'échec sur le contrôleur
+      ansible.builtin.copy:
+        content: >-
+          {{ {'host': inventory_hostname, 'app': cmdb_app, 'platform': cmdb_platform, 'run_id': cmdb_run_id,
+              'failed_task': ansible_failed_task.name | default(''),
+              'result': ansible_failed_result | default({})} | to_nice_json }}
+        dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.error.json"
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    # Pas d'échec immédiat : le manifeste du passage doit d'abord être écrit (finish.yml)
+    - name: Noter l'échec
+      ansible.builtin.set_fact:
+        cmdb_status: failed
+        cmdb_status_detail: >-
+          {{ ansible_failed_task.name | default('?') }} : {{ (ansible_failed_result.msg | default(''))[:300] }}
+          (voir {{ cmdb_rel_dir }}/{{ cmdb_run_id }}.error.json)
+
+  always:
+    - name: Supprimer le répertoire temporaire distant
+      ansible.builtin.file:
+        path: "{{ cmdb_remote_tmp.path }}"
+        state: absent
+      when:
+        - cmdb_remote_tmp.path is defined
+        - not (cmdb_keep_remote_tmp_on_failure | bool and ansible_failed_task is defined)

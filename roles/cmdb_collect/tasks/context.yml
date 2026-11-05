@@ -1,0 +1,64 @@
+---
+# ---------------------------------------------------------------------------
+# Contexte d'un passage de collecte, commun à collect.yml et collect_legacy.yml :
+#   * étiquetage obligatoire application / plate-forme (+ étiquettes libres) ;
+#   * identifiant du passage, identique pour tous les hôtes du run ;
+#   * emplacement de stockage : <cmdb_store>/<application>/<plate-forme>/<hôte>/
+# ---------------------------------------------------------------------------
+
+- name: Initialiser le statut de l'hôte
+  ansible.builtin.set_fact:
+    cmdb_status: invalid_tags
+    cmdb_status_detail: "étiquetage application / plate-forme absent ou invalide"
+    cmdb_lot_files: []
+
+- name: Vérifier l'étiquetage application / plate-forme
+  ansible.builtin.assert:
+    that:
+      - cmdb_app is defined
+      - cmdb_platform is defined
+      - (cmdb_app | string) is match(cmdb_tag_regex)
+      - (cmdb_platform | string) is match(cmdb_tag_regex)
+      - cmdb_tags is mapping
+      - (cmdb_tags.keys() | map('string') | reject('match', cmdb_tag_regex) | list) == []
+      - (cmdb_tags.values() | map('string') | reject('match', cmdb_tag_regex) | list) == []
+      - "'app' not in cmdb_tags and 'platform' not in cmdb_tags"
+    fail_msg: >-
+      Étiquetage obligatoire : chaque passage doit indiquer l'application et la plate-forme,
+      par -e (ex. -e cmdb_app=APPDEMO -e cmdb_platform=prod) ou dans l'inventaire (group_vars).
+      Valeurs : lettres, chiffres, « . », « _ », « - » (64 caractères au plus, sans espace).
+      Reçu : application={{ cmdb_app | default('(absente)') }}, plate-forme={{ cmdb_platform | default('(absente)') }},
+      étiquettes={{ cmdb_tags | default({}) }}
+    quiet: true
+
+- name: Identifiant du passage (commun à tous les hôtes de l'exécution)
+  ansible.builtin.set_fact:
+    cmdb_run_id: "{{ cmdb_run_id | default(now(utc=true, fmt='%Y%m%dT%H%M%SZ') ~ '-' ~ ('%04x' | format(65535 | random))) }}"
+    cmdb_run_started: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+  run_once: true
+
+- name: Vérifier l'identifiant du passage
+  ansible.builtin.assert:
+    that: (cmdb_run_id | string) is match(cmdb_tag_regex)
+    fail_msg: "cmdb_run_id invalide : {{ cmdb_run_id }}"
+    quiet: true
+
+- name: Préparer les variables du passage
+  ansible.builtin.set_fact:
+    cmdb_status: pending
+    cmdb_status_detail: "échec inattendu pendant la collecte"
+    cmdb_store_dir: "{{ cmdb_store }}"
+    cmdb_rel_dir: "{{ cmdb_app }}/{{ cmdb_platform }}/{{ inventory_hostname }}"
+    cmdb_host_dir: "{{ cmdb_store }}/{{ cmdb_app }}/{{ cmdb_platform }}/{{ inventory_hostname }}"
+    cmdb_tag_argv: >-
+      {{ ['--run-id', cmdb_run_id, '--tag', 'app=' ~ cmdb_app, '--tag', 'platform=' ~ cmdb_platform]
+         + (cmdb_tags | dict2items | map(attribute='key') | zip(cmdb_tags | dict2items | map(attribute='value'))
+            | map('join', '=') | map('regex_replace', '^', '--tag=') | list) }}
+
+- name: Créer le répertoire de stockage de l'hôte sur le contrôleur
+  ansible.builtin.file:
+    path: "{{ cmdb_host_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  become: false

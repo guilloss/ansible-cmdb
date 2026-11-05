@@ -1,0 +1,53 @@
+---
+# ---------------------------------------------------------------------------
+# Rôle cmdb_collect — paramètres par défaut
+# ---------------------------------------------------------------------------
+
+# --- Étiquetage du passage (OBLIGATOIRE) -----------------------------------
+# À fournir par -e ou dans l'inventaire (group_vars / host_vars) :
+#   cmdb_app:      nom de l'application          (ex. APPDEMO)
+#   cmdb_platform: nom de la plate-forme         (ex. prod, preprod, recette, dev)
+# Étiquettes libres supplémentaires, recopiées dans chaque collecte :
+cmdb_tags: {}                       # ex. {"site": "Paris", "domaine": "INFRA"}
+cmdb_tag_regex: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+# Magasin des collectes sur le contrôleur :
+#   <cmdb_store>/<application>/<plate-forme>/<hôte>/<run_id>.json.gz (+ latest.json.gz)
+#   <cmdb_store>/_runs/<run_id>/   manifeste du passage (statut de chaque hôte)
+#   <cmdb_store>/_lots/            lots transférables (cmdb_lot: true)
+cmdb_store: "{{ playbook_dir }}/store"
+cmdb_lot: false                     # produire <cmdb_store>/_lots/<run_id>.tar.gz à transférer
+
+# Interpréteur Python distant (2.7 ou >= 3.6). Par défaut celui découvert par Ansible.
+cmdb_python: "{{ ansible_facts.python.executable | default(ansible_python_interpreter) | default('/usr/bin/python3') }}"
+
+# Sauvegarder aussi l'intégralité des faits Ansible (setup) à côté de la collecte
+cmdb_save_ansible_facts: true
+
+# --- Parcours du système de fichiers ---------------------------------------
+cmdb_scan_filesystem: true
+cmdb_scan_roots: []                 # vide = "/" (tous les FS locaux)
+cmdb_scan_max_seconds: 900          # budget de temps du parcours, au-delà : résultat partiel signalé
+cmdb_scan_extra_excludes: []        # ajoutés aux exclusions par défaut du collecteur
+cmdb_scan_replace_excludes: []      # si non vide, REMPLACE les exclusions par défaut
+cmdb_include_network_fs: false      # NFS/CIFS/GPFS... (attention au volume)
+cmdb_include_container_storage: false  # /var/lib/docker, /var/lib/containers... (doublons de couches)
+cmdb_hash_archives: true            # SHA-1 des .jar/.war/.ear (identification exacte côté Maven Central / OSV)
+cmdb_hash_max_mb: 256
+
+# --- Sondes de version (exécution de binaires) -----------------------------
+cmdb_exec_probes: true
+cmdb_exec_timeout: 20
+cmdb_exec_max_seconds: 600
+
+# --- Divers ------------------------------------------------------------------
+cmdb_file_owners: true              # index fichier -> paquet (rpm/dpkg/apk)
+cmdb_pending_updates: false         # dnf/yum updateinfo, apt -s, debsecan : peut contacter les dépôts
+cmdb_nice: true                     # nice 19 + ionice idle
+
+# Durée maximale d'exécution du collecteur sur un hôte (mode async)
+cmdb_async_timeout: 3600
+cmdb_async_poll: 10
+
+# Conserver le répertoire temporaire distant en cas d'échec (débogage)
+cmdb_keep_remote_tmp_on_failure: false

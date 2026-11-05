@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventaire du parc</title>
+<style>
+:root {
+  --bg: #EDF0F2; --surface: #FFFFFF; --surface-2: #F5F7F8; --ink: #1F2A30; --ink-2: #44535B; --muted: #6A7881;
+  --line: #D5DCE0; --line-2: #E6EAED; --accent: #1668A3; --accent-soft: #DDEBF5;
+  --tag: #B07F0E; --tag-bg: #F6E2A6; --tag-ink: #3A2A00; --risk: #B4322A; --risk-bg: #F6DEDB; --ok: #2E7D5B;
+  --mark: #FFE58A;
+  --f-display: "Bahnschrift", "DIN Alternate", "DIN Next LT Pro", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "Segoe UI", system-ui, -apple-system, "Cantarell", "Noto Sans", "DejaVu Sans", sans-serif;
+  --f-mono: "Cascadia Mono", Consolas, "DejaVu Sans Mono", ui-monospace, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141A1E; --surface: #1B2328; --surface-2: #212A30; --ink: #E3E9ED; --ink-2: #B6C2C9; --muted: #8696A0;
+    --line: #33414A; --line-2: #2A353C; --accent: #4C9ACB; --accent-soft: #1E3646;
+    --tag: #B88A12; --tag-bg: #4A3A0E; --tag-ink: #F6DC8C; --risk: #E05473; --risk-bg: #4A1E28; --ok: #5DBB8D;
+    --mark: #6B5A12; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141A1E; --surface: #1B2328; --surface-2: #212A30; --ink: #E3E9ED; --ink-2: #B6C2C9; --muted: #8696A0;
+  --line: #33414A; --line-2: #2A353C; --accent: #4C9ACB; --accent-soft: #1E3646;
+  --tag: #B88A12; --tag-bg: #4A3A0E; --tag-ink: #F6DC8C; --risk: #E05473; --risk-bg: #4A1E28; --ok: #5DBB8D;
+  --mark: #6B5A12; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--f-body); font-variant-numeric: tabular-nums; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2px; }
+code, .mono { font-family: var(--f-mono); font-size: 12.5px; }
+
+/* --- structure --- */
+.app { display: grid; grid-template-columns: 228px 1fr; min-height: 100vh; }
+.rail { background: var(--ink); color: #E8EEF1; padding: 22px 0 18px; position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column; }
+:root[data-theme="dark"] .rail { background: #0F1417; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .rail { background: #0F1417; } }
+.brand { padding: 0 20px 18px; border-bottom: 1px solid rgba(255,255,255,.12); }
+.brand h1 { font: 600 21px/1.15 var(--f-display); margin: 0; letter-spacing: .2px; }
+.brand p { margin: 6px 0 0; font-size: 12px; color: #9FB0BA; }
+.scope { padding: 14px 20px 4px; display: grid; gap: 8px; }
+.scope label { display: grid; gap: 3px; font-size: 12px; color: #9FB0BA; }
+.scope select { background: rgba(255,255,255,.06); color: #F1F5F7; border-color: rgba(255,255,255,.22); padding: 5px 8px; width: 100%; }
+.scope select option { color: var(--ink); background: var(--surface); }
+.scope .reset { font-size: 12px; color: #C9D5DC; }
+.nav { list-style: none; margin: 14px 0; padding: 0; }
+.nav a { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 20px; color: #C9D5DC;
+  border-left: 3px solid transparent; }
+.nav a:hover { background: rgba(255,255,255,.06); text-decoration: none; color: #fff; }
+.nav a[aria-current="page"] { color: #fff; border-left-color: var(--tag); background: rgba(255,255,255,.08); }
+.nav .count { font: 13px var(--f-display); color: #8FA2AD; }
+.nav .count.alert { color: #F3B7B0; }
+.rail-foot { margin-top: auto; padding: 12px 20px 0; border-top: 1px solid rgba(255,255,255,.12); font-size: 12px; color: #9FB0BA; }
+.rail-foot button { background: none; border: 1px solid rgba(255,255,255,.25); color: #DDE6EB; padding: 4px 10px;
+  border-radius: 4px; font: inherit; cursor: pointer; }
+main { min-width: 0; }
+.topbar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 14px 28px 10px; border-bottom: 1px solid var(--line); }
+.topbar form { display: flex; gap: 8px; max-width: 900px; }
+.content { padding: 22px 28px 60px; max-width: 1500px; }
+h2 { font: 600 26px/1.2 var(--f-display); margin: 4px 0 6px; }
+h3 { font: 600 17px/1.3 var(--f-display); margin: 30px 0 10px; }
+.lede { color: var(--ink-2); margin: 0 0 18px; max-width: 75ch; }
+
+/* --- champs --- */
+input[type="search"], input[type="text"], select {
+  font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; }
+input[type="search"] { flex: 1; min-width: 0; }
+.btn { font: inherit; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 4px; padding: 7px 14px; cursor: pointer; }
+.btn.ghost { background: var(--surface); color: var(--accent); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
+.toolbar .spacer { flex: 1; }
+.hint { color: var(--muted); font-size: 12.5px; }
+
+/* --- recherche d'accueil --- */
+.hero { padding: 26px 0 8px; }
+.hero h2 { font-size: 34px; max-width: 22ch; }
+.hero form { display: flex; gap: 10px; margin: 16px 0 10px; max-width: 860px; }
+.hero input[type="search"] { font-size: 18px; padding: 12px 14px; border-width: 2px; border-color: var(--ink-2); }
+.examples { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.examples a { border: 1px solid var(--line); background: var(--surface); padding: 2px 10px; border-radius: 12px; color: var(--ink-2); }
+.examples a:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* --- chiffres --- */
+.facts { display: flex; flex-wrap: wrap; margin: 26px 0 8px; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--line); }
+.fact { padding: 12px 26px 12px 0; margin-right: 26px; border-right: 1px solid var(--line); }
+.fact:last-child { border-right: 0; }
+.fact b { display: block; font: 600 28px/1.1 var(--f-display); }
+.fact span { color: var(--ink-2); font-size: 13px; }
+.fact.warn b { color: var(--tag); }
+.fact.risk b { color: var(--risk); }
+
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 34px; }
+@media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
+
+/* --- liste "à traiter" --- */
+.todo { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+.todo li { display: grid; grid-template-columns: 54px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.todo .n { font: 600 22px var(--f-display); text-align: right; color: var(--muted); }
+.todo li.risk .n { color: var(--risk); }
+.todo li.warn .n { color: var(--tag); }
+.todo .t { font-weight: 600; }
+.todo .d { color: var(--ink-2); font-size: 13px; }
+.todo li.clear .n { color: var(--ok); }
+
+/* --- barres --- */
+.chart { margin: 0 0 22px; }
+.chart h4 { margin: 0 0 8px; font: 600 14px var(--f-body); }
+.bar { display: grid; grid-template-columns: minmax(110px, 38%) 1fr 44px; gap: 10px; align-items: center; padding: 3px 0; }
+.bar .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+.bar .track { height: 12px; position: relative; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 0 4px 4px 0; min-width: 3px; }
+.bar.um .fill { background: var(--tag); }
+.bar .val { text-align: right; font: 13px var(--f-display); }
+.bar:hover .lbl { color: var(--ink); }
+.bar a { color: inherit; }
+
+/* --- tableaux --- */
+.tablewrap { overflow: auto; border: 1px solid var(--line); background: var(--surface); border-radius: 4px; max-height: 72vh; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+th { position: sticky; top: 0; background: var(--surface-2); font-weight: 600; font-size: 12.5px; color: var(--ink-2);
+  white-space: nowrap; z-index: 1; border-bottom: 1px solid var(--line); }
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--ink); }
+th .dir { color: var(--accent); }
+tbody tr:hover td { background: var(--surface-2); }
+td.num { text-align: right; }
+td.wrap { word-break: break-all; }
+td.path { font-family: var(--f-mono); font-size: 12px; word-break: break-all; color: var(--ink-2); min-width: 220px; }
+.more { margin: 10px 0; display: flex; gap: 10px; align-items: center; }
+
+/* --- étiquettes --- */
+.v { display: inline-block; padding: 0 7px; margin: 1px 4px 1px 0; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--surface); font: 13px/1.6 var(--f-display); white-space: nowrap; }
+/* installation hors paquet : étiquette d'inventaire (coin coupé, œillet) */
+.v.um { background: var(--tag-bg); color: var(--tag-ink); border-color: var(--tag); border-radius: 0 3px 3px 0;
+  padding-left: 15px; position: relative;
+  clip-path: polygon(7px 0, 100% 0, 100% 100%, 7px 100%, 0 50%); }
+.v.um::before { content: ""; position: absolute; left: 6px; top: 50%; width: 4px; height: 4px; margin-top: -2px;
+  border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 1px var(--tag); }
+a .v { color: var(--ink); }
+a .v.um { color: var(--tag-ink); }
+a:hover .v { border-color: var(--accent); }
+.badge { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap; }
+.badge.risk { color: var(--risk); border-color: var(--risk); background: var(--risk-bg); }
+.badge.warn { color: var(--tag-ink); border-color: var(--tag); background: var(--tag-bg); }
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.muted { color: var(--muted); }
+.cat { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* occupation d'un système de fichiers : jauge + valeur (la valeur reste lisible sans la couleur) */
+.use { display: grid; grid-template-columns: 64px auto; gap: 8px; align-items: center; white-space: nowrap; }
+.use .track { height: 8px; background: var(--line-2); border-radius: 4px; overflow: hidden; }
+.use .fill { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.use.warn .fill { background: var(--tag); }
+.use.risk .fill { background: var(--risk); }
+.use.risk b { color: var(--risk); }
+.use b { font: 600 13px var(--f-display); }
+
+/* --- fiche serveur --- */
+.hosthead { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin-bottom: 4px; }
+.hosthead h2 { margin: 0; }
+.dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 30px; margin: 10px 0 0; }
+.dl div { display: grid; grid-template-columns: 130px 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line-2); }
+.dl dt { color: var(--muted); font-size: 13px; }
+.dl dd { margin: 0; word-break: break-word; }
+.tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--line); margin: 22px 0 14px; }
+.tabs a { padding: 8px 14px; color: var(--ink-2); border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs a:hover { text-decoration: none; color: var(--ink); }
+.empty { padding: 18px; color: var(--ink-2); background: var(--surface); border: 1px dashed var(--line); border-radius: 4px; }
+.err { padding: 18px; color: var(--risk); }
+.loading { padding: 60px 28px; color: var(--ink-2); font-size: 16px; }
+
+/* --- matrice --- */
+.matrix td:first-child, .matrix th:first-child { position: sticky; left: 0; background: var(--surface); z-index: 2; font-weight: 600; }
+.matrix th:first-child { z-index: 3; background: var(--surface-2); }
+.matrix td { white-space: nowrap; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; color: var(--ink-2); font-size: 13px; margin: 0 0 12px; }
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { position: static; height: auto; padding: 12px 0; }
+  .nav { display: flex; flex-wrap: wrap; margin: 8px 0 0; }
+  .nav a { padding: 6px 12px; border-left: 0; border-bottom: 3px solid transparent; gap: 6px; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; }
+  .fact { border-right: 0; margin-right: 0; padding-right: 10px; border-bottom: 1px solid var(--line-2); }
+  .nav a[aria-current="page"] { border-bottom-color: var(--tag); }
+  .rail-foot { display: none; }
+  .scope { grid-template-columns: 1fr 1fr; padding-top: 10px; }
+  .topbar, .content { padding-left: 16px; padding-right: 16px; }
+  .hero h2 { font-size: 26px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+@media print { .rail, .topbar { display: none; } .app { display: block; } .tablewrap { max-height: none; overflow: visible; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Sections">
+    <div class="brand">
+      <h1>Inventaire du parc</h1>
+      <p id="gen"></p>
+    </div>
+    <div class="scope" id="scope"></div>
+    <ul class="nav" id="nav"></ul>
+    <div class="rail-foot">
+      <button type="button" id="theme">Thème sombre</button>
+    </div>
+  </nav>
+  <main>
+    <div class="topbar" id="topbar" hidden>
+      <form id="topsearch" role="search">
+        <input type="search" id="q" name="q" aria-label="Rechercher un logiciel, une version, un serveur"
+               placeholder="Logiciel, version, chemin, serveur, IP, MAC…" autocomplete="off">
+        <button class="btn" type="submit">Rechercher</button>
+      </form>
+    </div>
+    <div class="content" id="view"><p class="loading">Chargement de l'inventaire…</p></div>
+  </main>
+</div>
+<script type="application/octet-stream" id="cmdb-data">__CMDB_DATA__</script>
+<script>
+"use strict";
+let D0 = null;         // données complètes
+let D = null;          // données du périmètre courant (application / plate-forme)
+let SW = null;         // logiciels : {cols, strings, rows}
+let SCOPE = {app: "", pf: ""};
+let MULTI = false;     // plusieurs couples application / plate-forme dans l'inventaire
+const PAGE = 200;
+
+// ---------------------------------------------------------------- utilitaires
+const esc = s => s == null ? "" : String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const pl = (n, one, many) => (n > 1 ? many : one);
+const fmt = n => n == null ? "" : Number(n).toLocaleString("fr-FR");
+const $ = s => document.querySelector(s);
+// Un serveur est identifié par (application, plate-forme, hôte) : un même hôte mutualisé
+// apparaît une fois par application qui l'a collecté.
+const hkey = (app, pf, host) => app + "|" + pf + "|" + host;
+const hsplit = k => { const p = k.split("|"); return {app: p[0], pf: p[1], host: p.slice(2).join("|")}; };
+function rowsOf(t) { // table {cols, rows} -> objets
+  if (!t) return [];
+  if (!t._obj) t._obj = t.rows.map(r => {
+    const o = Object.fromEntries(t.cols.map((c, i) => [c, r[i]]));
+    if (o.host != null) o.hk = hkey(o.app, o.platform, o.host);
+    return o;
+  });
+  return t._obj;
+}
+function byHost(t) {
+  if (!t._byHost) { t._byHost = {}; for (const o of rowsOf(t)) (t._byHost[o.hk] = t._byHost[o.hk] || []).push(o); }
+  return t._byHost;
+}
+function hl(text, terms) {
+  let s = esc(text);
+  if (!terms || !terms.length || !text) return s;
+  for (const t of terms) {
+    if (!t) continue;
+    const re = new RegExp(esc(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    s = s.replace(re, m => "<mark>" + m + "</mark>");
+  }
+  return s;
+}
+function link(route, params) {
+  // le périmètre (app, pf) suit la navigation, sauf s'il est fixé explicitement
+  const p = Object.assign({}, params || {});
+  if (!("app" in p) && SCOPE.app) p.app = SCOPE.app;
+  if (!("pf" in p) && SCOPE.pf) p.pf = SCOPE.pf;
+  for (const k of Object.keys(p)) if (p[k] == null || p[k] === "") delete p[k];
+  const q = Object.keys(p).length ? "?" + new URLSearchParams(p).toString() : "";
+  return "#/" + route + q;
+}
+function hostLabel(app, pf, host, terms) {
+  return `<a href="${link("serveur/" + encodeURIComponent(hkey(app, pf, host)))}">${hl(host, terms)}</a>`
+    + (MULTI && !(SCOPE.app && SCOPE.pf) ? `<br><span class="cat">${hl(app, terms)} / ${hl(pf, terms)}</span>` : "");
+}
+const hostCell = (o, terms) => hostLabel(o.app, o.platform, o.host, terms);
+const gb = v => v == null ? "" : (v >= 1000 ? fmt(Math.round(v)) : Number(v).toLocaleString("fr-FR", {maximumFractionDigits: v < 10 ? 2 : 1})) + " Go";
+const pct = v => v == null ? "" : Number(v).toLocaleString("fr-FR", {maximumFractionDigits: 1}) + " %";
+function fsUse(f) {
+  if (f.used_pct == null) return "";
+  const cls = f.used_pct >= 90 ? " risk" : (f.used_pct >= 80 ? " warn" : "");
+  return `<span class="use${cls}"><span class="track"><span class="fill" style="width:${Math.min(100, f.used_pct)}%"></span></span><b>${pct(f.used_pct)}</b></span>`;
+}
+function fsCols(withHost) {
+  return (withHost ? [{k: "host", l: "Serveur", f: o => hostCell(o)}] : []).concat([
+    {k: "mountpoint", l: "Point de montage", cls: "mono", f: o => `<b>${esc(o.mountpoint)}</b>`},
+    {k: "device", l: "Périphérique", cls: "path"},
+    {k: "fstype", l: "Type", f: o => esc(o.fstype || "") + (o.network ? ' <span class="badge muted">réseau</span>' : "")},
+    {k: "size_gb", l: "Taille", cls: "num", f: o => gb(o.size_gb)},
+    {k: "used_gb", l: "Utilisé", cls: "num", f: o => gb(o.used_gb)},
+    {k: "free_gb", l: "Libre", cls: "num", f: o => gb(o.free_gb)},
+    {k: "used_pct", l: "% utilisé", f: fsUse},
+    {k: "free_pct", l: "% libre", cls: "num", f: o => pct(o.free_pct)},
+    {k: "inodes_used_pct", l: "Inodes utilisés", cls: "num", f: o => o.inodes_used_pct >= 90 ? `<span class="badge risk">${pct(o.inodes_used_pct)}</span>` : pct(o.inodes_used_pct)},
+  ]);
+}
+function hkLink(k) {
+  const x = hsplit(k);
+  return `<a href="${link("serveur/" + encodeURIComponent(k))}" title="${esc(x.app + " / " + x.pf)}">${esc(x.host)}</a>`;
+}
+function cmpVer(a, b) {
+  const pa = String(a).split(/[.\-_+:~ ]/), pb = String(b).split(/[.\-_+:~ ]/);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i], y = pb[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+    if (nx && ny) { const d = parseInt(x, 10) - parseInt(y, 10); if (d) return d < 0 ? -1 : 1; }
+    else {
+      const mx = x.match(/^(\d+)(.*)$/), my = y.match(/^(\d+)(.*)$/);
+      if (mx && my && mx[1] !== my[1]) return parseInt(mx[1], 10) < parseInt(my[1], 10) ? -1 : 1;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+function verTag(v, unmanaged) {
+  return unmanaged
+    ? '<span class="v um" title="Installation hors paquet de la distribution">' + esc(v) + '</span>'
+    : '<span class="v" title="Version gérée par la distribution">' + esc(v) + '</span>';
+}
+function table(cols, rows, opts) {
+  // cols : [{k, l, cls, f(row) -> html}] ; tri au clic
+  opts = opts || {};
+  const id = "t" + Math.random().toString(36).slice(2, 8);
+  const st = {sort: opts.sort != null ? String(opts.sort) : null, dir: opts.dir || 1, shown: opts.page || PAGE};
+  const render = () => {
+    let rs = rows;
+    if (st.sort != null) {
+      const c = cols.find(c => String(c.k) === st.sort);
+      const key = c && c.sortv ? c.sortv : (r => r[st.sort]);
+      rs = rows.slice().sort((a, b) => {
+        const x = key(a), y = key(b);
+        if (x == null) return 1; if (y == null) return -1;
+        return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "fr", {numeric: true})) * st.dir;
+      });
+    }
+    const head = cols.map(c => `<th scope="col" class="sortable" data-k="${c.k}">${esc(c.l)}${st.sort === String(c.k) ? ` <span class="dir">${st.dir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("");
+    const body = rs.slice(0, st.shown).map(r => "<tr>" + cols.map(c => `<td class="${c.cls || ""}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join("") + "</tr>").join("");
+    const more = rs.length > st.shown
+      ? `<div class="more"><button class="btn ghost" type="button" data-more="${id}">Afficher ${fmt(Math.min(PAGE * 5, rs.length - st.shown))} lignes de plus</button><span class="hint">${fmt(st.shown)} affichées sur ${fmt(rs.length)}</span></div>` : "";
+    const el = document.getElementById(id);
+    el.innerHTML = rows.length
+      ? `<div class="tablewrap"><table${opts.cls ? ` class="${opts.cls}"` : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}`
+      : `<div class="empty">${opts.empty || "Aucune ligne."}</div>`;
+    el.querySelectorAll("th.sortable").forEach(th => th.onclick = () => {
+      const k = th.dataset.k; st.dir = st.sort === k ? -st.dir : 1; st.sort = k; render();
+    });
+    const mb = el.querySelector("[data-more]");
+    if (mb) mb.onclick = () => { st.shown += PAGE * 5; render(); };
+  };
+  setTimeout(render, 0);
+  return `<div id="${id}"></div>`;
+}
+function csvDownload(name, header, rows) {
+  const q = v => { v = v == null ? "" : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const txt = "﻿" + [header.join(";")].concat(rows.map(r => r.map(q).join(";"))).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([txt], {type: "text/csv;charset=utf-8"}));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function bars(items, opts) { // items: [{label, value, href, um}]
+  opts = opts || {};
+  const max = Math.max(1, ...items.map(i => i.value));
+  return `<div class="chart"><h4>${esc(opts.title)}</h4>` + items.map(i =>
+    `<div class="bar${i.um ? " um" : ""}" title="${esc(i.label)} : ${fmt(i.value)} ${esc(opts.unit || "")}">
+       <span class="lbl">${i.href ? `<a href="${i.href}">${esc(i.label)}</a>` : esc(i.label)}</span>
+       <span class="track"><span class="fill" style="width:${(i.value / max * 100).toFixed(1)}%"></span></span>
+       <span class="val">${fmt(i.value)}</span></div>`).join("") + "</div>";
+}
+
+// ---------------------------------------------------------------- périmètre
+const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers",
+  "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed"];
+function applyScope() {
+  const on = SCOPE.app || SCOPE.pf;
+  const keep = (a, p) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf);
+  D = Object.assign({}, D0);
+  for (const k of SCOPED) {
+    const t = D0[k];
+    if (!t) { D[k] = {cols: [], rows: []}; continue; }
+    const ia = t.cols.indexOf("app"), ip = t.cols.indexOf("platform");
+    D[k] = on ? {cols: t.cols, rows: t.rows.filter(r => keep(r[ia], r[ip]))} : t;
+  }
+  const s = D0.sw, ia = s.cols.indexOf("app"), ip = s.cols.indexOf("platform");
+  D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(s.strings[r[ia]], s.strings[r[ip]])) : s.rows});
+  const M = D0.matrix;
+  D.matrix = on && M.cols[0] === "app" ? {cols: M.cols, rows: M.rows.filter(r => keep(r[0], r[1]))} : M;
+  prepare();
+}
+function renderScope() {
+  const H0 = rowsOf(D0.hosts);
+  const apps = [...new Set(H0.map(h => h.app))].sort((a, b) => a.localeCompare(b, "fr"));
+  const pfs = [...new Set(H0.filter(h => !SCOPE.app || h.app === SCOPE.app).map(h => h.platform))].sort((a, b) => a.localeCompare(b, "fr"));
+  const n = f => H0.filter(f).length;
+  const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
+  $("#scope").innerHTML = `<label>Application<select id="s-app">${opt("", "Toutes (" + apps.length + ")", SCOPE.app)}
+      ${apps.map(a => opt(a, a + " (" + n(h => h.app === a) + ")", SCOPE.app)).join("")}</select></label>
+    <label>Plate-forme<select id="s-pf">${opt("", "Toutes (" + pfs.length + ")", SCOPE.pf)}
+      ${pfs.map(p => opt(p, p + " (" + n(h => h.platform === p && (!SCOPE.app || h.app === SCOPE.app)) + ")", SCOPE.pf)).join("")}</select></label>
+    ${SCOPE.app || SCOPE.pf ? `<a class="reset" href="${link("accueil", {app: "", pf: ""})}">Tout l'inventaire</a>` : ""}`;
+  const change = (app, pf) => {
+    const h = location.hash.replace(/^#\/?/, "").split("?"), r = (h[0] || "accueil").split("/")[0];
+    const p = Object.fromEntries(new URLSearchParams(h[1] || ""));
+    p.app = app; p.pf = pf;
+    go(r === "serveur" ? "serveurs" : r, p);
+  };
+  $("#s-app").onchange = e => {
+    const a = e.target.value;
+    change(a, SCOPE.pf && H0.some(h => h.app === a && h.platform === SCOPE.pf) ? SCOPE.pf : "");
+  };
+  $("#s-pf").onchange = e => change(SCOPE.app, e.target.value);
+}
+function scopeText() {
+  return SCOPE.app || SCOPE.pf ? [SCOPE.app || "toutes applications", SCOPE.pf || "toutes plates-formes"].join(" / ") : "";
+}
+
+// ---------------------------------------------------------------- données dérivées
+function prepare() {
+  const s = D.sw;
+  s.C = Object.fromEntries(s.cols.map((c, i) => [c, i]));
+  s.lower = null;
+  SW = s;
+  D.H = rowsOf(D.hosts);
+  D.hostSet = new Set(D.H.map(h => h.hk));
+  D.exposed = rowsOf(D.listening).filter(l => !/^(127\.|::1$|0000:0000:0000:0000:0000:0000:0000:0001)/.test(l.address));
+  D.fsfull = rowsOf(D.filesystems).filter(f => f.size_gb > 0 && !["tmpfs", "devtmpfs", "overlay"].includes(f.fstype)
+    && (f.used_pct >= 90 || f.inodes_used_pct >= 90));
+  D.alerts = {
+    java: rowsOf(D.java_risky).length,
+    restart: new Set(rowsOf(D.restart).map(r => r.hk + ":" + r.pid)).size,
+    reboot: D.H.filter(h => h.reboot_required === "oui").length,
+    deleted: rowsOf(D.deleted_running).length,
+    partial: D.H.filter(h => h.fs_scan_truncated || !h.privileged).length,
+    errors: rowsOf(D.errors).length,
+    failed: rowsOf(D.runs_failed).length,
+    fsfull: D.fsfull.length,
+  };
+}
+function lowerStrings() { if (!D0.sw.lower) D0.sw.lower = D0.sw.strings.map(x => x.toLowerCase()); return D0.sw.lower; }
+const swHk = r => hkey(SW.strings[r[SW.C.app]], SW.strings[r[SW.C.platform]], SW.strings[r[SW.C.host]]);
+function swVal(r, k) { return SW.strings[r[SW.C[k]]]; }
+
+// Recherche : termes (ET), filtres champ:valeur, comparaisons de version (<, <=, >, >=, =)
+const FIELDS = {serveur: "host", host: "host", app: "app", appli: "app", application: "app", pf: "platform",
+  plateforme: "platform", platform: "platform", famille: "family", fam: "family", cat: "category", categorie: "category",
+  version: "version", v: "version", chemin: "location", eco: "ecosystem", purl: "purl", paquet: "owner_pkg"};
+function parseQuery(q) {
+  const out = {terms: [], fields: [], vers: []};
+  for (const t of (q || "").trim().split(/\s+/).filter(Boolean)) {
+    let m = t.match(/^(<=|>=|<|>|=)(.+)$/);
+    if (m) { out.vers.push({op: m[1], v: m[2]}); continue; }
+    m = t.match(/^([a-zé]+):(.+)$/i);
+    if (m && FIELDS[m[1].toLowerCase()]) { out.fields.push({k: FIELDS[m[1].toLowerCase()], v: m[2].toLowerCase()}); continue; }
+    out.terms.push(t.toLowerCase());
+  }
+  return out;
+}
+function searchSoftware(q, filt) {
+  const P = parseQuery(q), L = lowerStrings(), C = SW.C;
+  const cols = ["host", "app", "platform", "category", "ecosystem", "family", "name", "version", "location", "owner_pkg", "purl", "cpe"].map(k => C[k]);
+  const flags = P.terms.map(t => { const f = new Uint8Array(L.length); for (let i = 0; i < L.length; i++) if (L[i].includes(t)) f[i] = 1; return f; });
+  const res = [];
+  for (const r of SW.rows) {
+    if (filt.cat && SW.strings[r[C.category]] !== filt.cat) continue;
+    if (filt.managed === "um" && r[C.managed]) continue;
+    if (filt.managed === "m" && !r[C.managed]) continue;
+    if (filt.host && SW.strings[r[C.host]] !== filt.host) continue;
+    let ok = true;
+    for (const f of flags) { if (!cols.some(ci => f[r[ci]])) { ok = false; break; } }
+    if (!ok) continue;
+    for (const f of P.fields) { if (!L[r[C[f.k]]].includes(f.v)) { ok = false; break; } }
+    if (!ok) continue;
+    if (P.vers.length) {
+      const v = SW.strings[r[C.version]];
+      if (!v) continue;
+      for (const c of P.vers) {
+        const d = cmpVer(v, c.v);
+        if (!((c.op === "<" && d < 0) || (c.op === "<=" && d <= 0) || (c.op === ">" && d > 0) || (c.op === ">=" && d >= 0) || (c.op === "=" && d === 0))) { ok = false; break; }
+      }
+      if (!ok) continue;
+    }
+    res.push(r);
+  }
+  return {rows: res, terms: P.terms.concat(P.fields.map(f => f.v))};
+}
+function searchHosts(q) {
+  const t = (q || "").trim().toLowerCase();
+  if (!t || /[<>=:]/.test(t)) return [];
+  const words = t.split(/\s+/);
+  const ifs = byHost(D.interfaces);
+  return D.H.filter(h => {
+    const hay = [h.host, h.app, h.platform, h.hostname, h.fqdn, h.ip_addresses, h.mac_addresses, h.os_pretty, h.serial, h.product_name,
+      (ifs[h.hk] || []).map(i => [i.mac, i.permanent_mac, i.ipv4, i.ipv6].join(" ")).join(" ")].join(" ").toLowerCase();
+    return words.every(w => hay.includes(w));
+  });
+}
+
+// ---------------------------------------------------------------- vues
+const ROUTES = [
+  ["accueil", "Accueil"], ["serveurs", "Serveurs"], ["logiciels", "Logiciels"], ["versions", "Versions"],
+  ["exposition", "Exposition"], ["materiel", "Matériel"], ["alertes", "Alertes"],
+];
+function navCounts() {
+  const a = D.alerts;
+  return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length,
+    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull};
+}
+function renderNav(route) {
+  const c = navCounts();
+  $("#nav").innerHTML = ROUTES.map(([k, l]) => {
+    const cur = route === k || (route === "serveur" && k === "serveurs");
+    const n = c[k] != null ? `<span class="count${k === "alertes" && c[k] ? " alert" : ""}">${fmt(c[k])}</span>` : "";
+    return `<li><a href="${link(k)}"${cur ? ' aria-current="page"' : ""}><span>${l}</span>${n}</a></li>`;
+  }).join("");
+}
+
+function vAccueil() {
+  const a = D.alerts, H = D.H;
+  const um = SW.rows.reduce((n, r) => n + (r[SW.C.managed] ? 0 : (SW.strings[r[SW.C.category]] === "os-package" ? 0 : 1)), 0);
+  const osCount = {};
+  H.forEach(h => { const k = h.os_pretty || h.os_id || "inconnu"; osCount[k] = (osCount[k] || 0) + 1; });
+  // versions par famille : matrice déjà normalisée (versions amont, "*" = hors paquet)
+  const famVersions = fam => {
+    const m = {}, M = D.matrix, ci = M.cols.indexOf(fam);
+    if (ci < 0) return [];
+    for (const r of M.rows) for (const key of (r[ci] || "").split(" | ").filter(Boolean)) (m[key] = m[key] || new Set()).add(r[0] + "|" + r[1] + "|" + r[2]);
+    return Object.entries(m).map(([k, s]) => ({label: k.replace(/\*$/, "") + (k.endsWith("*") ? " (hors paquet)" : ""),
+      value: s.size, um: k.endsWith("*"), href: link("logiciels", {q: "famille:" + fam + " =" + k.replace(/\*$/, "")})}))
+      .sort((x, y) => y.value - x.value).slice(0, 8);
+  };
+  const todo = [
+    ["java", a.java, "risk", "Archives Java à risque", "log4j avec JndiLookup (même ombragé), log4j 1, commons-collections…", "alertes"],
+    ["deleted", a.deleted, "risk", "Binaires supprimés encore en cours d'exécution", "Version lue en mémoire ; mise à jour non prise en compte", "alertes"],
+    ["restart", a.restart, "warn", "Processus à redémarrer", "Bibliothèques remplacées sur disque, ancienne version encore chargée", "alertes"],
+    ["reboot", a.reboot, "warn", "Serveurs à redémarrer", "Noyau ou bibliothèques système mis à jour", "alertes"],
+    ["fsfull", a.fsfull, "warn", "Systèmes de fichiers presque pleins", "Occupation ou inodes à 90 % ou plus", "alertes"],
+    ["failed", a.failed, "warn", "Serveurs non collectés au dernier passage", "Injoignables ou en échec : la fiche affichée est plus ancienne", "alertes"],
+    ["partial", a.partial, "", "Collectes partielles", "Sans root ou parcours disque interrompu : couverture réduite", "serveurs"],
+  ];
+  const famBlocks = ["java", "php", "python", "openssl", "nginx", "httpd", "postgresql", "tomcat"]
+    .map(f => ({f, items: famVersions(f)})).filter(x => x.items.length).slice(0, 4);
+  return `<section class="hero">
+    <h2>Quel serveur fait tourner quoi, et dans quelle version&nbsp;?</h2>
+    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: ""})}">Voir tout l'inventaire</a></p>` : ""}
+    <form id="herosearch" role="search">
+      <input type="search" id="hq" aria-label="Rechercher" placeholder="log4j-core <2.17.1, php 5., openssl 1.0.2, 10.12.4.8…" autocomplete="off" autofocus>
+      <button class="btn" type="submit">Rechercher</button>
+    </form>
+    <div class="examples"><span class="hint">Exemples :</span>
+      ${["log4j-core <2.17.1", "famille:java <11", "php <8", "openssl 1.0", "jquery <3.5", "struts", "tomcat"].map(x => `<a href="${link("logiciels", {q: x})}">${esc(x)}</a>`).join("")}
+    </div>
+  </section>
+  <div class="facts">
+    ${MULTI ? `<div class="fact"><b>${fmt(new Set(H.map(h => h.app)).size)}</b><span>${pl(new Set(H.map(h => h.app)).size, "application", "applications")}, ${fmt(new Set(H.map(h => h.app + "|" + h.platform)).size)} ${pl(new Set(H.map(h => h.app + "|" + h.platform)).size, "plate-forme", "plates-formes")}</span></div>` : ""}
+    <div class="fact"><b>${fmt(H.length)}</b><span>${pl(H.length, "serveur", "serveurs")}</span></div>
+    <div class="fact"><b>${fmt(Object.keys(osCount).length)}</b><span>${pl(Object.keys(osCount).length, "système distinct", "systèmes distincts")}</span></div>
+    <div class="fact"><b>${fmt(SW.rows.length)}</b><span>${pl(SW.rows.length, "composant inventorié", "composants inventoriés")}</span></div>
+    <div class="fact warn"><b>${fmt(um)}</b><span>hors paquet de distribution</span></div>
+    <div class="fact"><b>${fmt(D.exposed.length)}</b><span>${pl(D.exposed.length, "port en écoute", "ports en écoute")} hors boucle locale</span></div>
+  </div>
+  ${MULTI ? appsTable() : ""}
+  <div class="cols">
+    <section><h3>À traiter</h3><ul class="todo">
+      ${todo.map(([k, n, cls, t, d, r]) => `<li class="${n ? cls : "clear"}"><span class="n">${fmt(n)}</span>
+        <span><a class="t" href="${link(r)}">${esc(t)}</a><br><span class="d">${n ? esc(d) : "Rien à signaler."}</span></span></li>`).join("")}
+    </ul></section>
+    <section><h3>Répartition</h3>
+      ${bars(Object.entries(osCount).sort((x, y) => y[1] - x[1]).slice(0, 8).map(([l, v]) => ({label: l, value: v, href: link("serveurs", {q: l})})), {title: "Systèmes d'exploitation (serveurs)", unit: "serveur(s)"})}
+      ${famBlocks.map(b => bars(b.items, {title: "Versions de " + b.f + " (serveurs)", unit: "serveur(s)"})).join("")}
+    </section>
+  </div>`;
+}
+
+function appsTable() {
+  // synthèse par application / plate-forme (périmètre courant)
+  const g = new Map(), get = (app, pf) => {
+    const k = app + "|" + pf;
+    if (!g.has(k)) g.set(k, {app, pf, hosts: 0, um: 0, exposed: 0, risky: 0, failed: 0, os: new Set(), last: ""});
+    return g.get(k);
+  };
+  for (const h of D.H) { const e = get(h.app, h.platform); e.hosts++; e.os.add(h.os_pretty || h.os_id || "?"); if ((h.collected_at || "") > e.last) e.last = h.collected_at; }
+  const C = SW.C;
+  for (const r of SW.rows) if (!r[C.managed] && SW.strings[r[C.category]] !== "os-package") get(SW.strings[r[C.app]], SW.strings[r[C.platform]]).um++;
+  for (const l of D.exposed) get(l.app, l.platform).exposed++;
+  for (const x of rowsOf(D.java_risky).concat(rowsOf(D.deleted_running))) get(x.app, x.platform).risky++;
+  for (const x of rowsOf(D.runs_failed)) get(x.app, x.platform).failed++;
+  const rows = [...g.values()];
+  return `<h3>Applications et plates-formes</h3>` + table([
+    {k: "app", l: "Application", f: e => `<a href="${link("accueil", {app: e.app, pf: ""})}"><b>${esc(e.app)}</b></a>`},
+    {k: "pf", l: "Plate-forme", f: e => `<a href="${link("accueil", {app: e.app, pf: e.pf})}">${esc(e.pf)}</a>`},
+    {k: "hosts", l: "Serveurs", cls: "num", f: e => `<a href="${link("serveurs", {app: e.app, pf: e.pf})}">${fmt(e.hosts)}</a>`},
+    {k: "os", l: "Systèmes", sortv: e => [...e.os].join(", "), f: e => esc([...e.os].join(", "))},
+    {k: "um", l: "Hors paquet", cls: "num", f: e => e.um ? `<a href="${link("logiciels", {app: e.app, pf: e.pf, gestion: "um"})}">${fmt(e.um)}</a>` : "0"},
+    {k: "exposed", l: "Ports exposés", cls: "num", f: e => fmt(e.exposed)},
+    {k: "risky", l: "Alertes", cls: "num", f: e => e.risky ? `<span class="badge risk">${fmt(e.risky)}</span>` : "0"},
+    {k: "failed", l: "Non collectés", cls: "num", f: e => e.failed ? `<span class="badge warn">${fmt(e.failed)}</span>` : "0"},
+    {k: "last", l: "Collecte la plus récente", f: e => esc((e.last || "").replace("T", " ").replace("Z", ""))},
+  ], rows, {sort: "app", page: 50});
+}
+
+function vServeurs(params) {
+  const q = params.get("q") || "";
+  const hs = q ? searchHosts(q).concat(D.H.filter(h => (h.os_pretty || "") === q)).filter((h, i, a) => a.indexOf(h) === i) : D.H;
+  const ifs = byHost(D.interfaces);
+  const cols = [
+    {k: "host", l: "Serveur", f: h => `<a href="${link("serveur/" + encodeURIComponent(h.hk))}">${esc(h.host)}</a>`}]
+    .concat(MULTI ? [{k: "app", l: "Application"}, {k: "platform", l: "Plate-forme"}] : []).concat([
+    {k: "os_pretty", l: "Système"},
+    {k: "kernel", l: "Noyau", cls: "mono"},
+    {k: "ip_addresses", l: "Adresses (interface)", f: h => esc((h.ip_addresses || "").split(" ").join("\n")).replace(/\n/g, "<br>")},
+    {k: "cpu_threads", l: "CPU", cls: "num", sortv: h => h.cpu_threads || h.cpu_count, f: h => fmt(h.cpu_threads || h.cpu_count)},
+    {k: "mem_total_mb", l: "Mémoire", cls: "num", f: h => h.mem_total_mb ? fmt(Math.round(h.mem_total_mb / 1024)) + " Go" : ""},
+    {k: "product_name", l: "Matériel", f: h => esc([h.sys_vendor, h.product_name].filter(Boolean).join(" ") || h.hypervisor || "")},
+    {k: "privileged", l: "Collecte", f: h => (h.privileged ? '<span class="badge ok">root</span>' : '<span class="badge muted" title="Collecte sans élévation de privilèges">non privilégiée</span>')
+        + (h.fs_scan_truncated ? ' <span class="badge warn">parcours partiel</span>' : "")},
+    {k: "collected_at", l: "Collecté le", f: h => esc((h.collected_at || "").replace("T", " ").replace("Z", ""))},
+  ]);
+  return `<h2>Serveurs${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
+    <div class="toolbar"><input type="text" id="hostfilter" value="${esc(q)}" placeholder="Filtrer par nom, application, IP, MAC, système…" aria-label="Filtrer les serveurs">
+    <span class="spacer"></span><button class="btn ghost" type="button" id="hostcsv">Exporter en CSV</button></div>
+    ${table(cols, hs, {sort: "host", empty: "Aucun serveur ne correspond."})}`;
+}
+
+function vServeur(key, params) {
+  // clé app|pf|hôte ; un simple nom d'hôte est accepté s'il est unique
+  const byName = D.H.filter(x => x.host === key);
+  const h = D.H.find(x => x.hk === key) || (byName.length === 1 ? byName[0] : null);
+  if (!h) return `<h2>Serveur introuvable</h2><p class="lede">${esc(hsplit(key).host || key)} n'est pas dans ce périmètre.</p>`
+    + (byName.length > 1 ? `<p>Ce nom correspond à plusieurs fiches : ${byName.map(x => hkLink(x.hk) + " (" + esc(x.app + " / " + x.platform) + ")").join(", ")}.</p>` : "");
+  const host = h.hk;
+  const tab = params.get("onglet") || "synthese";
+  const tabs = [["synthese", "Synthèse"], ["reseau", "Réseau"], ["stockage", "Stockage et matériel"], ["composants", "Composants"],
+    ["exposition", "Ports et services"], ["alertes", "Alertes"]];
+  const base = "serveur/" + encodeURIComponent(host);
+  const others = rowsOf(D0.hosts).filter(x => x.host === h.host && x.hk !== h.hk);
+  const dl = pairs => `<dl class="dl">${pairs.filter(p => p[1] != null && p[1] !== "").map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
+  let body = "";
+  const hostRows = k => (byHost(D[k])[host] || []);
+  if (tab === "synthese") {
+    body = dl([
+      ["Nom complet", esc(h.fqdn)], ["Système", esc(h.os_pretty)], ["Noyau", `<code>${esc(h.kernel)}</code>`], ["Architecture", esc(h.arch)],
+      ["Matériel", esc([h.sys_vendor, h.product_name].filter(Boolean).join(" "))], ["Carte mère", esc(h.board)],
+      ["Châssis", esc(h.chassis)], ["Numéro de série", esc(h.serial)], ["BIOS", esc([h.bios_version, h.bios_date].filter(Boolean).join(" du "))],
+      ["Virtualisation", esc(h.hypervisor || h.virtualization)], ["Processeur", esc(h.cpu_model)],
+      ["Sockets / cœurs / threads", [h.cpu_sockets, h.cpu_cores, h.cpu_threads].some(x => x) ? [h.cpu_sockets, h.cpu_cores, h.cpu_threads].map(x => x == null ? "?" : x).join(" / ") : ""],
+      ["Mémoire", h.mem_total_mb ? fmt(Math.round(h.mem_total_mb / 1024)) + " Go" : ""], ["Disques", h.disk_total_gb ? fmt(h.disk_total_gb) + " Go" : ""],
+      ["Adresses", esc((h.ip_addresses || "").split(" ").join(", "))], ["MAC (cartes physiques)", esc((h.mac_addresses || "").split(" ").join(", "))],
+      ["Démarré le", esc(h.boot_time)], ["Uptime", h.uptime_days != null ? fmt(h.uptime_days) + " jours" : ""],
+      ["SELinux", esc(h.selinux)], ["Redémarrage requis", esc(h.reboot_required)], ["Identifiant machine", `<code>${esc(h.machine_id)}</code>`],
+      ["Collecte", esc((h.collected_at || "").replace("T", " ").replace("Z", " UTC")) + " par " + esc(h.collect_user) + (h.privileged ? " (root)" : " (non privilégiée)")],
+      ["Visibilité", h.processes_visible != null ? `${fmt(h.processes_exe_readable)} exécutables lisibles sur ${fmt(h.processes_visible)} processus` + (h.fs_unreadable_dirs ? `, ${fmt(h.fs_unreadable_dirs)} répertoires illisibles` : "") : ""],
+      ["Version du collecteur", esc(h.collector_version)],
+      ["Application / plate-forme", esc(h.app + " / " + h.platform)], ["Passage de collecte", `<code>${esc(h.run_id)}</code>`],
+      ["Étiquettes", esc(Object.entries(JSON.parse(h.tags || "{}")).filter(([k]) => k !== "app" && k !== "platform").map(([k, v]) => k + "=" + v).join(", "))],
+      ["Aussi collecté pour", others.map(x => `<a href="${link("serveur/" + encodeURIComponent(x.hk), {app: "", pf: ""})}">${esc(x.app + " / " + x.platform)}</a>`).join(", ")],
+    ]);
+  } else if (tab === "reseau") {
+    body = `<h3>Interfaces</h3>` + table([
+      {k: "ifname", l: "Interface", f: i => `<b>${esc(i.ifname)}</b>`}, {k: "kind", l: "Type"}, {k: "state", l: "État"},
+      {k: "ipv4", l: "IPv4"}, {k: "ipv6", l: "IPv6", cls: "wrap"}, {k: "mac", l: "MAC", cls: "mono"},
+      {k: "permanent_mac", l: "MAC d'usine", cls: "mono", f: i => esc(i.permanent_mac && i.permanent_mac !== i.mac ? i.permanent_mac : (i.permanent_mac ? "identique" : ""))},
+      {k: "speed_mbps", l: "Débit", cls: "num", f: i => i.speed_mbps ? fmt(i.speed_mbps) + " Mb/s" : ""}, {k: "mtu", l: "MTU", cls: "num"},
+      {k: "master", l: "Rattachement", f: i => esc([i.master && "membre de " + i.master, i.parent && "sur " + i.parent, i.vlan_id != null && "VLAN " + i.vlan_id, i.members && "membres : " + i.members].filter(Boolean).join(", "))},
+      {k: "model", l: "Carte", f: i => esc([i.vendor, i.model].filter(Boolean).join(" "))},
+      {k: "driver", l: "Pilote / firmware", f: i => esc([i.driver, i.driver_version, i.firmware && "fw " + i.firmware].filter(Boolean).join(" "))},
+    ], hostRows("interfaces"), {sort: "ifname"});
+  } else if (tab === "stockage") {
+    body = `<h3>Systèmes de fichiers</h3>` + table(fsCols(false), hostRows("filesystems"), {sort: "mountpoint", empty: "Aucun point de montage relevé."})
+      + `<h3>Disques</h3>` + table([
+      {k: "name", l: "Disque", f: d => `<b>${esc(d.name)}</b>${d.dm_name ? " (" + esc(d.dm_name) + ")" : ""}`}, {k: "transport", l: "Transport"},
+      {k: "size_gb", l: "Taille", cls: "num", f: d => fmt(d.size_gb) + " Go"}, {k: "model", l: "Modèle", f: d => esc([d.vendor, d.model].filter(Boolean).join(" "))},
+      {k: "serial", l: "Série", cls: "mono"}, {k: "wwn", l: "WWN / WWID", cls: "mono wrap"},
+      {k: "rotational", l: "Support", f: d => d.rotational == null ? "" : (d.rotational ? "rotatif" : "SSD")},
+      {k: "slaves", l: "Construit sur"}, {k: "controller", l: "Contrôleur"},
+    ], hostRows("disks"), {sort: "name"}) + (hostRows("fc").length ? `<h3>HBA Fibre Channel</h3>` + table([
+      {k: "name", l: "Port"}, {k: "wwpn", l: "WWPN", cls: "mono"}, {k: "wwnn", l: "WWNN", cls: "mono"}, {k: "state", l: "État"},
+      {k: "speed", l: "Débit"}, {k: "model", l: "Modèle"}], hostRows("fc")) : "")
+      + (hostRows("memory").length ? `<h3>Barrettes mémoire</h3>` + table([
+      {k: "locator", l: "Emplacement"}, {k: "size", l: "Taille"}, {k: "type", l: "Type"}, {k: "speed", l: "Vitesse"},
+      {k: "manufacturer", l: "Fabricant"}, {k: "part_number", l: "Référence"}, {k: "serial", l: "Série", cls: "mono"}], hostRows("memory")) : "")
+      + `<h3>Périphériques PCI</h3>` + table([
+      {k: "slot", l: "Emplacement", cls: "mono"}, {k: "class", l: "Classe"}, {k: "vendor", l: "Fabricant"}, {k: "device", l: "Périphérique"},
+      {k: "driver", l: "Pilote"}], hostRows("pci"), {sort: "slot", empty: "lspci absent ou non exécuté sur ce serveur."})
+      + (hostRows("cpu_vulns").length ? `<h3>Vulnérabilités matérielles du processeur</h3>` + table([
+      {k: "name", l: "Vulnérabilité"}, {k: "status", l: "État", f: v => /^Vulnerable/i.test(v.status) ? `<span class="badge risk">⚠ ${esc(v.status)}</span>` : esc(v.status)}],
+      hostRows("cpu_vulns")) : "");
+  } else if (tab === "composants") {
+    const C = SW.C;
+    const mine = SW.rows.filter(r => swHk(r) === host);
+    const rs = mine.filter(r => ["runtime", "webapp", "embedded", "db-datadir"].includes(SW.strings[r[C.category]]));
+    const sq = {q: "serveur:" + h.host, app: h.app, pf: h.platform};
+    body = `<p class="lede">Moteurs d'exécution, serveurs, applications et bibliothèques embarquées détectés.
+      <a href="${link("logiciels", sq)}">Voir les ${fmt(mine.length)} composants de ce serveur</a>
+      ou seulement <a href="${link("logiciels", {...sq, gestion: "um"})}">ceux hors paquet</a>.</p>` + swTable(rs, []);
+  } else if (tab === "exposition") {
+    body = `<h3>Ports en écoute</h3>` + listeningTable(hostRows("listening"), false) + `<h3>Services actifs</h3>` + table([
+      {k: "unit", l: "Unité"}, {k: "sub", l: "État"}, {k: "unit_file_state", l: "Au démarrage"}, {k: "user", l: "Utilisateur"},
+      {k: "description", l: "Description"}], hostRows("services"), {sort: "unit", empty: "Aucun service actif relevé (systemd absent ou collecte shell sur système SysV)."})
+      + (hostRows("containers").length ? `<h3>Conteneurs et images</h3>` + table([{k: "engine", l: "Moteur"}, {k: "kind", l: "Type"},
+      {k: "name", l: "Nom"}, {k: "image", l: "Image"}, {k: "status", l: "État"}], hostRows("containers")) : "");
+  } else if (tab === "alertes") {
+    body = alertsHtml(host);
+  }
+  return `<p class="hint"><a href="${link("serveurs")}">Serveurs</a></p>
+    <div class="hosthead"><h2>${esc(h.host)}</h2>
+      <a class="badge" href="${link("accueil", {app: h.app, pf: ""})}">${esc(h.app)}</a>
+      <a class="badge" href="${link("accueil", {app: h.app, pf: h.platform})}">${esc(h.platform)}</a>
+      ${h.privileged ? "" : '<span class="badge muted">collecte non privilégiée</span>'}
+      ${h.reboot_required === "oui" ? '<span class="badge warn">redémarrage requis</span>' : ""}</div>
+    <p class="lede">${esc(h.os_pretty || "")}${h.kernel ? ", noyau " + esc(h.kernel) : ""}${h.ip_addresses ? ", " + esc(h.ip_addresses.split(" ").join(", ")) : ""}</p>
+    <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<a href="${link(base, {onglet: k})}"${k === tab ? ' aria-current="page"' : ""}>${l}</a>`).join("")}</div>
+    ${body}`;
+}
+
+function swTable(rs, terms) {
+  const s = (r, k) => SW.strings[r[SW.C[k]]];
+  return table([
+    {k: "host", l: "Serveur", sortv: r => s(r, "host"), f: r => hostLabel(s(r, "app"), s(r, "platform"), s(r, "host"), terms)},
+    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}`},
+    {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !r[SW.C.managed]) : ""},
+    {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
+    {k: "managed", l: "Gestion", sortv: r => r[SW.C.managed], f: r => r[SW.C.managed] ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
+    {k: "location", l: "Emplacement", cls: "path", sortv: r => s(r, "location"), f: r => hl(s(r, "location"), terms) + (s(r, "evidence") ? `<br><span class="cat">${esc(s(r, "evidence"))}</span>` : "")},
+  ], rs, {empty: "Aucun composant ne correspond à cette recherche."});
+}
+
+function vLogiciels(params) {
+  const q = params.get("q") || "", cat = params.get("cat") || "", gestion = params.get("gestion") || "", vue = params.get("vue") || "detail";
+  const cats = [...new Set(SW.rows.map(r => SW.strings[r[SW.C.category]]))].sort();
+  const res = searchSoftware(q, {cat, managed: gestion});
+  const hosts = q ? searchHosts(q) : [];
+  let body;
+  if (vue === "versions") {
+    const g = new Map();
+    for (const r of res.rows) {
+      const name = SW.strings[r[SW.C.family]] || SW.strings[r[SW.C.name]], ver = SW.strings[r[SW.C.version]];
+      const key = name + "\u0000" + ver;
+      let e = g.get(key);
+      if (!e) { e = {name, version: ver, hosts: new Set(), n: 0, um: 0}; g.set(key, e); }
+      e.hosts.add(swHk(r)); e.n++; if (!r[SW.C.managed]) e.um++;
+    }
+    const rows = [...g.values()].map(e => ({...e, nh: e.hosts.size}));
+    body = table([
+      {k: "name", l: "Composant", f: e => hl(e.name, res.terms)},
+      {k: "version", l: "Version", sortv: e => e.version, f: e => e.version ? verTag(e.version, e.um > 0) : ""},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => `<a href="${link("logiciels", {q: (q + " =" + e.version).trim(), cat, gestion})}">${fmt(e.nh)}</a>`},
+      {k: "n", l: "Occurrences", cls: "num", f: e => fmt(e.n)},
+      {k: "um", l: "Dont hors paquet", cls: "num", f: e => e.um ? `<span class="badge warn">${fmt(e.um)}</span>` : ""},
+      {k: "hl", l: "Exemples de serveurs", f: e => [...e.hosts].slice(0, 5).map(hkLink).join(", ") + (e.nh > 5 ? "…" : "")},
+    ], rows, {sort: "nh", dir: -1, empty: "Aucun composant ne correspond à cette recherche."});
+  } else {
+    body = swTable(res.rows, res.terms);
+  }
+  const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
+  return `<h2>Logiciels${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
+    <p class="lede">${q ? `${fmt(res.rows.length)} composants correspondent à « ${esc(q)} ».` : `${fmt(SW.rows.length)} composants inventoriés. Tapez un nom, une version ou un chemin dans la barre de recherche.`}
+      Syntaxe : plusieurs mots se combinent (ET) ; <code>&lt;2.17.1</code>, <code>&gt;=1.0</code> ou <code>=5.4.2</code> comparent la version ;
+      <code>serveur:</code>, <code>app:</code>, <code>pf:</code>, <code>famille:</code>, <code>cat:</code>, <code>chemin:</code>, <code>paquet:</code> restreignent un champ.
+      ${SW.excluded && SW.excluded.length ? `Catégories exclues du rapport : ${esc(SW.excluded.join(", "))}.` : ""}</p>
+    ${hosts.length ? `<p>Serveurs correspondants : ${hosts.slice(0, 20).map(h => hkLink(h.hk)).join(", ")}</p>` : ""}
+    <div class="toolbar">
+      <select id="f-cat" aria-label="Nature">${opt("", "Toutes natures", cat)}${cats.map(c => opt(c, c, cat)).join("")}</select>
+      <select id="f-gestion" aria-label="Gestion">${opt("", "Gérés ou non", gestion)}${opt("um", "Hors paquet seulement", gestion)}${opt("m", "Paquets de distribution seulement", gestion)}</select>
+      <select id="f-vue" aria-label="Présentation">${opt("detail", "Une ligne par installation", vue)}${opt("versions", "Regrouper par version", vue)}</select>
+      <span class="spacer"></span><button class="btn ghost" type="button" id="swcsv">Exporter en CSV</button>
+    </div>
+    ${body}`;
+}
+
+function vVersions(params) {
+  const M = D.matrix, f = (params.get("q") || "").toLowerCase();
+  if (!M.cols.length) return `<h2>Versions</h2><div class="empty">Matrice absente : relancez la consolidation.</div>`;
+  const off = 4;   // app ; platform ; host ; os ; familles…
+  const fams = M.cols.slice(off);
+  const rows = M.rows.filter(r => !f || r.join(" ").toLowerCase().includes(f));
+  const cols = [{k: 2, l: "Serveur", f: r => hostLabel(r[0], r[1], r[2])}, {k: 3, l: "Système"}]
+    .concat(fams.map((fam, i) => ({k: i + off, l: fam, f: r => (r[i + off] || "").split(" | ").filter(Boolean).map(v => {
+      const um = v.endsWith("*"), vv = um ? v.slice(0, -1) : v;
+      return `<a href="${link("logiciels", {q: "famille:" + fam + " =" + vv, ...(um ? {gestion: "um"} : {})})}">${verTag(vv, um)}</a>`;
+    }).join("")})));
+  return `<h2>Versions par serveur</h2>
+    <div class="legend"><span>${verTag("1.2.3", false)} paquet de la distribution</span><span>${verTag("1.2.3", true)} installation hors paquet</span>
+      <span class="hint">Cliquez une version pour voir où elle est installée.</span></div>
+    <div class="toolbar"><input type="text" id="mxfilter" value="${esc(f)}" placeholder="Filtrer (serveur, application, système, version…)" aria-label="Filtrer la matrice">
+      <span class="spacer"></span><button class="btn ghost" type="button" id="mxcsv">Exporter en CSV</button></div>
+    ${table(cols, rows, {sort: 2, cls: "matrix", page: 500})}`;
+}
+
+function listeningTable(rows, withHost) {
+  const scope = a => /^(127\.|::1$)/.test(a) ? '<span class="badge muted">local</span>' : (/^(0\.0\.0\.0|::|\*)$/.test(a) ? '<span class="badge warn">toutes interfaces</span>' : `<span class="badge">${esc(a)}</span>`);
+  return table((withHost ? [{k: "host", l: "Serveur", f: l => hostCell(l)}] : []).concat([
+    {k: "port", l: "Port", cls: "num"}, {k: "proto", l: "Protocole"}, {k: "address", l: "Écoute sur", f: l => scope(l.address)},
+    {k: "process", l: "Processus", f: l => esc(l.process || "")}, {k: "user", l: "Compte"},
+    {k: "exe", l: "Exécutable", cls: "path", f: l => esc(l.exe || "") + (l.exe && !l.exe_managed ? ' <span class="badge warn">hors paquet</span>' : "")},
+  ]), rows, {sort: withHost ? "host" : "port", empty: "Aucun port en écoute relevé."});
+}
+
+function vExposition(params) {
+  const f = (params.get("q") || "").toLowerCase(), all = params.get("tout") === "1";
+  let rows = all ? rowsOf(D.listening) : D.exposed;
+  if (f) rows = rows.filter(l => [l.host, l.app, l.platform, l.port, l.process, l.user, l.exe, l.address].join(" ").toLowerCase().includes(f));
+  return `<h2>Exposition réseau</h2>
+    <p class="lede">Ports en écoute ${all ? "(y compris boucle locale)" : "hors boucle locale"}. Sans root, le processus des autres comptes n'est pas visible : seul le compte propriétaire du port l'est.</p>
+    <div class="toolbar"><input type="text" id="expfilter" value="${esc(f)}" placeholder="Filtrer (serveur, port, processus…)" aria-label="Filtrer">
+      <a class="btn ghost" href="${link("exposition", all ? {} : {tout: "1"})}">${all ? "Masquer la boucle locale" : "Inclure la boucle locale"}</a></div>
+    ${listeningTable(rows, true)}`;
+}
+
+function vMateriel(params) {
+  const tab = params.get("onglet") || "interfaces", f = (params.get("q") || "").toLowerCase();
+  const filt = rs => f ? rs.filter(o => Object.values(o).join(" ").toLowerCase().includes(f)) : rs;
+  const hcol = {k: "host", l: "Serveur", f: o => hostCell(o)};
+  const tabs = [["interfaces", "Interfaces réseau"], ["fs", "Systèmes de fichiers"], ["disques", "Disques"], ["pci", "PCI"], ["fc", "Fibre Channel"], ["memoire", "Mémoire"], ["serveurs", "Serveurs"]];
+  let body = "";
+  if (tab === "interfaces") body = table([hcol, {k: "ifname", l: "Interface"}, {k: "kind", l: "Type"}, {k: "ipv4", l: "IPv4"},
+    {k: "mac", l: "MAC", cls: "mono"}, {k: "permanent_mac", l: "MAC d'usine", cls: "mono"}, {k: "state", l: "État"},
+    {k: "speed_mbps", l: "Débit", cls: "num", f: i => i.speed_mbps ? fmt(i.speed_mbps) + " Mb/s" : ""},
+    {k: "model", l: "Carte", f: i => esc([i.vendor, i.model].filter(Boolean).join(" "))},
+    {k: "driver", l: "Pilote / firmware", f: i => esc([i.driver, i.driver_version, i.firmware && "fw " + i.firmware].filter(Boolean).join(" "))},
+    {k: "master", l: "Rattachement", f: i => esc([i.master, i.parent, i.vlan_id != null ? "VLAN " + i.vlan_id : ""].filter(Boolean).join(" "))}],
+    filt(rowsOf(D.interfaces).filter(i => i.kind !== "loopback")), {sort: "host"});
+  else if (tab === "fs") body = table(fsCols(true), filt(rowsOf(D.filesystems)), {sort: "used_pct", dir: -1});
+  else if (tab === "disques") body = table([hcol, {k: "name", l: "Disque"}, {k: "transport", l: "Transport"},
+    {k: "size_gb", l: "Taille", cls: "num", f: d => fmt(d.size_gb) + " Go"}, {k: "model", l: "Modèle", f: d => esc([d.vendor, d.model].filter(Boolean).join(" "))},
+    {k: "serial", l: "Série", cls: "mono"}, {k: "wwn", l: "WWN", cls: "mono wrap"}, {k: "rotational", l: "Support", f: d => d.rotational == null ? "" : (d.rotational ? "rotatif" : "SSD")}],
+    filt(rowsOf(D.disks)), {sort: "host"});
+  else if (tab === "pci") body = table([hcol, {k: "slot", l: "Emplacement", cls: "mono"}, {k: "class", l: "Classe"}, {k: "vendor", l: "Fabricant"},
+    {k: "device", l: "Périphérique"}, {k: "driver", l: "Pilote"}], filt(rowsOf(D.pci)), {sort: "host"});
+  else if (tab === "fc") body = table([hcol, {k: "name", l: "Port"}, {k: "wwpn", l: "WWPN", cls: "mono"}, {k: "wwnn", l: "WWNN", cls: "mono"},
+    {k: "state", l: "État"}, {k: "speed", l: "Débit"}, {k: "model", l: "Modèle"}], filt(rowsOf(D.fc)), {empty: "Aucun HBA Fibre Channel détecté."});
+  else if (tab === "memoire") body = table([hcol, {k: "locator", l: "Emplacement"}, {k: "size", l: "Taille"}, {k: "type", l: "Type"},
+    {k: "speed", l: "Vitesse"}, {k: "manufacturer", l: "Fabricant"}, {k: "part_number", l: "Référence"}, {k: "serial", l: "Série", cls: "mono"}],
+    filt(rowsOf(D.memory)), {empty: "Le détail des barrettes exige une collecte en root (dmidecode)."});
+  else body = table([hcol, {k: "sys_vendor", l: "Constructeur"}, {k: "product_name", l: "Modèle"}, {k: "serial", l: "Série", cls: "mono"},
+    {k: "chassis", l: "Châssis"}, {k: "bios_version", l: "BIOS", f: h => esc([h.bios_version, h.bios_date].filter(Boolean).join(" du "))},
+    {k: "cpu_model", l: "Processeur"}, {k: "cpu_threads", l: "Threads", cls: "num"}, {k: "mem_total_mb", l: "Mémoire", cls: "num", f: h => h.mem_total_mb ? fmt(Math.round(h.mem_total_mb / 1024)) + " Go" : ""},
+    {k: "disk_total_gb", l: "Disques", cls: "num", f: h => h.disk_total_gb ? fmt(h.disk_total_gb) + " Go" : ""}, {k: "hypervisor", l: "Virtualisation"}],
+    filt(D.H), {sort: "host"});
+  return `<h2>Matériel</h2>
+    <div class="tabs">${tabs.map(([k, l]) => `<a href="${link("materiel", {onglet: k})}"${k === tab ? ' aria-current="page"' : ""}>${l}</a>`).join("")}</div>
+    <div class="toolbar"><input type="text" id="hwfilter" value="${esc(f)}" placeholder="Filtrer (serveur, MAC, modèle, série…)" aria-label="Filtrer"></div>
+    ${body}`;
+}
+
+function alertsHtml(host) {
+  const only = rs => host ? rs.filter(r => r.hk === host) : rs;
+  const hcol = host ? [] : [{k: "host", l: "Serveur", f: o => hostCell(o)}];
+  const H = host ? D.H.filter(h => h.hk === host) : D.H;
+  return `<h3>Archives Java à risque</h3>` + table(hcol.concat([
+      {k: "marker", l: "Indice", f: r => `<span class="badge risk">⚠ ${esc(r.marker)}</span>`}, {k: "archive", l: "Archive", cls: "path"}]),
+      only(rowsOf(D.java_risky)), {empty: "Aucune archive à risque détectée."})
+    + `<h3>Binaires supprimés encore en cours d'exécution</h3>` + table(hcol.concat([
+      {k: "family", l: "Composant"}, {k: "version", l: "Version en mémoire", f: r => verTag(r.version, true)}, {k: "location", l: "Chemin", cls: "path"}]),
+      only(rowsOf(D.deleted_running)), {empty: "Aucun."})
+    + `<h3>Processus à redémarrer</h3>` + table(hcol.concat([
+      {k: "pid", l: "PID", cls: "num"}, {k: "user", l: "Compte"}, {k: "comm", l: "Processus"}, {k: "exe", l: "Exécutable", cls: "path"},
+      {k: "deleted_files_count", l: "Fichiers remplacés", cls: "num"}]), only(rowsOf(D.restart)), {empty: "Aucun (ou non visible sans root)."})
+    + (host ? "" : `<h3>Serveurs à redémarrer</h3>` + table(hcol.concat([{k: "os_pretty", l: "Système"}, {k: "kernel", l: "Noyau en cours", cls: "mono"},
+      {k: "uptime_days", l: "Uptime (jours)", cls: "num"}]), H.filter(h => h.reboot_required === "oui"), {empty: "Aucun."})
+      + `<h3>Collectes partielles</h3>` + table(hcol.concat([{k: "privileged", l: "Privilèges", f: h => h.privileged ? "root" : "non privilégiée"},
+      {k: "fs_scan_truncated", l: "Parcours disque", f: h => h.fs_scan_truncated ? '<span class="badge warn">interrompu</span>' : "complet"},
+      {k: "processes_exe_readable", l: "Exécutables lisibles", cls: "num", f: h => h.processes_visible != null ? fmt(h.processes_exe_readable) + " / " + fmt(h.processes_visible) : ""},
+      {k: "fs_unreadable_dirs", l: "Répertoires illisibles", cls: "num"}]), H.filter(h => h.fs_scan_truncated || !h.privileged), {empty: "Toutes les collectes sont complètes."}))
+    + `<h3>Systèmes de fichiers presque pleins</h3>` + table(fsCols(!host), only(D.fsfull), {sort: "used_pct", dir: -1, empty: "Aucun système de fichiers à 90 % ou plus."})
+    + `<h3>Non collectés au dernier passage</h3>` + table(hcol.concat([
+      {k: "status", l: "Résultat", f: r => `<span class="badge warn">${esc({unreachable: "injoignable", failed: "échec"}[r.status] || r.status)}</span>`},
+      {k: "started_at", l: "Passage", f: r => esc((r.started_at || "").replace("T", " ").replace("Z", "")) + `<br><span class="cat">${esc(r.run_id)}</span>`},
+      {k: "last_ok", l: "Collecte affichée", f: r => r.last_ok ? esc(r.last_ok.replace("T", " ").replace("Z", "")) : '<span class="badge risk">aucune</span>'},
+      {k: "detail", l: "Détail", cls: "path"}]), only(rowsOf(D.runs_failed)), {empty: "Tous les serveurs ont été collectés à leur dernier passage."})
+    + `<h3>Erreurs de collecte</h3>` + table(hcol.concat([{k: "section", l: "Section"}, {k: "error", l: "Erreur", cls: "path"}]), only(rowsOf(D.errors)), {empty: "Aucune."});
+}
+function vAlertes() { return `<h2>Alertes</h2><p class="lede">Ce qui mérite une action, indépendamment du croisement avec les CVE.</p>` + alertsHtml(null); }
+
+// ---------------------------------------------------------------- routage
+function route() {
+  const h = location.hash.replace(/^#\/?/, "");
+  const [path, qs] = h.split("?");
+  const params = new URLSearchParams(qs || "");
+  const parts = (path || "accueil").split("/");
+  let r = parts[0] || "accueil", html;
+  const ns = {app: params.get("app") || "", pf: params.get("pf") || ""};
+  if (ns.app !== SCOPE.app || ns.pf !== SCOPE.pf || !D) { SCOPE = ns; applyScope(); renderScope(); updateGen(); }
+  try {
+    if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
+    else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,
+      materiel: vMateriel, alertes: vAlertes}[r] || vAccueil)(params);
+  } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
+  renderNav(r);
+  $("#topbar").hidden = r === "accueil";
+  $("#q").value = r === "logiciels" ? (params.get("q") || "") : "";
+  document.title = "Inventaire du parc" + (scopeText() ? " (" + scopeText() + ")" : "");
+  $("#view").innerHTML = html;
+  bindView(r, params);
+  if (!location.hash.includes("onglet=")) window.scrollTo(0, 0);
+}
+function go(r, p) { location.hash = link(r, p); }
+function bindView(r, params) {
+  const hs = $("#herosearch");
+  if (hs) hs.onsubmit = e => { e.preventDefault(); go("logiciels", {q: $("#hq").value}); };
+  const filterInput = (sel, rt, extra) => { const el = $(sel); if (!el) return; let to;
+    el.oninput = () => { clearTimeout(to); to = setTimeout(() => { const p = Object.fromEntries(params); p.q = el.value; history.replaceState(null, "", link(rt, p)); route(); const n = $(sel); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250); }; };
+  filterInput("#hostfilter", "serveurs"); filterInput("#mxfilter", "versions"); filterInput("#expfilter", "exposition"); filterInput("#hwfilter", "materiel");
+  if (r === "logiciels") {
+    const upd = () => go("logiciels", {q: params.get("q") || "", cat: $("#f-cat").value, gestion: $("#f-gestion").value, vue: $("#f-vue").value});
+    ["#f-cat", "#f-gestion", "#f-vue"].forEach(s => $(s).onchange = upd);
+    $("#swcsv").onclick = () => {
+      const res = searchSoftware(params.get("q") || "", {cat: params.get("cat") || "", managed: params.get("gestion") || ""});
+      const cols = SW.cols;
+      csvDownload("cmdb_logiciels.csv", cols, res.rows.map(r => cols.map(c => c === "managed" ? (r[SW.C.managed] ? "distribution" : "hors paquet") : SW.strings[r[SW.C[c]]])));
+    };
+  }
+  if (r === "serveurs") $("#hostcsv").onclick = () => csvDownload("cmdb_serveurs.csv", D.hosts.cols, D.hosts.rows);
+  if (r === "versions") { const b = $("#mxcsv"); if (b) b.onclick = () => csvDownload("cmdb_versions.csv", D.matrix.cols, D.matrix.rows); }
+}
+
+// ---------------------------------------------------------------- démarrage
+(function theme() {
+  const saved = (() => { try { return localStorage.getItem("cmdb-theme"); } catch (e) { return null; } })();
+  if (saved) document.documentElement.dataset.theme = saved;
+  const btn = $("#theme");
+  const label = () => { const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; btn.textContent = dark ? "Thème clair" : "Thème sombre"; };
+  label();
+  btn.onclick = () => {
+    const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem("cmdb-theme", document.documentElement.dataset.theme); } catch (e) {}
+    label();
+  };
+})();
+async function load() {
+  const b64 = document.getElementById("cmdb-data").textContent.trim();
+  if (typeof DecompressionStream === "undefined") throw new Error("ce navigateur ne sait pas décompresser les données (Firefox 113+, Chrome/Edge 80+ ou Safari 16.4+ requis)");
+  const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  const txt = await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  D0 = JSON.parse(txt);
+  MULTI = new Set(D0.hosts.rows.map(r => r[0] + "|" + r[1])).size > 1;
+}
+function updateGen() {
+  const n = D.H.length;
+  $("#gen").textContent = "Généré le " + D0.generated + ", " + fmt(n) + " serveur" + (n > 1 ? "s" : "") + (scopeText() ? " dans le périmètre" : "");
+}
+load().then(() => {
+  $("#topsearch").onsubmit = e => { e.preventDefault(); go("logiciels", {q: $("#q").value}); };
+  window.addEventListener("hashchange", route);
+  route();
+}).catch(e => { $("#view").innerHTML = `<p class="err">Impossible de charger l'inventaire : ${esc(e.message)}.</p>`; });
+</script>
+</body>
+</html>

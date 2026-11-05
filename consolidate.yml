@@ -1,0 +1,46 @@
+---
+# ---------------------------------------------------------------------------
+# CMDB maison — CONSOLIDATION, indépendante des collectes
+#
+# Lit tous les passages déjà collectés (toutes applications / plates-formes) et
+# produit la base SQLite, les CSV, la matrice, les SBOM, les fichiers FLRTVC (AIX)
+# et le rapport HTML. À lancer quand on veut, aussi souvent qu'on veut :
+#
+#   ansible-playbook consolidate.yml
+#   ansible-playbook consolidate.yml -e '{"cmdb_lots": ["/depot/lots/*.tar.gz"]}'
+#   ansible-playbook consolidate.yml -e '{"cmdb_filter_apps": ["APPDEMO"], "cmdb_filter_platforms": ["prod"]}'
+#
+# Équivalent direct, sans Ansible :
+#   python3 tools/cmdb_build.py --store store --lot '/depot/lots/*.tar.gz' --out build
+# ---------------------------------------------------------------------------
+
+- name: CMDB maison — consolidation sur le contrôleur
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    cmdb_store_dirs: ["{{ playbook_dir }}/store"]   # magasins (répertoires) à lire
+    cmdb_lots: []                                     # lots transférés (.tar.gz, motifs glob acceptés)
+    cmdb_filter_apps: []                              # vide = toutes les applications
+    cmdb_filter_platforms: []                         # vide = toutes les plates-formes
+    cmdb_build_dir: "{{ playbook_dir }}/build"
+    cmdb_report_exclude: ""                           # ex. "go-module,npm-package" pour alléger le rapport
+  tasks:
+    - name: Construire la base SQLite, les exports, les SBOM et le rapport HTML
+      ansible.builtin.command:
+        argv: >-
+          {{ [ansible_playbook_python, playbook_dir ~ '/tools/cmdb_build.py', '--out', cmdb_build_dir]
+             + (cmdb_store_dirs | select('ansible.builtin.exists') | map('regex_replace', '^', '--store=') | list)
+             + (cmdb_lots | map('regex_replace', '^', '--lot=') | list)
+             + (cmdb_filter_apps | map('regex_replace', '^', '--app=') | list)
+             + (cmdb_filter_platforms | map('regex_replace', '^', '--platform=') | list)
+             + (['--report-exclude-categories', cmdb_report_exclude] if cmdb_report_exclude else []) }}
+      register: cmdb_build_result
+      changed_when: true
+      when: cmdb_build | default(cmdb_build_default | default(true)) | bool
+
+    - name: Résultat de la consolidation
+      ansible.builtin.debug:
+        msg: "{{ cmdb_build_result.stdout_lines }}"
+      when: cmdb_build_result is not skipped

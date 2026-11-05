@@ -1,0 +1,35 @@
+---
+# ---------------------------------------------------------------------------
+# CMDB maison — COLLECTE (Linux récents : Python >= 3.7 avec ansible-core >= 2.17)
+#
+# Un passage = une application sur une plate-forme. L'étiquetage est obligatoire :
+#
+#   ansible-playbook collect.yml -i inventaires/appdemo-prod.yml \
+#       -e cmdb_app=APPDEMO -e cmdb_platform=prod
+#
+#   (ou cmdb_app / cmdb_platform dans les group_vars de l'inventaire)
+#
+# Résultat : store/APPDEMO/prod/<hôte>/<run_id>.json.gz + latest.json.gz
+#            store/_runs/<run_id>/  (manifeste : statut de chaque hôte)
+#   -e cmdb_lot=true    : produit aussi store/_lots/<run_id>.tar.gz à transférer
+#   -e cmdb_build=true  : enchaîne la consolidation (sinon : consolidate.yml, plus tard)
+#
+# AIX et Linux anciens (Python < 3.7, sans Python) : collect_legacy.yml, mêmes options.
+# ---------------------------------------------------------------------------
+
+- name: CMDB maison — collecte
+  hosts: "{{ cmdb_hosts | default('all:!legacy:!aix') }}"
+  gather_facts: true
+  become: false          # aucune élévation de privilèges : collecte sous le compte de connexion
+  roles:
+    - role: cmdb_collect
+  post_tasks:
+    - name: Manifeste du passage et lot transférable
+      ansible.builtin.include_role:
+        name: cmdb_collect
+        tasks_from: finish
+
+- name: CMDB maison — consolidation (désactivée par défaut, voir consolidate.yml)
+  ansible.builtin.import_playbook: consolidate.yml
+  vars:
+    cmdb_build_default: false
