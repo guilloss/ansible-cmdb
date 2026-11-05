@@ -1792,14 +1792,27 @@ def _ep_nginx(text):
     return out
 
 
-def _ep_tomcat(text):
+def _tomcat_path(store, path):
+    """Un magasin relatif se résout depuis CATALINA_BASE, parent de conf/server.xml."""
+    base = os.path.dirname(os.path.dirname(path))
+    store = re.sub(r"^\$\{catalina\.(?:base|home)\}/?", "", store)
+    return store if store.startswith("/") else os.path.join(base, store)
+
+
+def _ep_tomcat(text, path):
     out = []
     text = re.compile(r"<!--.*?-->", re.S).sub("", text)
-    for m in re.finditer(r"<Connector\b([^>]*)>", text):
-        a = xml_attrs(m.group(1))
+    for m in re.finditer(r"<(Connector|Certificate)\b([^>]*)>", text):
+        a = xml_attrs(m.group(2))
+        store = a.get("keystoreFile") or a.get("certificateKeystoreFile") or a.get("certificateFile")
+        if m.group(1) == "Certificate":
+            if out and store:
+                out[-1]["cert"] = _tomcat_path(store, path)
+            continue
         port = a.get("port")
         out.append({"product": "tomcat", "kind": "connector", "port": int(port) if (port or "").isdigit() else None, "address": a.get("address"),
-                    "protocol": a.get("protocol"), "tls": a.get("SSLEnabled") == "true" or a.get("scheme") == "https"})
+                    "protocol": a.get("protocol"), "tls": a.get("SSLEnabled") == "true" or a.get("scheme") == "https",
+                    "cert": _tomcat_path(store, path) if store else None})
     host = None
     for m in re.finditer(r"<(Host|Context|Alias)\b([^>]*)>(?:([^<]*)</Alias>)?", text):
         a = xml_attrs(m.group(2))
@@ -1840,7 +1853,7 @@ def _ep_haproxy(text):
             for one in p[1].split(","):
                 addr, port = _listen_addr(one)
                 out.append({"product": "haproxy", "kind": "frontend", "server_name": name, "address": addr, "port": port,
-                            "tls": "ssl" in p[2:]})
+                            "tls": "ssl" in p[2:], "cert": p[p.index("crt") + 1] if "crt" in p[:-1] else None})
         elif p[0] == "server" and len(p) > 2 and sect in ("backend", "listen"):
             out.append({"product": "haproxy", "kind": "proxy", "server_name": name, "location": p[1], "backend": p[2]})
     return out
@@ -1853,7 +1866,7 @@ def parse_endpoints(text, path):
     if name == "haproxy.cfg":
         return _ep_haproxy(text)
     if name == "server.xml":
-        return _ep_tomcat(text)
+        return _ep_tomcat(text, path)
     if name.startswith("standalone") or name == "domain.xml":
         return _ep_jboss(text)
     if "nginx" in path:

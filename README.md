@@ -31,6 +31,7 @@ cmdb-ansible/
     ├── cmdb_extras.py          # consolidation : Oracle, liens vers les bases, clés, évolutions, fins de support
     ├── cmdb_maps.py            # consolidation : carte des flux, écarts entre plates-formes et serveurs jumeaux
     ├── cmdb_hardening.py       # consolidation : contrôles de durcissement ANSSI
+    ├── cmdb_dossier.py         # dossier d'application : un HTML autonome par application et plate-forme
     ├── cmdb_anssi_rules.csv    # règles de durcissement (éditable)
     ├── cmdb_anssi_recos.csv    # les 80 recommandations ANSSI-BP-028 et leur couverture
     ├── cmdb_drift_ignore.txt   # écarts à ne pas signaler (éditable)
@@ -282,13 +283,15 @@ Tout fichier repéré figure dans `crypto_files`, même illisible, hors magasins
 | Clés OpenSSH, PuTTY | Type, chiffrée ou non |
 | GSKit `.kdb`, `.sth`, portefeuille Oracle `.sso` | Mentionnés. `.sth` et `.sso` signalés : ils donnent accès sans mot de passe |
 
+`cert_usage` relie chaque service (virtualhost Apache ou nginx, connecteur Tomcat, frontal HAProxy) à son certificat : état (`expiré`, `à renouveler` sous 30 jours, `valide`, `illisible`, `non inventorié`) et `name_match`, qui signale un certificat ne couvrant pas le nom du virtualhost. `v_certs_shared` liste les certificats présents sur plusieurs serveurs : leur clé y est donc aussi, et son renouvellement les concerne tous. Le rapprochement se fait par empreinte du certificat, jamais de la clé.
+
 Le contenu d'une clé n'est jamais conservé ni transmis. Le collecteur shell n'en lit que l'en-tête et ne copie que les blocs `CERTIFICATE`. Alertes : `v_private_keys_exposed` (lisible par tous, ou PKCS#12 sans mot de passe), `v_certs_expiring` (moins de 90 jours). Une clé en clair lisible par son seul propriétaire n'est pas une alerte : c'est le cas normal d'un serveur web.
 
 ## Carte des flux
 
-`app_flows` relie les serveurs entre eux, à partir des liens vers les bases (`base`, `réplication`), des proxys déclarés dans Apache, nginx et HAProxy (`proxy`) et des connexions observées (`réseau`, à l'exclusion des ports d'infrastructure : SSH, DNS, NTP, supervision…). Le rapport dessine la carte ; un clic sur un serveur montre ce qui est touché s'il s'arrête et ce dont il dépend. `build/graphes/<app>__<pf>.dot` donne le même graphe pour Graphviz (`dot -Tsvg`).
+`app_flows` relie les serveurs entre eux, à partir des liens vers les bases (`base`, `réplication`), des proxys déclarés dans Apache, nginx et HAProxy (`proxy`), des montages NFS et CIFS (`stockage`), des disques SAN vus par plusieurs serveurs (`disque partagé`, d'après leur WWN) et des connexions observées (`réseau`, à l'exclusion des ports d'infrastructure : SSH, DNS, NTP, supervision…). Le rapport dessine la carte ; un clic sur un serveur montre ce qui est touché s'il s'arrête et ce dont il dépend. `build/graphes/<app>__<pf>.dot` donne le même graphe pour Graphviz (`dot -Tsvg`).
 
-Un flux rare (traitement mensuel, sauvegarde) peut être absent d'une photo de l'instant : l'absence de flux ne prouve pas l'absence de dépendance. La réplication n'entre pas dans l'analyse d'impact. Au-delà de 150 serveurs, le rapport demande de choisir une application.
+Un flux rare (traitement mensuel, sauvegarde) peut être absent d'une photo de l'instant : l'absence de flux ne prouve pas l'absence de dépendance. La réplication et les disques partagés n'entrent pas dans l'analyse d'impact : ils ne disent pas qui dépend de qui. Un serveur NFS hors inventaire reste visible. Un WWN vu par plus de 16 serveurs est ignoré, et un hyperviseur qui réutilise un même identifiant peut créer de faux partages. Au-delà de 150 serveurs, le rapport demande de choisir une application.
 
 ## Écarts
 
@@ -311,6 +314,12 @@ Contrôle des collectes selon le guide **ANSSI-BP-028 v2.0** (*Recommandations d
 - **AIX** : hors périmètre, ce guide ne concerne que Linux.
 - **Provenance** : recommandations, niveaux et correspondance avec les contrôles relevés dans le projet ComplianceAsCode (`controls/anssi.yml`, 5 novembre 2026). Les valeurs attendues n'ont pas été comparées ligne à ligne au PDF de l'ANSSI, à faire avant tout usage officiel. Les réglages détaillés d'OpenSSH relèvent d'un autre guide ANSSI et ne sont pas contrôlés, hormis la connexion directe en root (R33).
 
+## Dossier d'application
+
+`build/dossiers/<app>__<pf>.html` : un fichier autonome et sans script par application et plate-forme, regroupant points d'attention, serveurs, schéma d'architecture, bases, points d'entrée, certificats et clés, composants, fins de support, durcissement et écarts. Il s'imprime ou s'enregistre en PDF depuis le navigateur. Le rapport y renvoie quand une application et une plate-forme sont choisies, à condition que le répertoire `dossiers/` soit resté à côté de lui.
+
+À la différence du rapport, il **ne contient que son périmètre** : un serveur d'une autre application n'y figure que par son lien avec celui-ci. Il peut donc être remis à un tiers sans donner le reste du parc, après relecture : il reste sensible (chemins de clés, adresses, faiblesses). `--dossier-mention "Diffusion restreinte"` porte la mention de votre choix en tête de document ; `--no-dossiers` désactive leur production.
+
 ## Évolutions
 
 Le magasin garde chaque collecte : `cmdb_build.py` compare les deux dernières de chaque serveur et alimente `changes` (paquets, composants, ports, comptes, correctifs Oracle, instances, modules, points d'entrée, clés). Ce qui apparaît avec une nouvelle version du collecteur n'est pas compté comme une évolution. `--no-history` désactive la comparaison.
@@ -327,6 +336,8 @@ Le magasin garde chaque collecte : `cmdb_build.py` compare les deux dernières d
 | `cmdb.sqlite` | Base complète, y compris les documents bruts (`raw_documents`, interrogeables avec `json_extract`) |
 | `runtimes_matrix.csv` | Une ligne par (application, plate-forme, hôte), une colonne par composant (noyau, glibc, openssl, java, php, python, postgresql, nginx, tomcat, log4j-core, wordpress…). **`*` = installation hors paquet de la distribution** |
 | `csv/*.csv` | Chaque table et vue (séparateur `;`) |
+| `dossiers/<app>__<pf>.html` | Dossier d'application, autonome et limité à son périmètre |
+| `graphes/<app>__<pf>.dot` | Carte des flux pour Graphviz |
 | `flrtvc/<app>__<pf>__<hôte>.lslpp.txt` | AIX : entrée de l'outil IBM FLRTVC (voir « AIX ») |
 | `sbom/<app>__<pf>__<hôte>.cdx.json` | SBOM CycloneDX 1.5 (propriétés `cmdb:app` et `cmdb:platform`) : paquets OS (purl avec qualificatif `distro`) + composants non gérés par la distribution (purl maven/pypi/npm/composer/gem/golang/nuget, CPE pour les runtimes) |
 
@@ -397,6 +408,15 @@ SELECT host, cn, not_after, days_left, path FROM crypto_certs WHERE is_ca = 0 OR
 
 -- Ce qui a changé sur un serveur
 SELECT to_at, kind, change, item, before, after FROM changes WHERE host = 'web01.exemple.test';
+
+-- Services dont le certificat expire sous 30 jours
+SELECT host, server_name, port, cn, not_after, days_left FROM cert_usage WHERE days_left <= 30 ORDER BY days_left;
+
+-- Certificats présents sur plusieurs serveurs
+SELECT cn, hosts, host_list, not_after FROM v_certs_shared;
+
+-- Serveurs dépendant d'un partage NFS
+SELECT src_host, dst_host, dst_addr, detail FROM app_flows WHERE kind = 'stockage';
 
 -- Qui appelle ce serveur ?
 SELECT COALESCE(src_host, src_addr) AS source, port, kind, detail, status FROM app_flows WHERE dst_host = 'app01.exemple.test';

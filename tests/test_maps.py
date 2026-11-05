@@ -29,7 +29,7 @@ class Parc(unittest.TestCase):
         fleet.write_store(store, [fleet.oracle_host(), fleet.app_host(), fleet.pg_host(), fleet.pg_standby(), fleet.web_host(),
                                   fleet.twin("t1.exemple.test", "10.0.1.1"), fleet.twin("t2.exemple.test", "10.0.1.2"),
                                   fleet.twin("t3.exemple.test", "10.0.1.3", php="8.1.9"),
-                                  fleet.twin("r1.exemple.test", "10.0.2.1", php="8.3.0", pf="recette")])
+                                  fleet.twin("r1.exemple.test", "10.0.2.1", php="8.3.0", pf="recette"), fleet.nas_client(), fleet.lun_peer()])
         cls.out = os.path.join(cls.d, "build")
         cls.log = subprocess.check_output([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", store, "--out", cls.out]).decode()
         cls.db = sqlite3.connect(os.path.join(cls.out, "cmdb.sqlite"))
@@ -84,6 +84,35 @@ class Parc(unittest.TestCase):
         self.assertEqual([x[0] for x in r], ["minimal", "intermédiaire", "renforcé", "élevé"])
         self.assertEqual(self.q("SELECT status FROM hardening_results WHERE rule_id = 'R61-os-supported' AND host = 'ora1.exemple.test'"), [("conforme",)])
         self.assertEqual(self.q("SELECT COUNT(*) FROM anssi_recommendations")[0][0], 80)
+
+    def test_nfs_hors_inventaire(self):
+        r = self.q("SELECT dst_host, dst_addr, port, detail, status FROM app_flows WHERE kind = 'stockage' AND port = 2049")
+        self.assertEqual(r, [(None, "nas1.exemple.test", 2049, "/data depuis /export/data", "actif")])
+
+    def test_cifs_vers_un_serveur_connu(self):
+        r = self.q("SELECT src_host, dst_host, port FROM app_flows WHERE kind = 'stockage' AND port = 445")
+        self.assertEqual(r, [("cl1.exemple.test", "pg1.exemple.test", 445)])
+
+    def test_lun_partage(self):
+        r = self.q("SELECT src_host, dst_host, detail FROM app_flows WHERE kind = 'disque partagé'")
+        self.assertEqual(r, [("cl1.exemple.test", "cl2.exemple.test", "1 disque(s)")])
+
+    def test_partages(self):
+        self.assertEqual(M.parse_share("nas:/x"), ("nas", "/x", 2049))
+        self.assertEqual(M.parse_share("//srv/p"), ("srv", "p", 445))
+        self.assertEqual(M.parse_share("\\\\srv\\p"), ("srv", "p", 445))
+        self.assertIsNone(M.parse_share("/dev/sda1"))
+
+    def test_usage_certificat(self):
+        r = dict((x[0], x[1:]) for x in self.q("SELECT server_name, cn, state, name_match FROM cert_usage"))
+        self.assertEqual(r["site.exemple.test"][0], "*.exemple.test")
+        self.assertEqual(r["site.exemple.test"][2], 1)
+        self.assertEqual(r["perdu.exemple.test"], (None, "non inventorié", None))
+
+    def test_certificat_partage(self):
+        r = self.q("SELECT hosts, host_list FROM v_certs_shared")
+        self.assertEqual(r[0][0], 2)
+        self.assertIn("cl2.exemple.test", r[0][1])
 
     def test_ignore(self):
         db = sqlite3.connect(":memory:")

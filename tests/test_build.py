@@ -144,6 +144,12 @@ class Parc(unittest.TestCase):
 
 
 class Unitaires(unittest.TestCase):
+    def test_noms_de_certificat(self):
+        self.assertTrue(X.cert_matches("a.exemple.test", "*.exemple.test", None))
+        self.assertFalse(X.cert_matches("a.b.exemple.test", "*.exemple.test", None))
+        self.assertTrue(X.cert_matches("www.exemple.test", "autre", "x www.exemple.test"))
+        self.assertFalse(X.cert_matches("www.exemple.test", "autre", ""))
+
     def test_correctifs(self):
         self.assertEqual(X.classify_patch("Database Release Update : 19.23.0.0.240416 (36233263)"), ("ru", "19.23.0.0.240416", "2024-04-16"))
         self.assertEqual(X.classify_patch("Database Patch Set Update : 12.1.0.2.190716 (29494060)")[0], "psu")

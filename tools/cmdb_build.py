@@ -36,6 +36,7 @@ from urllib.parse import quote
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmdb_extras  # noqa: E402
 import cmdb_hardening  # noqa: E402
+import cmdb_dossier  # noqa: E402
 import cmdb_maps  # noqa: E402
 
 BUILD_VERSION = "1.2.0"
@@ -1290,6 +1291,9 @@ def main():
     ap.add_argument("--no-raw-documents", action="store_true", help="Ne pas stocker les documents JSON bruts dans SQLite")
     ap.add_argument("--no-report", action="store_true", help="Ne pas générer le rapport HTML")
     ap.add_argument("--no-history", action="store_true", help="Ne pas comparer aux collectes précédentes")
+    ap.add_argument("--no-dossiers", action="store_true", help="Ne pas produire les dossiers d'application")
+    ap.add_argument("--dossier-mention", default=cmdb_dossier.DEFAULT_MENTION,
+                    help="Mention de diffusion portée sur chaque page des dossiers d'application")
     ap.add_argument("--report-exclude-categories", default="",
                     help="Catégories à exclure du rapport HTML pour l'alléger (ex. go-module,npm-package)")
     a = ap.parse_args()
@@ -1333,6 +1337,7 @@ def main():
     cmdb_hardening.build_scores(db)
     db.executemany("INSERT INTO anssi_recommendations VALUES (?,?,?,?,?)",
                    [(r["ref"], r["level"], r["title"], r["coverage"], r["note"] or None) for r in cmdb_hardening.load_recos()])
+    cmdb_extras.build_cert_usage(db)
     cmdb_maps.build_flows(db)
     cmdb_maps.build_drift(db)
     nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous,
@@ -1348,6 +1353,7 @@ def main():
     stats = dict(db.execute("SELECT category, COUNT(*) FROM software GROUP BY category").fetchall())
     nflr = write_flrtvc(b.flrtvc, os.path.join(a.out, "flrtvc"))
     ngraphs = cmdb_maps.write_dot(db, os.path.join(a.out, "graphes"), safe_name)
+    dossiers = {} if a.no_dossiers else cmdb_dossier.write_all(db, os.path.join(a.out, "dossiers"), safe_name, a.dossier_mention)
     apps = db.execute("SELECT app, platform, hosts FROM v_applications").fetchall()
     print("Hôtes consolidés : %d (%d collectes lues, %d écartées par les filtres)" % (len(docs), store.read, store.skipped))
     print("Applis / pf      : " + ", ".join("%s/%s=%d" % r for r in apps))
@@ -1366,6 +1372,7 @@ def main():
           % (one("SELECT COUNT(*) FROM db_links"), one("SELECT COUNT(*) FROM endpoints"), one("SELECT COUNT(*) FROM crypto_files")))
     print("Carte            : %d flux, %d graphes dans %s | écarts : %d"
           % (one("SELECT COUNT(*) FROM app_flows"), ngraphs, os.path.join(a.out, "graphes"), one("SELECT COUNT(*) FROM drift")))
+    print("Dossiers         : %d dans %s" % (len(dossiers), os.path.join(a.out, "dossiers")))
     print("Durcissement     : %d serveur(s) évalués, %d contrôles non conformes"
           % (one("SELECT COUNT(DISTINCT app || '|' || platform || '|' || host) FROM hardening_results"),
              one("SELECT COUNT(*) FROM v_hardening_failures")))
@@ -1383,7 +1390,7 @@ def main():
         import cmdb_report
         rp = os.path.join(a.out, "cmdb_rapport.html")
         st = cmdb_report.build_report(dbpath, rp, os.path.join(a.out, "runtimes_matrix.csv"),
-                                      [c for c in a.report_exclude_categories.split(",") if c], BUILD_VERSION)
+                                      [c for c in a.report_exclude_categories.split(",") if c], BUILD_VERSION, dossiers)
         print("Rapport HTML     : %s (%.1f Mo, %d composants)" % (rp, st["bytes"] / 1e6, st["software_rows"]))
     return 0
 

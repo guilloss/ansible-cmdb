@@ -57,6 +57,8 @@ CREATE TABLE changes (host TEXT, from_run TEXT, to_run TEXT, from_at TEXT, to_at
 CREATE TABLE hardening_results (host TEXT, rule_id TEXT, ref TEXT, level TEXT, title TEXT, status TEXT, observed TEXT, expected TEXT,
   note TEXT);
 CREATE TABLE hardening_scores (host TEXT, level TEXT, ok INTEGER, ko INTEGER, unknown INTEGER, score REAL);
+CREATE TABLE cert_usage (host TEXT, product TEXT, kind TEXT, server_name TEXT, port INTEGER, cert_path TEXT, cn TEXT, not_after TEXT,
+  days_left INTEGER, state TEXT, name_match INTEGER);
 CREATE TABLE eol_status (host TEXT, product TEXT, cycle TEXT, version TEXT, location TEXT, managed INTEGER, eol TEXT,
   extended TEXT, days_left INTEGER, status TEXT);
 """
@@ -96,7 +98,10 @@ CREATE VIEW v_private_keys_exposed AS
     AND (world_readable = 1 OR empty_password = 1) ORDER BY app, platform, host, path;
 CREATE VIEW v_certs_expiring AS
   SELECT app, platform, host, path, alias, cn, subject, issuer, not_after, days_left FROM crypto_certs
-  WHERE days_left <= 90 AND is_ca = 0 ORDER BY days_left;
+  WHERE days_left <= 90 AND COALESCE(is_ca, 0) = 0 ORDER BY days_left;
+CREATE VIEW v_certs_shared AS
+  SELECT sha256, cn, not_after, days_left, COUNT(DISTINCT host) AS hosts, GROUP_CONCAT(DISTINCT host) AS host_list FROM crypto_certs
+  WHERE sha256 IS NOT NULL AND COALESCE(is_ca, 0) = 0 GROUP BY sha256 HAVING COUNT(DISTINCT host) > 1 ORDER BY hosts DESC;
 CREATE VIEW v_db_servers AS
   SELECT server_app AS app, server_platform AS platform, server_host AS host, engine, port,
          COUNT(DISTINCT COALESCE(client_host, client_addr)) AS clients, GROUP_CONCAT(DISTINCT database) AS databases
@@ -581,6 +586,41 @@ def oracle_fleet(db):
     for rowid, prod, version, level in rows:
         if version_key(level) < version_key(best[(prod, (version or "").split(".")[0])]):
             db.execute("UPDATE oracle_homes SET behind_fleet = 1 WHERE rowid = ?", (rowid,))
+
+
+def cert_matches(name, cn, sans):
+    """Le nom présenté est-il couvert par le certificat ? Un joker ne couvre qu'un seul niveau."""
+    n = (name or "").lower()
+    for c in [cn] + (sans or "").split():
+        c = (c or "").lower()
+        if c == n or (c.startswith("*.") and n.split(".", 1)[-1] == c[2:] and n.count(".") == c.count(".")):
+            return True
+    return False
+
+
+def build_cert_usage(db):
+    """Relie les services à leur certificat : un fichier qui expire devient un service qui tombe."""
+    certs, files = {}, {}
+    q = "SELECT app, platform, host, path, cn, sans, not_after, days_left, is_ca FROM crypto_certs"
+    for app, pf, host, path, cn, sans, not_after, days, is_ca in db.execute(q).fetchall():
+        if not is_ca:
+            certs.setdefault((app, pf, host, path), []).append((days if days is not None else 10 ** 6, cn, sans, not_after))
+    for app, pf, host, path, kind in db.execute("SELECT app, platform, host, path, kind FROM crypto_files").fetchall():
+        files[(app, pf, host, path)] = kind
+    q = "SELECT app, platform, host, product, kind, server_name, port, cert FROM endpoints WHERE cert IS NOT NULL"
+    for app, pf, host, product, kind, name, port, path in db.execute(q).fetchall():
+        k = (app, pf, host, path)
+        found = certs.get(k)
+        if found:
+            days, cn, sans, not_after = min(found, key=lambda x: x[0])
+            days = None if days == 10 ** 6 else days
+            state = "inconnu" if days is None else ("expiré" if days < 0 else ("à renouveler" if days <= 30 else "valide"))
+            match = None if not name or kind != "vhost" else (1 if any(cert_matches(name, c[1], c[2]) for c in found) else 0)
+        else:
+            cn = not_after = days = match = None
+            state = {"illisible": "illisible"}.get(files.get(k), "non lu" if k in files else "non inventorié")
+        db.execute("INSERT INTO cert_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (app, pf, host, product, kind, name, port, path, cn, not_after, days, state, match))
 
 
 # ---------------------------------------------------------------------------

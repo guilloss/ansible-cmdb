@@ -158,6 +158,8 @@ a:hover .v { border-color: var(--accent); }
 .fl-proxy { stroke: var(--accent); }
 .fl-net { stroke: var(--muted); stroke-dasharray: 2 4; }
 .fl-repl { stroke: var(--tag); stroke-dasharray: 6 4; }
+.fl-store { stroke: var(--ok); }
+.fl-san { stroke: var(--ok); stroke-dasharray: 6 4; }
 .fl-tip { fill: var(--muted); }
 .fn rect { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
 .fn.ext rect { stroke-dasharray: 4 3; }
@@ -170,6 +172,8 @@ a:hover .v { border-color: var(--accent); }
 .flowkey .k-proxy { border-color: var(--accent); }
 .flowkey .k-net { border-top-style: dotted; border-color: var(--muted); }
 .flowkey .k-repl { border-top-style: dashed; border-color: var(--tag); }
+.flowkey .k-store { border-color: var(--ok); }
+.flowkey .k-san { border-top-style: dashed; border-color: var(--ok); }
 .flowkey .k-up { border-color: var(--risk); }
 .flowkey .k-down { border-color: var(--tag); }
 .badge { display: inline-block; font-size: 12px; padding: 0 7px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-2); white-space: nowrap; }
@@ -404,7 +408,7 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers",
   "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
-  "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores"];
+  "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage"];
 function applyScope() {
   const on = SCOPE.app || SCOPE.pf;
   const keep = (a, p) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf);
@@ -595,7 +599,7 @@ function vAccueil() {
     .map(f => ({f, items: famVersions(f)})).filter(x => x.items.length).slice(0, 4);
   return `<section class="hero">
     <h2>Quel serveur fait tourner quoi, et dans quelle version&nbsp;?</h2>
-    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: ""})}">Voir tout l'inventaire</a></p>` : ""}
+    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: ""})}">Voir tout l'inventaire</a>${(D0.dossiers || {})[SCOPE.app + "|" + SCOPE.pf] ? ` · <a href="${esc(D0.dossiers[SCOPE.app + "|" + SCOPE.pf])}">Ouvrir le dossier d'application</a>` : ""}</p>` : ""}
     <form id="herosearch" role="search">
       <input type="search" id="hq" aria-label="Rechercher" placeholder="log4j-core <2.17.1, php 5., openssl 1.0.2, 10.12.4.8…" autocomplete="off" autofocus>
       <button class="btn" type="submit">Rechercher</button>
@@ -760,7 +764,7 @@ function vServeur(key, params) {
     body = `<h3>Points d'entrée</h3>` + endpointsTable(hostRows("endpoints"), host) + `<h3>Langages exposés</h3>` + runtimesTable(hostRows("runtime_services"), host)
       + `<h3>Modules activés</h3>` + modulesTable(hostRows("modules"), host);
   } else if (tab === "cles") {
-    body = `<h3>Fichiers</h3>` + keysTable(hostRows("crypto_files"), host) + `<h3>Certificats</h3>` + certsTable(hostRows("crypto_certs"), host);
+    body = `<h3>Services concernés</h3>` + certUsageTable(hostRows("cert_usage"), host) + `<h3>Fichiers</h3>` + keysTable(hostRows("crypto_files"), host) + `<h3>Certificats</h3>` + certsTable(hostRows("crypto_certs"), host);
   } else if (tab === "dependances") {
     body = `<p class="hint"><a href="${link("carte", {serveur: host})}">Voir sur la carte</a></p>` + impactHtml(host);
   } else if (tab === "durcissement") {
@@ -1014,6 +1018,13 @@ function certsTable(rows, host) {
     {k: "days_left", l: "Jours restants", cls: "num", f: c => c.days_left == null ? "" : (c.days_left < 0 ? `<span class="badge risk">expiré</span>` : (c.days_left <= 30 ? `<span class="badge warn">${fmt(c.days_left)}</span>` : fmt(c.days_left)))},
     {k: "key_alg", l: "Clé", f: c => esc([c.key_alg, c.key_bits].filter(Boolean).join(" "))}, {k: "sig_alg", l: "Signature"}, {k: "alias", l: "Alias"}, {k: "path", l: "Fichier", cls: "path"}]), rows, {sort: "days_left", empty: "Aucun certificat lu."});
 }
+function certUsageTable(rows, host) {
+  const st = {"expiré": "risk", "à renouveler": "warn", valide: "ok"};
+  return table(hcolOf(host).concat([{k: "server_name", l: "Service", f: u => `<b>${esc(u.server_name || "")}</b>` + (u.port ? " : " + esc(u.port) : "") + `<br><span class="cat">${esc(u.product)}</span>`},
+    {k: "cn", l: "CN du certificat"}, {k: "name_match", l: "Nom", f: u => u.name_match === 0 ? '<span class="badge warn">ne couvre pas ce nom</span>' : (u.name_match ? "couvert" : "")},
+    {k: "not_after", l: "Expiration", f: u => day(u.not_after)}, {k: "days_left", l: "Jours restants", cls: "num"},
+    {k: "state", l: "État", f: u => `<span class="badge ${st[u.state] || "muted"}">${esc(u.state)}</span>`}, {k: "cert_path", l: "Fichier", cls: "path"}]), rows, {sort: "days_left", empty: "Aucun service ne déclare de certificat."});
+}
 function vCles(params) {
   const files = rowsOf(D.crypto_files);
   const keys = files.filter(f => f.has_private_key || ["gskit-kdb", "gskit-stash", "oracle-wallet", "pkcs12", "illisible"].includes(f.kind));
@@ -1021,6 +1032,9 @@ function vCles(params) {
     + "Seul le mot de passe vide est essayé sur les PKCS#12.", [
     ["cles", `Clés et magasins (${fmt(keys.length)})`, m => keysTable(m(keys))],
     ["certs", `Certificats (${fmt(rowsOf(D.crypto_certs).length)})`, m => certsTable(m(rowsOf(D.crypto_certs)))],
+    ["usages", `Services concernés (${fmt(rowsOf(D.cert_usage).length)})`, m => certUsageTable(m(rowsOf(D.cert_usage)))],
+    ["partages", `Partagés (${fmt(rowsOf(D0.certs_shared).length)})`, m => table([{k: "cn", l: "CN", f: c => `<b>${esc(c.cn || "")}</b>`}, {k: "hosts", l: "Serveurs", cls: "num"}, {k: "host_list", l: "Liste", cls: "path"},
+      {k: "not_after", l: "Expiration", f: c => day(c.not_after)}, {k: "days_left", l: "Jours restants", cls: "num"}], m(rowsOf(D0.certs_shared)), {empty: "Aucun certificat présent sur plusieurs serveurs."})],
     ["tout", `Tous les fichiers (${fmt(files.length)})`, m => keysTable(m(files))],
   ], params, "Filtrer (serveur, chemin, CN…)");
 }
@@ -1064,7 +1078,7 @@ function reach(start, edges, up) {
   while (todo.length) {
     const cur = todo.shift(), info = seen.get(cur);
     for (const e of edges) {
-      if (e.kind === "réplication") continue;
+      if (e.kind === "réplication" || e.kind === "disque partagé") continue;
       const from = up ? e.d : e.s, to = up ? e.s : e.d;
       if (from === cur && !seen.has(to)) {
         seen.set(to, {depth: info.depth + 1, via: e, sure: info.sure && e.kind !== "réseau"});
@@ -1093,7 +1107,7 @@ function flowSvg(edges, focus) {
   if (!nodes.length) return '<div class="empty">Aucun flux dans ce périmètre.</div>';
   if (nodes.length > 150) return `<div class="empty">${fmt(nodes.length)} serveurs : choisissez une application dans le bandeau ou filtrez pour afficher la carte.</div>`;
   const rank = Object.fromEntries(nodes.map(n => [n, 0]));
-  const flow = edges.filter(e => e.kind !== "réplication" && e.s !== e.d);
+  const flow = edges.filter(e => e.kind !== "réplication" && e.kind !== "disque partagé" && e.s !== e.d);
   for (let i = 0; i < Math.min(nodes.length, 12); i++)
     for (const e of flow) if (rank[e.d] < rank[e.s] + 1) rank[e.d] = rank[e.s] + 1;   // borné : une boucle ne s'étire pas sans fin
   // Un standby se range avec son primaire
@@ -1112,7 +1126,7 @@ function flowSvg(edges, focus) {
     const x1 = same || fw ? a.x + W : a.x, x2 = same ? b.x + W : (fw ? b.x : b.x + W), y1 = a.y + H / 2, y2 = b.y + H / 2, m = (x1 + x2) / 2;
     const bend = same ? 44 : 0;
     const on = !focus || [e.s, e.d].some(n => n === focus) || (up.has(e.s) && (up.has(e.d) || e.d === focus)) || (down.has(e.d) && (down.has(e.s) || e.s === focus));
-    return `<path class="fl fl-${e.kind === "base" ? "base" : (e.kind === "proxy" ? "proxy" : (e.kind === "réseau" ? "net" : "repl"))}${on ? "" : " dim"}" d="M${x1} ${y1} C${m + bend} ${y1} ${m + bend} ${y2} ${x2} ${y2}" marker-end="url(#fl-arrow)"><title>${esc(nodeName(e.s))} vers ${esc(nodeName(e.d))} : ${esc(e.kind)} ${esc(e.port || "")} ${esc(e.detail || "")}</title></path>`;
+    return `<path class="fl fl-${({base: "base", proxy: "proxy", "réseau": "net", stockage: "store", "disque partagé": "san"})[e.kind] || "repl"}${on ? "" : " dim"}" d="M${x1} ${y1} C${m + bend} ${y1} ${m + bend} ${y2} ${x2} ${y2}"${e.kind === "disque partagé" ? "" : ' marker-end="url(#fl-arrow)"'}><title>${esc(nodeName(e.s))} vers ${esc(nodeName(e.d))} : ${esc(e.kind)} ${esc(e.port || "")} ${esc(e.detail || "")}</title></path>`;
   }).join("");
   const boxes = nodes.map(n => {
     const p = pos[n], ext = n.startsWith("ext:"), h = ext ? null : hsplit(n), name = nodeName(n), short = (/^[\d.:a-f]+$/i.test(name) ? name : name.split(".")[0]).slice(0, 24);
@@ -1124,7 +1138,7 @@ function flowSvg(edges, focus) {
   return `<div class="tablewrap flowmap"><svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Carte des flux">
     <defs><marker id="fl-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" class="fl-tip"></path></marker></defs>
     ${lines}${boxes}</svg></div>
-    <p class="hint flowkey"><span class="k k-base"></span>base <span class="k k-proxy"></span>proxy <span class="k k-net"></span>réseau, déduit <span class="k k-repl"></span>réplication${focus ? ' <span class="k k-up"></span>touché s\'il s\'arrête <span class="k k-down"></span>dont il dépend' : ""}</p>`;
+    <p class="hint flowkey"><span class="k k-base"></span>base <span class="k k-proxy"></span>proxy <span class="k k-store"></span>stockage <span class="k k-san"></span>disque partagé <span class="k k-net"></span>réseau, déduit <span class="k k-repl"></span>réplication${focus ? ' <span class="k k-up"></span>touché s\'il s\'arrête <span class="k k-down"></span>dont il dépend' : ""}</p>`;
 }
 function flowsTable(rows) {
   return table([{k: "s", l: "Source", f: e => nodeLink(e.s), sortv: e => nodeName(e.s)}, {k: "d", l: "Destination", f: e => nodeLink(e.d), sortv: e => nodeName(e.d)},

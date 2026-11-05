@@ -99,13 +99,20 @@ class Tomcat(unittest.TestCase):
         c = pick(e, "context")[0]
         self.assertEqual((c["location"], c["root"], c["server_name"]), ("/gestion", "/opt/app/gestion", "app.exemple.test"))
         self.assertNotIn("S3cr3t", repr(e))
+        self.assertEqual(pick(e, "connector")[1]["cert"], "/opt/tomcat/conf/ks.jks")
+
+    def test_certificat_tomcat_9(self):
+        t = '<Connector port="8443" SSLEnabled="true"><SSLHostConfig><Certificate certificateKeystoreFile="${catalina.base}/conf/k.p12" certificateKeystorePassword="S3cr3t"/></SSLHostConfig></Connector>'
+        e = C.parse_endpoints(t, "/opt/tomcat/conf/server.xml")
+        self.assertEqual(e[0]["cert"], "/opt/tomcat/conf/k.p12")
+        self.assertNotIn("S3cr3t", repr(e))
 
 
 class Autres(unittest.TestCase):
     def test_haproxy(self):
         t = "frontend web\n  bind *:443 ssl crt /x.pem\n  default_backend b\nbackend b\n  server s1 10.0.0.2:8080 check\n"
         e = C.parse_endpoints(t, "/etc/haproxy/haproxy.cfg")
-        self.assertEqual((e[0]["kind"], e[0]["port"], e[0]["tls"]), ("frontend", 443, True))
+        self.assertEqual((e[0]["kind"], e[0]["port"], e[0]["tls"], e[0]["cert"]), ("frontend", 443, True, "/x.pem"))
         self.assertEqual((e[1]["kind"], e[1]["backend"]), ("proxy", "10.0.0.2:8080"))
 
     def test_jboss(self):

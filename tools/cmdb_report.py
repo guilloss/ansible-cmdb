@@ -36,12 +36,13 @@ def table(db, sql, params=()):
     return {"cols": [c[0] for c in cur.description], "rows": [list(r) for r in cur]}
 
 
-def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_version=""):
+def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_version="", dossiers=None):
     db = sqlite3.connect(dbpath)
     K = "app, platform, host"   # clé de chaque serveur : un même hôte peut servir plusieurs applications
     data = {
         "generated": dt.datetime.now().strftime("%d/%m/%Y %H:%M"),
         "build_version": build_version,
+        "dossiers": dossiers or {},
         "hosts": table(db, "SELECT * FROM hosts ORDER BY " + K),
         "interfaces": table(db, "SELECT * FROM interfaces ORDER BY %s, ifname" % K),
         "addresses": table(db, "SELECT %s, ifname, family, cidr, scope, label, mac FROM addresses ORDER BY %s, ifname" % (K, K)),
@@ -85,6 +86,8 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
                                   "ORDER BY %s, binary, key" % (",".join("'%s'" % k for k in PHP_KEYS), K)),
         "changes": table(db, "SELECT * FROM changes ORDER BY to_at DESC, %s, kind LIMIT 50000" % K),
         "eol": table(db, "SELECT * FROM eol_status ORDER BY days_left"),
+        "cert_usage": table(db, "SELECT * FROM cert_usage ORDER BY days_left"),
+        "certs_shared": table(db, "SELECT * FROM v_certs_shared"),
         "flows": table(db, "SELECT * FROM app_flows"),
         "drift": table(db, "SELECT * FROM drift ORDER BY app, scope, kind, item"),
         "hardening": table(db, "SELECT * FROM hardening_results ORDER BY %s, ref" % K),

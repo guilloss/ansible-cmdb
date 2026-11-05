@@ -71,7 +71,7 @@ class Fixture(unittest.TestCase):
         os.chmod(ferme, 0)
         for rel, text in (("web/httpd.conf", "# LoadModule off_module x.so\nLoadModule ssl_module modules/mod_ssl.so\nServerAdmin a@b\n"
                                        "<VirtualHost *:443>\nServerName www.exemple.test\nSSLEngine on\n</VirtualHost>\n"),
-                          ("tomcat/server.xml", '<Server>\n<Connector port="8443"\n protocol="HTTP/1.1"\n SSLEnabled="true"\n keystorePass="%s"\n/>\n'
+                          ("tomcat/server.xml", '<Server>\n<Connector port="8443"\n protocol="HTTP/1.1"\n SSLEnabled="true"\n keystoreFile="conf/ks.jks"\n keystorePass="%s"\n/>\n'
                                                 '<Host name="t.exemple.test" appBase="webapps">\n</Host>\n</Server>\n' % SECRET),
                           ("lb/haproxy.cfg", "backend b\n  server s1 10.0.0.2:8080 check\n"),
                           ("nginx/nginx.conf", "load_module modules/ngx_stream_module.so;\nserver {\n  listen 80;\n  server_name app.exemple.test;\n}\n"),
@@ -128,6 +128,9 @@ class Fixture(unittest.TestCase):
         self.assertIn(("tomcat", 8443, True), [(e["product"], e.get("port"), e.get("tls")) for e in eps if e["kind"] == "connector"])
         self.assertIn(("nginx", "app.exemple.test"), [(e["product"], e.get("server_name")) for e in eps])
         self.assertIn("10.0.0.2:8080", [e.get("backend") for e in eps])
+        tom = [e for e in eps if e["product"] == "tomcat" and e["kind"] == "connector"][0]
+        self.assertTrue(tom["cert"].endswith("/conf/ks.jks"), tom)
+        self.assertFalse(tom["cert"].startswith("/tmp/cmdb-sh"), tom)
         mods = set((m["product"], m["module"]) for m in doc["filesystem"]["service_modules"])
         self.assertEqual(mods, {("apache", "ssl_module"), ("nginx", "ngx_stream_module"), ("php", "mbstring"),
                                 ("postgresql", "pg_stat_statements")})

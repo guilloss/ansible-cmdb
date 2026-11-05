@@ -601,7 +601,7 @@ grab_dbcfg() {
         lo = tolower(l)
         if (lo ~ /pass|pwd|secret|token|credential|private/) next
         if (lo ~ /^[ \t]*\[/ || l ~ /^[^ \t].*:[ \t]*$/ ||
-            lo ~ /host|server|port|dbname|database|db_|sid|service|adapter|engine|driver|connection|description|plugin|<connector|<context|<alias|appbase|protocol|sslenabled|socket-binding/ || lo ~ /^[ \t]*\/?>[ \t]*$/) print substr(l, 1, 400)
+            lo ~ /host|server|port|dbname|database|db_|sid|service|adapter|engine|driver|connection|description|plugin|<connector|<certificate|<context|<alias|appbase|protocol|sslenabled|socket-binding|keystore|certificatefile/ || lo ~ /^[ \t]*\/?>[ \t]*$/) print substr(l, 1, 400)
     }' >"$W/fs$1" 2>/dev/null
 }
 

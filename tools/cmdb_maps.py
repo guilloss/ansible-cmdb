@@ -46,6 +46,18 @@ def parse_backends(text):
     return out
 
 
+def parse_share(device):
+    """Périphérique d'un montage réseau -> (serveur, partage, port)"""
+    d = device or ""
+    m = re.match(r"^//([^/]+)/(.*)$", d) or re.match(r"^\\\\([^\\]+)\\(.*)$", d)
+    if m:
+        return m.group(1), m.group(2), 445
+    m = re.match(r"^([A-Za-z0-9_.\-]+):(/.*)?$", d)
+    if m:
+        return m.group(1), m.group(2) or "/", 2049
+    return None
+
+
 def build_flows(db):
     d = Directory(db)
     edges = collections.OrderedDict()
@@ -69,6 +81,25 @@ def build_flows(db):
         src = (app, pf, host)
         for target, port in parse_backends(backend):
             add(src, None, d.find(target, src), target, port, "proxy", " ".join(x for x in (product, location) if x), "configuré")
+    q = "SELECT app, platform, host, mountpoint, device FROM filesystems WHERE network = 1"
+    for app, pf, host, mountpoint, device in db.execute(q).fetchall():
+        share = parse_share(device)
+        if share:
+            src = (app, pf, host)
+            add(src, None, d.find(share[0], src), share[0], share[2], "stockage", "%s depuis %s" % (mountpoint, share[1]), "actif")
+    # Un LUN vu par plusieurs serveurs : cluster ou bascule. Pas de sens de dépendance.
+    luns = collections.defaultdict(set)
+    for app, pf, host, wwn in db.execute("SELECT app, platform, host, wwn FROM disks WHERE wwn IS NOT NULL").fetchall():
+        if len(wwn) >= 8:
+            luns[wwn].add((app, pf, host))
+    pairs = collections.Counter()
+    for wwn, hosts in luns.items():
+        if 2 <= len(set(h[2] for h in hosts)) <= 16:
+            for a, b in itertools.combinations(sorted(hosts), 2):
+                if a[2] != b[2]:
+                    pairs[(a, b)] += 1
+    for (a, b), n in sorted(pairs.items()):
+        add(a, None, b, None, None, "disque partagé", "%d disque(s)" % n, "actif")
     known = set((e["src"], e["dst"], e["port"]) for e in edges.values())
     q = "SELECT app, platform, host, direction, local_port, remote_addr, remote_port, process FROM connections"
     for app, pf, host, direction, lport, raddr, rport, process in db.execute(q).fetchall():
@@ -100,7 +131,8 @@ def write_dot(db, outdir, safe_name):
         for pair in set(((r[0], r[1]), (r[4], r[5]))):
             if pair[0]:
                 groups[pair].append(r)
-    style = {"base": "", "proxy": ", color=steelblue", "réplication": ", style=dotted", "réseau": ", color=gray"}
+    style = {"base": "", "proxy": ", color=steelblue", "réplication": ", style=dotted", "réseau": ", color=gray", "stockage": ", color=seagreen",
+             "disque partagé": ", dir=none, style=dashed, color=seagreen"}
     for (app, pf), edges in sorted(groups.items()):
         lines = ["digraph %s {" % dot_quote("%s %s" % (app, pf)), "  rankdir=LR;", "  node [shape=box, fontname=sans];"]
         for r in edges:

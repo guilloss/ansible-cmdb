@@ -116,3 +116,25 @@ def twin(host, ip, php="8.1.2", pf="prod", run="r2"):
                    {"args": ["-v"], "rc": 0, "output": "PHP %s (cli)\n" % php}]}]},
                processes=[{"pid": 50, "ppid": 1, "comm": "httpd", "cmdline": "/usr/sbin/httpd", "user": "apache"}],
                listening=[{"proto": "tcp", "address": "0.0.0.0", "port": 8081, "pid": 50, "process": "httpd", "user": "apache"}])
+
+
+def nas_client():
+    """Serveur avec montages réseau, LUN partagé et service TLS."""
+    d = doc("cl1.exemple.test", "APPDEMO", "prod", "10.0.3.1", "r2", "2026-11-02T08:00:00Z",
+            filesystem={"endpoints": [{"product": "apache", "kind": "vhost", "port": 443, "server_name": "site.exemple.test", "tls": True, "cert": "/etc/tls/site.crt", "path": "/etc/httpd/conf.d/s.conf"},
+                                      {"product": "apache", "kind": "vhost", "port": 443, "server_name": "autre.exemple.test", "tls": True, "cert": "/etc/tls/site.crt", "path": "/etc/httpd/conf.d/s.conf"},
+                                      {"product": "apache", "kind": "vhost", "port": 8443, "server_name": "perdu.exemple.test", "tls": True, "cert": "/etc/tls/absent.crt", "path": "/etc/httpd/conf.d/s.conf"}],
+                        "crypto_files": [{"path": "/etc/tls/site.crt", "kind": "pem", "has_private_key": False, "mode": "0644", "owner": "root", "cert_count": 1,
+                                          "certs": [{"subject": "CN=*.exemple.test", "cn": "*.exemple.test", "issuer": "CN=ca", "not_after": "2026-11-15T00:00:00Z", "is_ca": False, "sha256": "partage", "sans": []}]}]})
+    d["hardware"]["mounts"] = [{"mountpoint": "/data", "device": "nas1.exemple.test:/export/data", "fstype": "nfs4"},
+                               {"mountpoint": "/mnt/win", "device": "//10.0.0.11/partage", "fstype": "cifs"}, {"mountpoint": "/", "device": "/dev/sda1", "fstype": "xfs"}]
+    d["hardware"]["disks"] = [{"name": "sdb", "wwn": "0x6005076801234567", "size_bytes": 1000000000}]
+    return d
+
+
+def lun_peer():
+    d = doc("cl2.exemple.test", "APPDEMO", "prod", "10.0.3.2", "r2", "2026-11-02T08:00:00Z",
+            filesystem={"crypto_files": [{"path": "/opt/copie.crt", "kind": "pem", "has_private_key": False, "mode": "0644", "owner": "root", "cert_count": 1,
+                                          "certs": [{"subject": "CN=*.exemple.test", "cn": "*.exemple.test", "issuer": "CN=ca", "not_after": "2026-11-15T00:00:00Z", "is_ca": False, "sha256": "partage", "sans": []}]}]})
+    d["hardware"]["disks"] = [{"name": "sdc", "wwn": "0x6005076801234567", "size_bytes": 1000000000}]
+    return d
