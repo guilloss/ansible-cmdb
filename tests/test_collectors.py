@@ -69,7 +69,12 @@ class Fixture(unittest.TestCase):
         ferme = os.path.join(cls.root, "tls", "ferme.key")
         shutil.copy(key, ferme)
         os.chmod(ferme, 0)
-        for rel, text in (("web/httpd.conf", "# LoadModule off_module x.so\nLoadModule ssl_module modules/mod_ssl.so\nServerAdmin a@b\n"),
+        for rel, text in (("web/httpd.conf", "# LoadModule off_module x.so\nLoadModule ssl_module modules/mod_ssl.so\nServerAdmin a@b\n"
+                                       "<VirtualHost *:443>\nServerName www.exemple.test\nSSLEngine on\n</VirtualHost>\n"),
+                          ("tomcat/server.xml", '<Server>\n<Connector port="8443"\n protocol="HTTP/1.1"\n SSLEnabled="true"\n keystorePass="%s"\n/>\n'
+                                                '<Host name="t.exemple.test" appBase="webapps">\n</Host>\n</Server>\n' % SECRET),
+                          ("lb/haproxy.cfg", "backend b\n  server s1 10.0.0.2:8080 check\n"),
+                          ("nginx/nginx.conf", "load_module modules/ngx_stream_module.so;\nserver {\n  listen 80;\n  server_name app.exemple.test;\n}\n"),
                           ("nginx/modules.conf/nginx.conf", "load_module modules/ngx_stream_module.so;\n"),
                           ("web/php.ini", ";extension=off\nextension=mbstring\n"),
                           ("web/postgresql.conf", "shared_preload_libraries = 'pg_stat_statements'\n"),
@@ -131,7 +136,8 @@ class Fixture(unittest.TestCase):
 class PhpFilter(unittest.TestCase):
     def test_parite_shell(self):
         from tests.test_endpoints import Phpinfo
-        src = open(SHELL_COLLECTOR, encoding="utf-8").read()
+        with open(SHELL_COLLECTOR, encoding="utf-8") as f:
+            src = f.read()
         fn = src[src.index("php_filter() {"):src.index("section_probes() {")]
         for shell in ("dash", "bash"):
             out = subprocess.run([shell, "-c", fn + "\nphp_filter"], input=Phpinfo.T.encode(), stdout=subprocess.PIPE).stdout.decode()
