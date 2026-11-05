@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     pwd = None
     grp = None
 
-COLLECTOR_VERSION = "1.0.0"
+COLLECTOR_VERSION = "1.1.0"
 SCHEMA = "cmdb-collector/1"
 PY3 = sys.version_info[0] >= 3
 text_type = type(u"")
@@ -938,6 +938,385 @@ def find_strings(path, rx, max_size=64 << 20):
 # --------------------------------------------------------------------------
 # Le collecteur
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Références de bases de données dans les configurations applicatives
+#
+# Seuls le moteur, l'hôte, le port et le nom de base sortent de ces fonctions :
+# identifiants, mots de passe et paramètres d'URL ne sont jamais conservés.
+# Fonctions partagées avec tools/cmdb_shell_parse.py.
+# --------------------------------------------------------------------------
+DB_CONFIG_NAMES = set([
+    "context.xml", "server.xml", "standalone.xml", "standalone-ha.xml", "standalone-full.xml", "standalone-full-ha.xml",
+    "domain.xml", "hibernate.cfg.xml", "persistence.xml", "resources.xml", "tnsnames.ora", "pgbouncer.ini", "pgpool.conf",
+    "pg_service.conf", ".pg_service.conf", "odbc.ini", ".odbc.ini", "my.cnf", ".my.cnf", "wp-config.php", "config.php",
+    "configuration.php", "config.inc.php", "settings.php", "settings.py", "local_settings.py", "database.yml",
+    "database.yaml", "database.php", "db.php", "parameters.yml", "parameters.yaml", ".env", "web.config"])
+DB_CONFIG_RX = re.compile(r"(\.properties$)|(\.env$)|(^\.env\.)|(-jdbc\.xml$)|(^application[-.\w]*\.ya?ml$)"
+                          r"|(^bootstrap[-.\w]*\.ya?ml$)|(datasources?[-.\w]*\.(xml|ya?ml|json)$)|(^appsettings[-.\w]*\.json$)", re.I)
+DB_CONFIG_SKIP_RX = re.compile(r"/(samples?|examples?|demos?|docs?|tests?|testdata|fixtures|node_modules|site-packages|"
+                               r"dist-packages|vendor|i18n|locales?)/|/usr/(share|lib|lib64)/|/product/\d", re.I)
+DB_CONFIG_MAX_SIZE = 256 * 1024
+DB_CONFIG_MAX_FILES = 20000
+DB_REFS_MAX_PER_FILE = 50
+_DB_BLOCK_FILES = set(["settings.py", "local_settings.py", "database.yml", "database.yaml", "odbc.ini", ".odbc.ini",
+                       "pg_service.conf", ".pg_service.conf", "my.cnf", ".my.cnf"])
+_DB_HOST_OK = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9_.\-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])$")
+_DB_NAME_OK = re.compile(r"^[\w.$#\-]{1,128}$")
+_DB_HOST_FAKE = set(["host", "hostname", "server", "servername", "dbhost", "db_host", "yourhost", "your_host", "your-host",
+                     "dbserver", "myhost", "mydbhost", "myserver", "none", "null", "true", "false", "example.com",
+                     "example.org", "example.net", "db.example.com", "x", "xxx"])
+_DB_URI_RX = re.compile(r"(?<![\w+.\-])(jdbc:)?([A-Za-z][A-Za-z0-9_-]*(?:[:+][A-Za-z0-9_-]+)*)://([^\s'\"<>`]*)")
+_DB_ORA_JDBC_RX = re.compile(r"jdbc:oracle:[A-Za-z0-9]+\s*:([^'\"<>`\r\n]*)", re.I)
+_DB_PDO_RX = re.compile(r"(?<![\w.])(pgsql|mysql|sqlsrv):((?:[A-Za-z_]+=[^;'\"\s]*;?)+)", re.I)
+_DB_PDO_OCI_RX = re.compile(r"(?<![\w.])oci:dbname=/{0,2}([^'\"\s;(]+)", re.I)
+_DB_KV_RX = re.compile(r"""^\s*(?:export\s+)?(?:define\s*\(\s*)?['"]?([A-Za-z][\w.\-]*?)[_.\-]?"""
+                       r"""(HOSTNAME|HOST|SERVER|ADDRESS|ADDR|PORT|DATABASE|DBNAME|NAME|DB|SERVICE_NAME|SERVICE|SID)"""
+                       r"""['"]?\s*(?:=>|[=:,])\s*['"]?([^'"\s;,)]+)""", re.I)
+_DB_KV_PREFIX_RX = re.compile(r"(?:^|[_.\-])(DB|DATABASE|DATASOURCE|POSTGRES|POSTGRESQL|PG|PGSQL|MYSQL|MARIADB|ORACLE|ORA|"
+                              r"MONGO|MONGODB|REDIS|JDBC)$", re.I)
+_DB_KV_ENGINE_RX = re.compile(r"""^\s*(?:export\s+)?['"]?(?:\w*[_.\-])?(?:DB_)?(?:CONNECTION|DRIVER|ADAPTER|ENGINE|TYPE)['"]?\s*"""
+                              r"""[=:]\s*['"]?([\w.\-]+)""", re.I)
+_DB_TNS_TOKEN_RX = re.compile(r"\(\s*(HOST|PORT|SERVICE_NAME|SID)\s*=\s*([^)\s]+)\s*\)", re.I)
+_DB_TNS_ENTRY_RX = re.compile(r"^[ \t]*([A-Za-z0-9_.\-]+(?:[ \t]*,[ \t]*[A-Za-z0-9_.\-]+)*)[ \t]*=[ \t]*(?=\(|$)", re.M)
+_DB_TNS_KEYWORDS = set(["DESCRIPTION", "DESCRIPTION_LIST", "ADDRESS", "ADDRESS_LIST", "CONNECT_DATA", "SERVICE_NAME", "SID",
+                        "HOST", "PORT", "PROTOCOL", "SERVER", "SOURCE_ROUTE", "LOAD_BALANCE", "FAILOVER", "RETRY_COUNT"])
+
+
+def is_db_config(path, lname):
+    """Ce fichier peut-il contenir une chaîne de connexion ? (lname : nom en minuscules)"""
+    if lname == "tnsnames.ora":
+        return "/samples/" not in path
+    if not (lname in DB_CONFIG_NAMES or DB_CONFIG_RX.search(lname) or (lname.endswith(".xml") and "/conf/Catalina/" in path)):
+        return False
+    return not DB_CONFIG_SKIP_RX.search(path)
+
+
+def db_engine_name(text):
+    s = (text or "").lower()
+    for rx, engine in (("postgres|pgsql|psql|npgsql|(^|[_.\\-])pg$", "postgresql"), ("oracle|\\boci", "oracle"), ("mysql|maria", "mysql"),
+                       ("sqlserver|mssql|sqlsrv|sql server", "sqlserver"), ("db2", "db2"), ("mongo", "mongodb"),
+                       ("redis", "redis"), ("informix", "informix")):
+        if re.search(rx, s):
+            return engine
+    return None
+
+
+def _db_add(refs, seen, engine, host, port, database, alias, kind):
+    host = (host or "").strip().strip("[]") if host else None
+    if host is not None:
+        if not _DB_HOST_OK.match(host if ":" not in host else "[%s]" % host) or host.lower() in _DB_HOST_FAKE:
+            return
+    elif not alias:
+        return
+    if port is not None:
+        port = str(port).strip()
+        if not port.isdigit() or not 0 < int(port) < 65536:
+            return
+        port = int(port)
+    if database is not None and not _DB_NAME_OK.match(database):
+        database = None
+    if alias is not None and not _DB_NAME_OK.match(alias):
+        alias = None
+    key = (engine, host, port, database, alias)
+    if key in seen or len(refs) >= DB_REFS_MAX_PER_FILE:
+        return
+    seen.add(key)
+    refs.append({"engine": engine, "host": host, "port": port, "database": database, "alias": alias, "kind": kind})
+
+
+def _db_hostport(text):
+    """h, h:p, [v6]:p -> (hôte, port)"""
+    m = re.match(r"^\[([^\]]+)\](?::(\d+))?$", text)
+    if m:
+        return m.group(1), m.group(2)
+    if text.count(":") == 1:
+        h, p = text.split(":")
+        return h, p
+    return text, None
+
+
+def _db_tns_descriptor(text, refs, seen, alias, kind):
+    hosts, ports, service = [], [], None
+    for key, val in _DB_TNS_TOKEN_RX.findall(text):
+        key = key.upper()
+        if key == "HOST":
+            hosts.append(val)
+        elif key == "PORT":
+            ports.append(val)
+        elif service is None:
+            service = val
+    for i, h in enumerate(hosts):
+        _db_add(refs, seen, "oracle", h, ports[i] if i < len(ports) else None, service, alias, kind)
+
+
+def tns_entries(text):
+    """tnsnames.ora ou listener.ora -> [(alias, texte de l'entrée)]"""
+    text = re.sub(r"(?m)#.*$", "", text or "")
+    marks = [m for m in _DB_TNS_ENTRY_RX.finditer(text) if m.group(1).upper() not in _DB_TNS_KEYWORDS]
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out.append((m.group(1).split(",")[0].strip(), text[m.end():end]))
+    return out
+
+
+def _db_inline_descriptors(text, refs, seen):
+    for m in re.finditer(r"\(\s*DESCRIPTION\b", text, re.I):
+        depth, i = 0, m.start()
+        while i < len(text) and i - m.start() < 4096:
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        _db_tns_descriptor(text[m.start():i + 1], refs, seen, None, "tns")
+
+
+def _db_block_refs(text, fname, refs, seen):
+    """Fichiers à sections : odbc.ini, pg_service.conf, my.cnf, database.yml, settings.py."""
+    default = {"pg_service.conf": "postgresql", ".pg_service.conf": "postgresql", "my.cnf": "mysql", ".my.cnf": "mysql"}.get(fname)
+    cur = {}
+
+    def flush():
+        if cur.get("host"):
+            _db_add(refs, seen, db_engine_name(cur.get("engine")) or default, cur["host"], cur.get("port"), cur.get("db"), None, "config")
+        cur.clear()
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s[0] in "#;" or len(s) > 2000:
+            continue
+        if (s[0] == "[" and s.endswith("]")) or (line[0] not in " \t" and s.endswith(":")) or re.match(r"""['"]\w+['"]\s*:\s*\{""", s):
+            flush()
+            continue
+        m = re.match(r"""['"]?(\w+)['"]?\s*[:=]\s*['"]?([^'",\s#]+)""", s)
+        if not m:
+            continue
+        k, v = m.group(1).lower(), m.group(2)
+        if k in ("host", "hostname", "server", "servername", "address"):
+            cur.setdefault("host", v)
+        elif k == "port":
+            cur.setdefault("port", v)
+        elif k in ("database", "dbname", "db") or (k == "name" and fname.endswith(".py")):
+            cur.setdefault("db", v)
+        elif k in ("adapter", "engine", "driver", "type"):
+            cur.setdefault("engine", v)
+    flush()
+
+
+def extract_db_refs(text, fname=""):
+    """Texte d'un fichier de configuration -> [{engine, host, port, database, alias, kind}]"""
+    refs, seen = [], set()
+    if not text:
+        return refs
+    fname = (fname or "").lower()
+    if fname == "tnsnames.ora":
+        for alias, body in tns_entries(text):
+            _db_tns_descriptor(body, refs, seen, alias, "tnsnames")
+        return refs
+    for m in _DB_URI_RX.finditer(text):
+        engine = db_engine_name(re.split(r"[:+]", m.group(2))[0])
+        if not engine:
+            continue
+        rest = re.split(r"[?#]", m.group(3))[0]
+        if "@" in rest:
+            rest = rest.rsplit("@", 1)[1]
+        auth, _, path = rest.partition("/")
+        auth, _, params = auth.partition(";")
+        path = path.split("/")[0].split(";")[0]
+        pm = re.search(r"(?:^|;)database(?:name)?=([^;]+)", params + ";" + rest.partition(";")[2], re.I)
+        database = pm.group(1) if pm else (path or None)
+        for one in auth.split(","):
+            h, p = _db_hostport(one)
+            if h:
+                _db_add(refs, seen, engine, h, p, database, None, "jdbc" if m.group(1) else "uri")
+    for m in _DB_ORA_JDBC_RX.finditer(text):
+        rest = m.group(1).strip()
+        if "@" not in rest:
+            continue                       # sans @, ce qui suit peut être un identifiant : ignoré
+        rest = rest.rsplit("@", 1)[1].strip()
+        if rest.startswith("("):
+            _db_tns_descriptor(rest, refs, seen, None, "jdbc")
+            continue
+        rest = rest.lstrip("/").split("?")[0].split()[0] if rest.strip("/") else ""
+        hm = re.match(r"^([^:/]+):(\d+)[:/]([^:/]+)", rest) or re.match(r"^([^:/]+)()/([^:/]+)", rest)
+        if hm:
+            _db_add(refs, seen, "oracle", hm.group(1), hm.group(2) or None, hm.group(3), None, "jdbc")
+        elif rest:
+            _db_add(refs, seen, "oracle", None, None, None, rest, "jdbc")
+    for m in _DB_PDO_RX.finditer(text):
+        kv = dict((p.split("=", 1)[0].lower(), p.split("=", 1)[1]) for p in m.group(2).split(";") if "=" in p)
+        h, p = _db_hostport(kv.get("host") or kv.get("server") or "")
+        if h:
+            _db_add(refs, seen, db_engine_name(m.group(1)), h, kv.get("port") or p, kv.get("dbname") or kv.get("database"), None, "pdo")
+    for m in _DB_PDO_OCI_RX.finditer(text):
+        hm = re.match(r"^([^:/]+)(?::(\d+))?/([^/]+)", m.group(1))
+        if hm:
+            _db_add(refs, seen, "oracle", hm.group(1), hm.group(2), hm.group(3), None, "pdo")
+    if "description" in text.lower():
+        _db_inline_descriptors(text, refs, seen)
+    if fname in _DB_BLOCK_FILES:
+        _db_block_refs(text, fname, refs, seen)
+        return refs
+    groups, hint = {}, None
+    for line in text.splitlines():
+        if len(line) > 2000:
+            continue
+        low = line.lower()
+        if ("database" in low or "initial catalog" in low) and ";" in line and "=" in line:
+            # chaîne de connexion ADO.NET : Server=h;Port=p;Database=d;User Id=...;Password=...
+            kv = {}
+            for part in re.split(r"[;\"']", line):
+                k, sep, v = part.partition("=")
+                if sep:
+                    kv[k.strip().lower().rsplit(" ", 1)[-1] if k.strip().lower() not in ("data source", "initial catalog")
+                       else k.strip().lower()] = v.strip()
+            h = kv.get("server") or kv.get("host") or kv.get("data source")
+            if h and "dbname" not in kv:
+                h, _, p = h.replace("tcp:", "").partition(",")
+                h, p2 = _db_hostport(h)
+                _db_add(refs, seen, None, h, kv.get("port") or p or p2, kv.get("database") or kv.get("initial catalog"), None, "connstring")
+                continue
+        if "dbname" in low and "host" in low:
+            # chaîne libpq : host=h port=p dbname=d user=u password=x
+            hm = re.search(r"(?<![\w.])host\s*=\s*['\"]?([^\s'\";]+)", line, re.I)
+            dm = re.search(r"(?<![\w.])dbname\s*=\s*['\"]?([^\s'\";]+)", line, re.I)
+            pm = re.search(r"(?<![\w.])port\s*=\s*['\"]?(\d+)", line, re.I)
+            if hm and dm and not re.search(r"(pgsql|mysql|sqlsrv):", line, re.I):
+                _db_add(refs, seen, "postgresql", hm.group(1), pm and pm.group(1), dm.group(1), None, "libpq")
+                continue
+        em = _DB_KV_ENGINE_RX.match(line)
+        if em and db_engine_name(em.group(1)):
+            hint = db_engine_name(em.group(1))
+        m = _DB_KV_RX.match(line)
+        if m and _DB_KV_PREFIX_RX.search(m.group(1) or "DB"):
+            g = groups.setdefault((m.group(1) or "DB").lower(), {})
+            k = m.group(2).upper()
+            k = {"HOSTNAME": "HOST", "SERVER": "HOST", "ADDRESS": "HOST", "ADDR": "HOST"}.get(k, k)
+            k = "PORT" if k == "PORT" else ("HOST" if k == "HOST" else "DB")
+            g.setdefault(k, m.group(3))
+    for prefix, g in sorted(groups.items()):
+        if g.get("HOST"):
+            h, p = _db_hostport(g["HOST"])
+            engine = db_engine_name(prefix) or hint or ("mysql" if fname == "wp-config.php" else None)
+            _db_add(refs, seen, engine, h, g.get("PORT") or p, g.get("DB"), None, "config")
+    return refs
+
+
+# --------------------------------------------------------------------------
+# Oracle : lecture seule des fichiers d'inventaire. opatch n'est jamais exécuté :
+# il appartient au compte oracle et écrit dans cfgtoollogs.
+# Fonctions partagées avec tools/cmdb_shell_parse.py.
+# --------------------------------------------------------------------------
+ORACLE_PRODUCTS = (("oracle.server", "database"), ("oracle.crs", "grid"), ("oracle.client", "client"))
+ORACLE_ONEOFF_RX = re.compile(r"<ONEOFF\b([^>]*)>\s*<DESC>(.*?)</DESC>", re.S)
+
+
+def xml_attrs(tag):
+    return dict(re.findall(r'([A-Za-z_]+)="([^"]*)"', tag))
+
+
+def parse_central_inventory(text):
+    homes = []
+    for m in re.finditer(r"<HOME\b[^>]*>", text or ""):
+        a = xml_attrs(m.group(0))
+        if a.get("LOC") and a.get("REMOVED") != "T":
+            homes.append({"name": a.get("NAME"), "loc": a.get("LOC"), "crs": a.get("CRS") == "true"})
+    return homes
+
+
+def oracle_home_candidates(oratab, inventory_homes, olr_loc, processes):
+    """Tous les ORACLE_HOME connus -> {home: [origines]}"""
+    homes = {}
+
+    def add(path, origin):
+        path = (path or "").rstrip("/")
+        if path.startswith("/") and origin not in homes.setdefault(path, []):
+            homes[path].append(origin)
+    for line in (oratab or "").splitlines():
+        p = line.strip().split(":")
+        if len(p) >= 2 and not line.strip().startswith("#"):
+            add(p[1], "oratab")
+    for h in inventory_homes or []:
+        add(h.get("loc"), "inventory")
+    add(kv_text(olr_loc or "").get("crs_home"), "olr.loc")
+    for p in processes or []:
+        env = p.get("env") or {}
+        if env.get("ORACLE_HOME"):
+            add(env["ORACLE_HOME"], "process")
+        for cand in (p.get("exe"), (p.get("cmdline") or "").split(" ")[0]):
+            m = re.match(r"^(/.+)/bin/(?:tnslsnr|oracle)$", cand or "")
+            if m:
+                add(m.group(1), "process")
+    return homes
+
+
+def oracle_home_facts(home, read, ls):
+    """read(chemin relatif) -> texte ou None ; ls(chemin relatif) -> liste ou None."""
+    f = {"home": home, "patches": [], "patch_sources": []}
+    patches = {}
+
+    def patch(pid, desc, installed, source):
+        cur = patches.setdefault(pid, {"id": pid, "description": None, "installed_at": None})
+        cur["description"] = cur["description"] or (desc or "").strip() or None
+        cur["installed_at"] = cur["installed_at"] or installed
+        if source not in f["patch_sources"]:
+            f["patch_sources"].append(source)
+    comps = read("inventory/ContentsXML/comps.xml")
+    f["comps_readable"] = comps is not None
+    if comps:
+        for name, kind in ORACLE_PRODUCTS:
+            m = re.search(r'<COMP NAME="%s" VER="([^"]+)"' % re.escape(name), comps)
+            if m:
+                f["product"], f["version"] = kind, m.group(1)
+                break
+        m = re.search(r'<INST_TYPE NAME="([^"]+)"', comps)
+        if m:
+            f["install_type"] = m.group(1)
+        for m in ORACLE_ONEOFF_RX.finditer(comps):
+            a = xml_attrs(m.group(1))
+            if a.get("REF_ID"):
+                patch(a["REF_ID"], m.group(2), a.get("INSTALL_TIME"), "comps.xml")
+    gv = read("inventory/globalvariables/oracle.server/globalvariables.xml")
+    if gv:
+        m = re.search(r'NAME="oracle_install_db_Install(?:Type|Edition)"[^>]*?VALUE="([^"]*)"', gv)
+        if m and m.group(1):
+            f["install_type"] = m.group(1)
+    for pid in ls("inventory/oneoffs") or []:
+        if pid.isdigit():
+            t = read("inventory/oneoffs/%s/etc/config/inventory.xml" % pid)
+            m = re.search(r"<(?:patch_)?description>(.*?)</", t or "", re.S)
+            patch(pid, m and m.group(1), None, "oneoffs")
+    for name in ls(".patch_storage") or []:
+        m = re.match(r"^(\d{6,})_", name)
+        if m:
+            patch(m.group(1), None, None, ".patch_storage")
+    f["patches"] = sorted(patches.values(), key=lambda x: x["id"])
+    f["visibility"] = "complet" if comps else ("partiel" if f["patches"] else "aucun")
+    t = read("OPatch/version.txt")
+    if t:
+        m = re.search(r"OPATCH_VERSION:\s*(\S+)", t)
+        f["opatch_version"] = m.group(1) if m else None
+    sids = set()
+    for name in ls("dbs") or []:
+        m = re.match(r"^(?:init|spfile|orapw)([A-Za-z+\-][\w+\-]*?)(?:\.ora)?$", name)
+        if m and m.group(1).lower() != "dbs":
+            sids.add(m.group(1))
+    f["configured_sids"] = sorted(sids)
+    f["listeners"] = []
+    for name, body in tns_entries(read("network/admin/listener.ora")):
+        if name.upper().startswith(("SID_LIST_", "ADR_", "SSL_", "INBOUND_", "SECURE_", "VALID_NODE", "TRACE_", "LOG_")):
+            continue
+        toks = _DB_TNS_TOKEN_RX.findall(body)
+        hosts = [v for k, v in toks if k.upper() == "HOST"]
+        ports = [v for k, v in toks if k.upper() == "PORT"]
+        for i, p in enumerate(ports):
+            f["listeners"].append({"name": name, "host": hosts[i] if i < len(hosts) else None, "port": int(p) if p.isdigit() else None})
+    f["tns_refs"] = extract_db_refs(read("network/admin/tnsnames.ora"), "tnsnames.ora")
+    return f
+
 
 class Collector(object):
 
@@ -1897,17 +2276,31 @@ class Collector(object):
         return d
 
     # -- Oracle et assimilés ----------------------------------------------
-    def collect_oracle(self):
+    def collect_oracle(self, doc=None):
         d = {}
         d["oratab"] = read_text("/etc/oratab", 64 * 1024)
         loc = kv_text(read_text("/etc/oraInst.loc", 4096) or "")
         d["oraInst_loc"] = loc
         inv = loc.get("inventory_loc")
         if inv:
-            t = read_text(os.path.join(inv, "ContentsXML", "inventory.xml"), 1 << 20)
-            if t:
-                d["central_inventory_homes"] = [{"name": m.group(1), "loc": m.group(2)}
-                                                for m in re.finditer(r'<HOME NAME="([^"]+)" LOC="([^"]+)"', t)]
+            d["central_inventory_homes"] = parse_central_inventory(
+                read_text(os.path.join(inv, "ContentsXML", "inventory.xml"), 1 << 20))
+        olr = read_text("/etc/oracle/olr.loc", 4096)
+        d["olr_loc"] = kv_text(olr or "")
+        procs = ((doc or {}).get("processes") or {}).get("list") or []
+        cands = oracle_home_candidates(d["oratab"], d.get("central_inventory_homes"), olr, procs)
+        homes = []
+        for home in sorted(cands)[:40]:
+            def read(rel, home=home):
+                return read_text(os.path.join(home, rel), 16 << 20)
+
+            def ls(rel, home=home):
+                return listdir(os.path.join(home, rel))
+            f = oracle_home_facts(home, read, ls)
+            f["sources"] = cands[home]
+            f["exists"] = os.path.isdir(home)
+            homes.append(f)
+        d["homes"] = homes
         return d if any(d.values()) else {}
 
     # -- parcours du système de fichiers -----------------------------------
@@ -1916,8 +2309,8 @@ class Collector(object):
         res = dict((k, []) for k in (
             "java_archives", "maven_exploded", "jdk_homes", "python_packages", "python_venvs", "conda_packages",
             "npm_packages", "node_apps", "npm_lockfiles", "composer_installed", "composer_locks", "ruby_gems",
-            "dotnet_deps", "webapps", "js_libraries", "native_libs", "db_datadirs"))
-        stats = {"files": 0, "dirs": 0, "walk_errors": 0, "truncated": False}
+            "dotnet_deps", "webapps", "js_libraries", "native_libs", "db_datadirs", "db_refs"))
+        stats = {"files": 0, "dirs": 0, "walk_errors": 0, "truncated": False, "db_config_files": 0, "db_config_unreadable": 0}
         t0 = time.time()
         deadline = t0 + a.scan_max_seconds
         excludes = set(a.exclude or [])
@@ -2015,6 +2408,8 @@ class Collector(object):
                     stats["files"] += 1
                     path = os.path.join(root, f)
                     lf = f.lower()
+                    if is_db_config(path, lf):
+                        self._db_config(path, lf, res, stats, add_owner)
                     if lf.endswith(ARCHIVE_EXT):
                         if not is_regular(path):
                             continue
@@ -2112,6 +2507,7 @@ class Collector(object):
                 break
         stats["duration"] = round(time.time() - t0, 1)
         stats["archives"] = counters["archives"]
+        res["db_refs_resolved"] = self.resolve_db_hosts(res["db_refs"])
         res["stats"] = stats
         return res
 
@@ -2189,6 +2585,34 @@ class Collector(object):
                 n, ver = k.rsplit("/", 1)
                 libs.append({"name": n, "version": ver, "type": (v or {}).get("type")})
         res["dotnet_deps"].append({"path": path, "runtimeTarget": data.get("runtimeTarget"), "libraries": libs})
+
+    def _db_config(self, path, lname, res, stats, add_owner):
+        """Fichier de configuration : seules les références de bases sont retenues, jamais le contenu."""
+        if not is_regular(path) or stats["db_config_files"] >= DB_CONFIG_MAX_FILES:
+            return
+        stats["db_config_files"] += 1
+        text = read_text(path, DB_CONFIG_MAX_SIZE)
+        if text is None:
+            stats["db_config_unreadable"] += 1
+            return
+        for r in extract_db_refs(text, lname):
+            r["path"] = path
+            res["db_refs"].append(add_owner(r, path))
+
+    def resolve_db_hosts(self, refs):
+        """Noms des serveurs de bases résolus depuis la cible (getent, budget limité)."""
+        if not which("getent"):
+            return {}
+        out, deadline = {}, time.time() + 30
+        names = sorted(set(r["host"] for r in refs if r.get("host") and not re.match(r"^[\d.:]+$", r["host"])
+                           and r["host"] != "localhost"))
+        for name in names[:40]:
+            if time.time() > deadline:
+                break
+            ips = sorted(set(line.split()[0] for line in (run_out(["getent", "hosts", name], 3) or "").splitlines() if line.strip()))
+            if ips:
+                out[name] = ips
+        return out
 
     def _webapp(self, path, root, fname, files, res, add_owner):
         if not is_regular(path):
@@ -2419,7 +2843,7 @@ class Collector(object):
         doc["security"] = self.section("security", self.collect_security)
         doc["kernel"] = self.section("kernel", self.collect_kernel)
         doc["containers"] = self.section("containers", self.collect_containers)
-        doc["oracle"] = self.section("oracle", self.collect_oracle)
+        doc["oracle"] = self.section("oracle", lambda: self.collect_oracle(doc))
         doc["software_dirs"] = self.section("software_dirs", self.software_dirs)
         if a.scan_filesystem:
             doc["filesystem"] = self.section("filesystem", self.scan_filesystem)

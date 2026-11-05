@@ -20,7 +20,7 @@
 # modifiable par d'autres utilisateurs ; tout le reste est seulement lu.
 # ---------------------------------------------------------------------------
 
-VERSION="1.1.0-sh"
+VERSION="1.2.0-sh"
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/etc:/usr/ucb:/opt/freeware/bin:/opt/freeware/sbin
 # Tests uniquement : répertoire de substituts placé en tête du PATH
 [ -n "$CMDB_TEST_PATH" ] && PATH="$CMDB_TEST_PATH:$PATH"
@@ -96,8 +96,9 @@ renice 19 -p $$ >/dev/null 2>&1 || renice -n 19 -p $$ >/dev/null 2>&1
 have ionice && ionice -c 3 -p $$ >/dev/null 2>&1
 
 W=""
-if have mktemp; then W=$(mktemp -d /tmp/cmdb.XXXXXX 2>/dev/null); fi
-if [ -z "$W" ]; then W=/tmp/cmdb.$$.$(now_epoch); mkdir "$W" || exit 1; fi
+TMPBASE=${TMPDIR:-/tmp}
+if have mktemp; then W=$(mktemp -d "$TMPBASE/cmdb.XXXXXX" 2>/dev/null); fi
+if [ -z "$W" ]; then W=$TMPBASE/cmdb.$$.$(now_epoch); mkdir "$W" || exit 1; fi
 cleanup() { rm -rf "$W" "$W.tgz"; }
 trap cleanup 0
 trap 'exit 1' INT TERM HUP
@@ -375,6 +376,46 @@ section_services() {
     fi
 }
 
+# ORACLE_HOME connus : oratab, inventaire central, olr.loc, listeners en cours d'exécution
+oracle_homes() {
+    {
+        [ -r /etc/oratab ] && awk -F: '$0 !~ /^[ \t]*#/ && NF >= 2 { print $2 }' /etc/oratab
+        if [ -r /etc/oraInst.loc ]; then
+            _inv=$(sed -n 's/^inventory_loc=//p' /etc/oraInst.loc | head -1)
+            [ -r "$_inv/ContentsXML/inventory.xml" ] && grep '<HOME ' "$_inv/ContentsXML/inventory.xml" \
+                | grep -v 'REMOVED="T"' | sed -n 's/.* LOC="\([^"]*\)".*/\1/p'
+        fi
+        [ -r /etc/oracle/olr.loc ] && sed -n 's/^crs_home=//p' /etc/oracle/olr.loc
+        ps -eo args 2>/dev/null | sed -n 's#^\(/[^ ]*\)/bin/tnslsnr.*#\1#p'
+    } | sed 's#/*$##' | sort -u | grep '^/' | head -40
+}
+oracle_ls() {
+    while IFS= read -r _h; do
+        for _r in inventory/oneoffs .patch_storage dbs; do
+            echo "== $_h/$_r"; ls -1A "$_h/$_r" 2>/dev/null | head -1000
+        done
+    done <"$W/scan/oracle_homes.lst"
+}
+# Lecture seule des fichiers d'inventaire ; opatch n'est jamais exécuté (compte oracle,
+# et il écrit dans cfgtoollogs). Un ORACLE_HOME illisible se traduit par des fichiers absents.
+section_oracle() {
+    if [ -f /etc/oraInst.loc ]; then
+        _inv=$(sed -n 's/^inventory_loc=//p' /etc/oraInst.loc | head -1)
+        [ -n "$_inv" ] && grab "$_inv/ContentsXML/inventory.xml"
+    fi
+    grab /etc/oracle/olr.loc
+    oracle_homes >"$W/scan/oracle_homes.lst" 2>/dev/null
+    [ -s "$W/scan/oracle_homes.lst" ] || return 0
+    while IFS= read -r _h; do
+        grab_lim 16384 "$_h/inventory/ContentsXML/comps.xml"
+        grab_lim 1024 "$_h/inventory/globalvariables/oracle.server/globalvariables.xml"
+        grab_lim 8 "$_h/OPatch/version.txt"
+        grab_lim 256 "$_h/network/admin/listener.ora" "$_h/network/admin/tnsnames.ora"
+        grab_lim 128 "$_h"/inventory/oneoffs/*/etc/config/inventory.xml
+    done <"$W/scan/oracle_homes.lst"
+    capt 60 oracle_ls oracle_ls
+}
+
 section_misc() {
     log "cron/comptes/sécurité/noyau/oracle"
     grab /etc/crontab /etc/anacrontab /etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/* \
@@ -388,10 +429,7 @@ section_misc() {
     cap sestatus sestatus
     cap sysctl sysctl -a
     cap boot ls -l /boot
-    if [ -f /etc/oraInst.loc ]; then
-        _inv=$(sed -n 's/^inventory_loc=//p' /etc/oraInst.loc | head -1)
-        [ -n "$_inv" ] && grab "$_inv/ContentsXML/inventory.xml"
-    fi
+    section_oracle
     cap software_dirs sh -c 'for d in /opt /usr/local /srv /app /apps /applis /data /u01 /u02 /home /var/www /usr/share/java; do
         [ -d "$d" ] || continue; echo "== $d"; ls -1A "$d" 2>/dev/null | head -500
         for s in "$d"/*; do [ -d "$s" ] && [ ! -h "$s" ] && echo "-- $s: $(ls -1A "$s" 2>/dev/null | head -200 | tr "\n" " ")"; done
@@ -402,6 +440,8 @@ section_misc() {
 # Parcours du système de fichiers
 # ---------------------------------------------------------------------------
 local_mounts() {
+    # Tests uniquement : parcours limité à un répertoire
+    if [ -n "$CMDB_TEST_SCAN_ROOT" ]; then echo "$CMDB_TEST_SCAN_ROOT"; return; fi
     if [ ! -r /proc/mounts ]; then
         # AIX : "mount" ; lignes locales = première colonne /dev/... (pas de nœud distant)
         mount 2>/dev/null | awk '$1 ~ /^\/dev\// && ($3 == "jfs2" || $3 == "jfs") {print $2}' | sort -u
@@ -411,6 +451,75 @@ local_mounts() {
 }
 
 # find portable (AIX et vieux find sans -path) : exclusions et filtres faits par classify()
+# Fichiers pouvant contenir une chaîne de connexion (voir grab_dbcfg)
+DBCFG_FIND="-o -name *.properties -o -name .env -o -name *.env -o -name .env.* -o -name application*.yml \
+ -o -name application*.yaml -o -name bootstrap*.yml -o -name bootstrap*.yaml -o -name *-jdbc.xml -o -name *datasource*.xml \
+ -o -name *datasource*.yml -o -name *datasource*.yaml -o -name appsettings*.json -o -name context.xml -o -name server.xml \
+ -o -name standalone*.xml -o -name domain.xml -o -name hibernate.cfg.xml -o -name persistence.xml -o -name resources.xml \
+ -o -name tnsnames.ora -o -name pgbouncer.ini -o -name pgpool.conf -o -name pg_service.conf -o -name .pg_service.conf \
+ -o -name odbc.ini -o -name .odbc.ini -o -name my.cnf -o -name .my.cnf -o -name wp-config.php -o -name config.php \
+ -o -name configuration.php -o -name config.inc.php -o -name settings.php -o -name settings.py -o -name local_settings.py \
+ -o -name database.yml -o -name database.yaml -o -name database.php -o -name db.php -o -name parameters.yml \
+ -o -name parameters.yaml -o -name web.config"
+
+# dbcfg_skip CHEMIN : mêmes exclusions que DB_CONFIG_SKIP_RX du collecteur Python
+dbcfg_skip() {
+    case "$1" in
+        */sample/*|*/samples/*|*/example/*|*/examples/*|*/demo/*|*/demos/*|*/doc/*|*/docs/*|*/test/*|*/tests/*|*/testdata/*) return 0 ;;
+        */fixtures/*|*/node_modules/*|*/site-packages/*|*/dist-packages/*|*/vendor/*|*/i18n/*|*/locale/*|*/locales/*) return 0 ;;
+        /usr/share/*|/usr/lib/*|/usr/lib64/*|*/product/[0-9]*) return 0 ;;
+    esac
+    return 1
+}
+
+# grab_dbcfg FICHIER : copie EXPURGÉE sous fs/<chemin d'origine>. Les secrets ne quittent pas
+# le serveur : seules passent les URL de bases sans identifiants ni paramètres, et les lignes
+# hôte/port/base/moteur, une fois retiré tout ce qui ressemble à un mot de passe.
+grab_dbcfg() {
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    _d="$W/fs${1%/*}"
+    if [ "$_d" != "$_lastdir" ]; then mkdir -p "$_d" 2>/dev/null; _lastdir=$_d; fi
+    dd if="$1" bs=1024 count=256 2>/dev/null | awk '
+    BEGIN {
+        Q = sprintf("%c", 39)
+        RXU = "[A-Za-z][A-Za-z0-9+:_-]*://[^ \t\"<>`" Q "]*"
+        RXO = "[Jj][Dd][Bb][Cc]:[Oo][Rr][Aa][Cc][Ll][Ee]:[A-Za-z0-9]*:[^ \t\"<>`" Q "]*"
+        RXS = "[Pp][Aa][Ss][Ss][A-Za-z_]*[\"" Q "]?[ \t]*(=>|=|:|,)[ \t]*[^ \t;,)]*"
+        RXW = "[Pp][Ww][Dd][A-Za-z_]*[\"" Q "]?[ \t]*(=>|=|:|,)[ \t]*[^ \t;,)]*"
+    }
+    {
+        l = substr($0, 1, 2000); lo = tolower(l); done = 0
+        if (index(lo, "(description") == 0) {
+            r = l
+            while (match(r, RXO)) {
+                t = substr(r, RSTART, RLENGTH); r = substr(r, RSTART + RLENGTH); done = 1
+                n = split(t, a, "@")
+                if (n > 1) print "jdbc:oracle:thin:@" a[n]
+            }
+        }
+        r = l
+        while (match(r, RXU)) {
+            t = substr(r, RSTART, RLENGTH); r = substr(r, RSTART + RLENGTH)
+            if (tolower(t) !~ /^(jdbc:|postgres|pgsql|mysql|maria|mongodb|redis|oracle|mssql|sqlserver|db2)/) continue
+            done = 1
+            sub(/[?#].*/, "", t)
+            k = index(t, "://"); n = split(substr(t, k + 3), a, "@")
+            if (n > 1) t = substr(t, 1, k + 2) a[n]
+            keep = ""
+            if (match(t, /;[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]([Nn][Aa][Mm][Ee])?=[^;]*/)) keep = substr(t, RSTART, RLENGTH)
+            sub(/;.*/, "", t)
+            print t keep
+        }
+        if (done) next
+        sub(/thin:[^@ ]*@/, "thin:@", l)
+        gsub(RXS, "", l); gsub(RXW, "", l)
+        lo = tolower(l)
+        if (lo ~ /pass|pwd|secret|token|credential|private/) next
+        if (lo ~ /^[ \t]*\[/ || l ~ /^[^ \t].*:[ \t]*$/ ||
+            lo ~ /host|server|port|dbname|database|db_|sid|service|adapter|engine|driver|connection|description/) print substr(l, 1, 400)
+    }' >"$W/fs$1" 2>/dev/null
+}
+
 do_find_simple() {
     set -f
     for _m in $(local_mounts); do
@@ -437,7 +546,7 @@ do_find_simple() {
             -o -name perl -o -name postgres -o -name postmaster -o -name psql -o -name mysqld -o -name mariadbd \
             -o -name mysql -o -name mongod -o -name redis-server -o -name nginx -o -name httpd -o -name apache2 \
             -o -name haproxy -o -name openssl -o -name curl -o -name 'zabbix_agent*' -o -name db2ls -o -name dspmqver \
-            \) -print 2>/dev/null
+            $DBCFG_FIND \) -print 2>/dev/null
     done
     set +f
 }
@@ -476,7 +585,7 @@ do_find() {
                 -o -name mariadbd -o -name mysql -o -name mongod -o -name redis-server -o -name nginx -o -name httpd \
                 -o -name apache2 -o -name haproxy -o -name openssl -o -name curl -o -name 'zabbix_agent*' \
                 -o -name db2ls -o -name dspmqver \) \) \
-            \) -print 2>/dev/null
+            $DBCFG_FIND \) -print 2>/dev/null
     done
     set +f
 }
@@ -503,6 +612,15 @@ classify() {
                 esac
                 continue ;;
             PG_VERSION) [ -d "$d/global" ] && grab_lim 1 "$f"; continue ;;
+            comps.xml) grab_lim 16384 "$f"; continue ;;
+            pom.properties) grab "$f"; continue ;;
+            tnsnames.ora) case "$f" in */samples/*) ;; *) grab_lim 256 "$f" ;; esac; continue ;;
+            *.properties|.env|*.env|.env.*|application*.y*ml|bootstrap*.y*ml|*-jdbc.xml|*datasource*.xml|*datasource*.y*ml|\
+            appsettings*.json|context.xml|server.xml|standalone*.xml|domain.xml|hibernate.cfg.xml|persistence.xml|\
+            resources.xml|pgbouncer.ini|pgpool.conf|pg_service.conf|.pg_service.conf|odbc.ini|.odbc.ini|my.cnf|.my.cnf|\
+            wp-config.php|config.php|configuration.php|config.inc.php|settings.php|settings.py|local_settings.py|\
+            database.yml|database.yaml|database.php|db.php|parameters.yml|parameters.yaml|web.config)
+                dbcfg_skip "$f" || grab_dbcfg "$f"; continue ;;
             *.js) case "$f" in */node_modules/*) ;; *) grab_lim 1 "$f" ;; esac; continue ;;
             lib*.so*|libssl*.a|libcrypto*.a)
                 case "$f" in /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*) [ "$FIND_PATH" = 1 ] || continue ;; esac

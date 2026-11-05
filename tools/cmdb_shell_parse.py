@@ -62,6 +62,13 @@ def safe_extract(tgz_bytes, dest):
                 shutil.copyfileobj(src, out)
 
 
+def read_all(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
 class Dump(object):
     def __init__(self, root):
         self.root = root
@@ -926,7 +933,45 @@ def build_services(d):
     return s
 
 
-def build_misc(d, users_rows):
+def oracle_listing(text):
+    """Sortie de oracle_ls : "== chemin" suivi des entrées du répertoire."""
+    out, cur = {}, None
+    for line in (text or "").splitlines():
+        if line.startswith("== "):
+            cur = out.setdefault(line[3:], [])
+        elif cur is not None and line:
+            cur.append(line)
+    return out
+
+
+def build_oracle(d, procs):
+    ora = {}
+    if d.file("/etc/oratab") is not None:
+        ora["oratab"] = d.file("/etc/oratab")
+    loc = C.kv_text(d.file("/etc/oraInst.loc") or "")
+    if loc:
+        ora["oraInst_loc"] = loc
+        inv = d.file(loc.get("inventory_loc", "") + "/ContentsXML/inventory.xml") if loc.get("inventory_loc") else None
+        if inv:
+            ora["central_inventory_homes"] = C.parse_central_inventory(inv)
+    olr = d.file("/etc/oracle/olr.loc")
+    if olr:
+        ora["olr_loc"] = C.kv_text(olr)
+    cands = C.oracle_home_candidates(ora.get("oratab"), ora.get("central_inventory_homes"), olr, procs)
+    listing = oracle_listing(d.cmd("oracle_ls"))
+    homes = []
+    for home in sorted(cands)[:40]:
+        f = C.oracle_home_facts(home, lambda rel, h=home: d.file(h + "/" + rel),
+                                lambda rel, h=home: listing.get(h + "/" + rel))
+        f["sources"] = cands[home]
+        f["exists"] = (home + "/inventory/oneoffs") in listing
+        homes.append(f)
+    if homes:
+        ora["homes"] = homes
+    return ora
+
+
+def build_misc(d, users_rows, procs=None):
     sched = {"cron_files": {}}
     for f in ["/etc/crontab", "/etc/anacrontab"]:
         t = d.file(f)
@@ -962,16 +1007,7 @@ def build_misc(d, users_rows):
         p = line.split()
         if p:
             ker["modules"].append({"name": p[0], "size": p[1], "state": p[4] if len(p) > 4 else None})
-    ora = {}
-    if d.file("/etc/oratab") is not None:
-        ora["oratab"] = d.file("/etc/oratab")
-    loc = C.kv_text(d.file("/etc/oraInst.loc") or "")
-    if loc:
-        ora["oraInst_loc"] = loc
-        inv = d.file(loc.get("inventory_loc", "") + "/ContentsXML/inventory.xml") if loc.get("inventory_loc") else None
-        if inv:
-            ora["central_inventory_homes"] = [{"name": m.group(1), "loc": m.group(2)}
-                                              for m in re.finditer(r'<HOME NAME="([^"]+)" LOC="([^"]+)"', inv)]
+    ora = build_oracle(d, procs)
     return sched, acc, sec, ker, ora
 
 
@@ -997,6 +1033,9 @@ class DumpScanner(C.Collector):
 
     def add_probe_candidate(self, path, origin):
         return None
+
+    def resolve_db_hosts(self, refs):
+        return {}           # pas de résolution depuis le contrôleur : le DNS n'est pas celui de la cible
 
 
 def strip_prefix(obj, prefix):
@@ -1190,7 +1229,7 @@ def convert(tgz_bytes):
     try:
         safe_extract(tgz_bytes, tmp)
         d = Dump(tmp)
-        meta_kv = C.kv_text(open(os.path.join(tmp, "meta.txt")).read()) if os.path.exists(os.path.join(tmp, "meta.txt")) else {}
+        meta_kv = C.kv_text(read_all(os.path.join(tmp, "meta.txt")))
         idx = owner_index(d)
         users_rows, users = [], {}
         for line in (d.file("/etc/passwd") or "").splitlines():
@@ -1209,7 +1248,7 @@ def convert(tgz_bytes):
             "duration_seconds": float(meta_kv.get("duration_seconds") or 0),
             "host_label": meta_kv.get("host_label") or None, "uid": meta_kv.get("uid"),
             "shell": meta_kv.get("shell"), "converted_at": C.now_iso(), "errors": [],
-            "log": open(os.path.join(tmp, "log.txt")).read() if os.path.exists(os.path.join(tmp, "log.txt")) else None,
+            "log": read_all(os.path.join(tmp, "log.txt")),
         }}
         is_aix = (meta_kv.get("os") or (d.cmd("uname_s", True) or "").strip()) == "AIX"
         if is_aix:
@@ -1225,7 +1264,7 @@ def convert(tgz_bytes):
         else:
             doc["network"] = build_network(d, inode_pid, names)
             doc["services"] = build_services(d)
-        doc["scheduled"], doc["accounts"], doc["security"], doc["kernel"], doc["oracle"] = build_misc(d, users_rows)
+        doc["scheduled"], doc["accounts"], doc["security"], doc["kernel"], doc["oracle"] = build_misc(d, users_rows, doc["processes"]["list"])
         doc["containers"] = {}
         doc["software_dirs"] = {"raw": d.cmd("software_dirs", True)}
         if os.path.exists(os.path.join(tmp, "scan", "found.lst")) or os.path.exists(os.path.join(tmp, "scan", "archives.lst")):
