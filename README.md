@@ -508,6 +508,24 @@ Pour AIX, les paquets installp n'ont pas d'équivalent dans les bases des scanne
 
 Les images de conteneurs (table `containers`) sont à scanner séparément (`trivy image`, `grype <image>`), comme les composants des conteneurs rootless, invisibles depuis root.
 
+### Identifier les archives Java sans `pom.properties`
+
+Une archive sans `pom.properties`, fréquente pour les bibliothèques anciennes, reste `maven-unidentified` : sans purl, elle n'entre pas dans les SBOM et n'est donc pas analysée. `--java-db` la reconnaît par son SHA-1 relevé à la collecte, dans une copie locale de la base de Trivy. Aucune empreinte ne sort du contrôleur et il n'y a rien à recollecter.
+
+```bash
+# Une fois, sur une machine qui a accès au registre, puis copier le fichier sur le contrôleur
+trivy image --download-java-db-only --cache-dir /srv/trivy     # donne /srv/trivy/java-db/trivy-java.db
+
+ansible-playbook consolidate.yml -e cmdb_java_db=/srv/trivy/java-db/trivy-java.db
+python3 tools/cmdb_build.py --store store --java-db /srv/trivy/java-db/trivy-java.db --out build
+```
+
+La consolidation affiche le nombre d'archives sans `pom.properties`, avec empreinte, et identifiées. Les archives reconnues sont celles publiées sur Maven Central, avec un fichier identique : un jar propre à un éditeur ou recompilé reste non identifié. Elles portent la preuve `sha1 trivy-java-db` :
+
+```sql
+SELECT name, version, COUNT(*) FROM software WHERE evidence LIKE 'sha1 trivy-java-db%' GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
 ## Limites connues
 
 - Les fonctions Oracle, liens, modules, points d'entrée et clés ont été validées sur des fichiers et des collectes fabriqués, pas sur de vrais serveurs Oracle, Tomcat ou AIX : les formats d'inventaire Oracle viennent de la documentation et d'exemples, à confronter à vos fichiers. Le collecteur shell a été exécuté sous dash, bash, `bash --posix` et busybox, pas sous ksh.

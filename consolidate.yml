@@ -25,6 +25,7 @@
     cmdb_filter_apps: []                              # vide = toutes les applications
     cmdb_filter_platforms: []                         # vide = toutes les plates-formes
     cmdb_build_dir: "{{ playbook_dir }}/build"
+    cmdb_java_db: ""                                  # base trivy-java.db locale (archives Java sans pom.properties)
     cmdb_report_exclude: ""                           # ex. "go-module,npm-package" pour alléger le rapport
   tasks:
     - name: Construire la base SQLite, les exports, les SBOM et le rapport HTML
@@ -35,6 +36,7 @@
              + (cmdb_lots | map('regex_replace', '^', '--lot=') | list)
              + (cmdb_filter_apps | map('regex_replace', '^', '--app=') | list)
              + (cmdb_filter_platforms | map('regex_replace', '^', '--platform=') | list)
+             + (['--java-db', cmdb_java_db] if cmdb_java_db else [])
              + (['--report-exclude-categories', cmdb_report_exclude] if cmdb_report_exclude else []) }}
       register: cmdb_build_result
       changed_when: true

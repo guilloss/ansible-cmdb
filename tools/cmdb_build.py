@@ -534,10 +534,46 @@ CREATE TABLE eol_reference (product TEXT, cycle TEXT, eol TEXT, extended TEXT);
 # Extraction
 # ---------------------------------------------------------------------------
 
+class JavaDb(object):
+    """Base trivy-java.db, en lecture seule : SHA-1 d'une archive -> coordonnées Maven.
+
+    Sert aux archives sans pom.properties. Tout se passe en local : aucune empreinte ne sort."""
+
+    def __init__(self, path):
+        self.path = path
+        self.cache = {}
+        self.without_pom = self.hashed = self.found = 0
+        uri = "file:%s?mode=ro" % quote(os.path.abspath(path))
+        try:
+            self.db = sqlite3.connect(uri, uri=True)
+            self.db.execute("SELECT a.group_id, a.artifact_id, i.version, i.sha1 FROM indices i "
+                            "JOIN artifacts a ON a.id = i.artifact_id LIMIT 1").fetchall()
+        except sqlite3.Error as e:
+            raise ValueError("%s n'est pas une base trivy-java.db lisible : %s" % (path, e))
+
+    def find(self, sha1):
+        """(groupId, artifactId, version) de cette empreinte, ou None."""
+        self.without_pom += 1
+        if not sha1 or not re.match(r"^[0-9a-fA-F]{40}$", sha1):
+            return None
+        self.hashed += 1
+        key = sha1.lower()
+        if key not in self.cache:
+            self.cache[key] = self.db.execute(
+                "SELECT a.group_id, a.artifact_id, i.version FROM indices i JOIN artifacts a ON a.id = i.artifact_id "
+                "WHERE i.sha1 = ?", (bytes.fromhex(key),)).fetchone()
+        hit = self.cache[key]
+        if hit and hit[0] and hit[1] and hit[2]:
+            self.found += 1
+            return hit
+        return None
+
+
 class Builder(cmdb_extras.ExtrasMixin):
 
-    def __init__(self, db):
+    def __init__(self, db, java_db=None):
         self.db = db
+        self.java_db = java_db
         self.rows = {}
         self.app = self.platform = NA
         self.flrtvc = []
@@ -1085,7 +1121,12 @@ class Builder(cmdb_extras.ExtrasMixin):
             self.soft(host, "runtime", "generic", "java", "jvm (rt.jar)", v, path[:-len("/lib/rt.jar")],
                       "rt.jar" + suffix, owner, purl_=purl("generic", "java", v),
                       cpe=java_cpe(v, man.get("Implementation-Vendor")))
-        if not mavens:
+        hit = self.java_db.find(a.get("sha1")) if self.java_db and not mavens else None
+        if hit:
+            self.soft(host, "java-archive", "maven", hit[1], "%s:%s" % (hit[0], hit[1]), hit[2], path,
+                      "sha1 trivy-java-db" + suffix, owner, purl_=purl("maven", hit[1], hit[2], hit[0]),
+                      extra={"sha1": a.get("sha1")})
+        elif not mavens:
             fname = os.path.basename(path.split("!/")[-1])
             fm = re.match(r"^(.+?)-(\d[\w.\-]*?)\.(jar|war|ear|hpi|jpi|sar)$", fname, re.I)
             name = man.get("Bundle-SymbolicName", "").split(";")[0] or man.get("Implementation-Title") or \
@@ -1296,6 +1337,7 @@ def main():
     ap.add_argument("--out", default="build", help="Répertoire de sortie")
     ap.add_argument("--sbom-include-managed", action="store_true",
                     help="Inclure aussi dans les SBOM les composants appartenant à un paquet OS (doublons, faux positifs)")
+    ap.add_argument("--java-db", help="Base trivy-java.db locale : identifie par SHA-1 les archives Java sans pom.properties")
     ap.add_argument("--no-raw-documents", action="store_true", help="Ne pas stocker les documents JSON bruts dans SQLite")
     ap.add_argument("--no-report", action="store_true", help="Ne pas générer le rapport HTML")
     ap.add_argument("--no-history", action="store_true", help="Ne pas comparer aux collectes précédentes")
@@ -1324,12 +1366,21 @@ def main():
         return 1
     os.makedirs(a.out, exist_ok=True)
     dbpath = os.path.join(a.out, "cmdb.sqlite")
+    java_db = None
+    if a.java_db:
+        try:
+            if not os.path.isfile(a.java_db):
+                raise ValueError("base Java introuvable : %s" % a.java_db)
+            java_db = JavaDb(a.java_db)
+        except ValueError as e:
+            print("ERREUR %s" % e, file=sys.stderr)
+            return 1
     tmp = dbpath + ".tmp"
     if os.path.exists(tmp):
         os.remove(tmp)
     db = sqlite3.connect(tmp)
     db.executescript(SCHEMA)
-    b = Builder(db)
+    b = Builder(db, java_db)
     for key, (doc, facts, src) in sorted(docs.items()):
         b.process_host(key, doc, None if a.no_raw_documents else facts, src)
         if a.no_raw_documents:
@@ -1371,6 +1422,9 @@ def main():
     print("SBOM CycloneDX   : %d fichiers dans %s" % (n, os.path.join(a.out, "sbom")))
     if nflr:
         print("FLRTVC (AIX)     : %d hôte(s) dans %s" % (nflr, os.path.join(a.out, "flrtvc")))
+    if java_db:
+        print("Archives Java    : %d sans pom.properties, dont %d avec empreinte, %d identifiées par %s"
+              % (java_db.without_pom, java_db.hashed, java_db.found, os.path.basename(a.java_db)))
     print("Composants       : " + ", ".join("%s=%d" % kv for kv in sorted(stats.items())))
     one = lambda sql: db.execute(sql).fetchone()[0]
     print("Oracle           : %d ORACLE_HOME, %d instances, %d en retard de correctifs"
