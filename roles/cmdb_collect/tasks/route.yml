@@ -1,0 +1,36 @@
+---
+# ---------------------------------------------------------------------------
+# Aiguillage par hôte de collect.yml. Passent par legacy.yml, sans module Ansible :
+#   * les groupes aix et legacy, et cmdb_force_shell (faits non demandés) ;
+#   * tout hôte dont les faits échouent (Python trop ancien ou absent) ;
+#   * tout hôte qui n'est pas Linux, ou dont le Python n'est pas 2.7 ou >= 3.6.
+# Un hôte injoignable reste injoignable : failed_when ne couvre pas la connexion.
+# Un échec plus tard, pendant la collecte moderne, est repris par le rescue de main.yml.
+# ---------------------------------------------------------------------------
+
+- name: Lire les faits Ansible (un échec envoie l'hôte vers la collecte sans module)
+  ansible.builtin.setup:
+  register: cmdb_setup
+  failed_when: false
+  when:
+    - not (cmdb_force_shell | default(false) | bool)
+    - group_names | intersect(['aix', 'legacy']) | length == 0
+
+- name: Choisir la voie de collecte
+  vars:
+    cmdb_f: "{{ cmdb_setup.ansible_facts | default({}) }}"
+    cmdb_pv: "{{ (cmdb_f.ansible_python | default({})).version | default({}) }}"
+  ansible.builtin.set_fact:
+    cmdb_use_legacy: >-
+      {{ (cmdb_f.ansible_system | default('')) != 'Linux'
+         or (cmdb_f.ansible_python is defined
+             and not ((cmdb_pv.major | default(0) == 2 and cmdb_pv.minor | default(0) >= 7)
+                      or (cmdb_pv.major | default(0) == 3 and cmdb_pv.minor | default(0) >= 6))) }}
+    cmdb_route_why: >-
+      {{ cmdb_f.ansible_system | default('faits Ansible indisponibles') }} / Python {{
+      cmdb_pv.major | default('?') }}.{{ cmdb_pv.minor | default('?') }}
+
+- name: Signaler la bascule
+  ansible.builtin.debug:
+    msg: "Bascule vers la collecte sans module ({{ cmdb_route_why }})"
+  when: cmdb_use_legacy | bool

@@ -1,6 +1,6 @@
 ---
 # ---------------------------------------------------------------------------
-# CMDB maison — COLLECTE (Linux récents : Python >= 3.7 avec ansible-core >= 2.17)
+# CMDB maison — COLLECTE de tout l'inventaire
 #
 # Un passage = une application sur une plate-forme. L'étiquetage est obligatoire :
 #
@@ -14,12 +14,13 @@
 #   -e cmdb_lot=true    : produit aussi store/_lots/<run_id>.tar.gz à transférer
 #   -e cmdb_build=true  : enchaîne la consolidation (sinon : consolidate.yml, plus tard)
 #
-# AIX et Linux anciens (Python < 3.7, sans Python) : collect_legacy.yml, mêmes options.
+# AIX et Linux anciens (Python trop ancien ou absent) : bascule automatique, hôte par
+# hôte, sur la collecte sans module Ansible. Voir roles/cmdb_collect/tasks/route.yml.
 # ---------------------------------------------------------------------------
 
 - name: CMDB maison — collecte
-  hosts: "{{ cmdb_hosts | default('all:!legacy:!aix') }}"
-  gather_facts: true
+  hosts: "{{ cmdb_hosts | default('all') }}"
+  gather_facts: false    # les faits sont lus dans le rôle : un échec y déclenche la bascule
   become: false          # aucune élévation de privilèges : collecte sous le compte de connexion
   roles:
     - role: cmdb_collect

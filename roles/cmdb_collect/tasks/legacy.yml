@@ -1,0 +1,102 @@
+---
+# ---------------------------------------------------------------------------
+# Collecte sans aucun module Ansible côté cible : AIX, Python trop ancien pour
+# ansible-core, Python absent. Utilisée par collect_legacy.yml, et par collect.yml
+# pour les hôtes que route.yml y envoie. Choix du collecteur par hôte :
+#   AIX                  -> cmdb_collector.sh (ksh)
+#   Python >= 2.6 trouvé -> cmdb_collector.py (collecte complète)
+#   sinon                -> cmdb_collector.sh (bash 3 / dash / busybox)
+# ---------------------------------------------------------------------------
+
+- name: Collecte
+  block:
+    - name: Identifier le système et chercher un interpréteur Python >= 2.6
+      ansible.builtin.raw: >-
+        echo "OS=`uname -s 2>/dev/null`";
+        for p in /usr/libexec/platform-python /usr/bin/python3 /usr/bin/python2.7 /usr/bin/python2.6
+        /usr/bin/python2 /usr/bin/python; do
+        [ -x "$p" ] && "$p" -c 'import sys; sys.exit(not (sys.version_info[0] == 2 and sys.version_info[1] >= 6 or sys.version_info[0] == 3 and sys.version_info[1] >= 6))' 2>/dev/null
+        && echo "$p" && break; done; true
+      register: cmdb_py
+      changed_when: false
+
+    - name: Choisir le collecteur
+      vars:
+        os_name: "{{ (cmdb_py.stdout_lines | map('trim') | select('match', '^OS=') | first | default('OS='))[3:] }}"
+        py_path: "{{ cmdb_py.stdout_lines | map('trim') | reject('match', '^OS=') | select | list | last | default('') }}"
+        use_shell: "{{ cmdb_force_shell | default(false) | bool or os_name == 'AIX' or py_path == '' }}"
+      ansible.builtin.set_fact:
+        cmdb_os: "{{ os_name }}"
+        cmdb_interp: "{{ '/bin/sh' if use_shell | bool else py_path }}"
+        cmdb_script: "{{ 'cmdb_collector.sh' if use_shell | bool else 'cmdb_collector.py' }}"
+
+    - name: Exécuter {{ cmdb_script }} (transfert + exécution, sans module Python)
+      ansible.builtin.script:
+        cmd: >-
+          {{ role_path }}/files/{{ cmdb_script }}
+          {{ '--output -' if cmdb_script.endswith('.py') else '' }}
+          --host-label {{ inventory_hostname }} --scan-max-seconds {{ cmdb_scan_max_seconds | default(900) }}
+          {{ cmdb_tag_argv | map('quote') | join(' ') }} {{ cmdb_extra_args | default('') }}
+        executable: "{{ cmdb_interp }}"
+      register: cmdb_run
+      changed_when: false
+      timeout: "{{ cmdb_task_timeout | default(3600) | int }}"
+
+    - name: Écrire la sortie brute sur le contrôleur
+      ansible.builtin.copy:
+        content: "{{ cmdb_run.stdout }}"
+        dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.stdout.b64"
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    - name: Décoder (et convertir si collecteur shell) en {{ cmdb_run_id }}.json.gz
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/tools/cmdb_unpack.py"
+          - "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.stdout.b64"
+          - "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.json.gz"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Mettre à jour la copie « latest » et supprimer le fichier intermédiaire
+      ansible.builtin.shell: >-
+        cp -f '{{ cmdb_host_dir }}/{{ cmdb_run_id }}.json.gz' '{{ cmdb_host_dir }}/latest.json.gz' &&
+        rm -f '{{ cmdb_host_dir }}/{{ cmdb_run_id }}.stdout.b64'
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Collecte réussie
+      ansible.builtin.set_fact:
+        cmdb_status: ok
+        cmdb_collector_kind: "{{ 'shell' if cmdb_script.endswith('.sh') else 'python ' ~ cmdb_interp }}"
+        cmdb_result_rel: "{{ cmdb_rel_dir }}/{{ cmdb_run_id }}.json.gz"
+        cmdb_lot_files: ["{{ cmdb_rel_dir }}/{{ cmdb_run_id }}.json.gz"]
+
+    - name: Résumé de la collecte
+      ansible.builtin.debug:
+        msg: >-
+          {{ cmdb_os }} : {{ cmdb_script }} via {{ cmdb_interp }} :
+          {{ (cmdb_run.stderr_lines | select('match', '^\{') | list | last | default('{}')) | from_json }}
+
+  rescue:
+    - name: Tracer l'échec sur le contrôleur
+      ansible.builtin.copy:
+        content: >-
+          {{ {'host': inventory_hostname, 'app': cmdb_app, 'platform': cmdb_platform, 'run_id': cmdb_run_id,
+              'failed_task': ansible_failed_task.name | default(''),
+              'result': ansible_failed_result | default({})} | to_nice_json }}
+        dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.error.json"
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    - name: Noter l'échec
+      ansible.builtin.set_fact:
+        cmdb_status: failed
+        cmdb_status_detail: >-
+          {{ ansible_failed_task.name | default('?') }} : {{ (ansible_failed_result.msg | default(''))[:300] }}
+          (voir {{ cmdb_rel_dir }}/{{ cmdb_run_id }}.error.json)

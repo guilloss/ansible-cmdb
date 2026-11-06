@@ -8,6 +8,13 @@
 - name: Contexte du passage (étiquetage application / plate-forme, identifiant, stockage)
   ansible.builtin.import_tasks: context.yml
 
+- name: Aiguiller l'hôte (collecteur déposé, ou collecte sans module Ansible)
+  ansible.builtin.import_tasks: route.yml
+
+- name: Collecte sans module Ansible
+  ansible.builtin.include_tasks: legacy.yml
+  when: cmdb_use_legacy | bool
+
 - name: Enregistrer l'intégralité des faits Ansible
   ansible.builtin.copy:
     content: "{{ ansible_facts | to_nice_json }}"
@@ -15,23 +22,13 @@
     mode: "0640"
   delegate_to: localhost
   become: false
-  when: cmdb_save_ansible_facts | bool
+  when:
+    - cmdb_save_ansible_facts | bool
+    - not (cmdb_use_legacy | bool)
 
 - name: Collecte
+  when: not (cmdb_use_legacy | bool)
   block:
-    - name: Vérifier que la cible relève de ce playbook (Linux, Python 2.7 ou >= 3.6)
-      ansible.builtin.assert:
-        that:
-          - ansible_facts.system | default('Linux') == 'Linux'
-          - >-
-            ansible_facts.python is not defined or
-            (ansible_facts.python.version.major == 2 and ansible_facts.python.version.minor >= 7) or
-            (ansible_facts.python.version.major == 3 and ansible_facts.python.version.minor >= 6)
-        fail_msg: >-
-          {{ ansible_facts.system | default('?') }} / Python {{ ansible_facts.python.version.major | default('?') }}.{{
-          ansible_facts.python.version.minor | default('?') }} : utilisez collect_legacy.yml (AIX, Linux anciens)
-        quiet: true
-
     - name: Créer un répertoire temporaire distant
       ansible.builtin.tempfile:
         state: directory
@@ -124,6 +121,14 @@
         cmdb_status_detail: >-
           {{ ansible_failed_task.name | default('?') }} : {{ (ansible_failed_result.msg | default(''))[:300] }}
           (voir {{ cmdb_rel_dir }}/{{ cmdb_run_id }}.error.json)
+
+    - name: Signaler la reprise
+      ansible.builtin.debug:
+        msg: "Bascule vers la collecte sans module après échec de « {{ ansible_failed_task.name | default('?') }} »"
+
+    # legacy.yml fixe lui-même le statut final ; le .error.json garde la trace du premier échec
+    - name: Reprendre sans module Ansible
+      ansible.builtin.include_tasks: legacy.yml
 
   always:
     - name: Supprimer le répertoire temporaire distant

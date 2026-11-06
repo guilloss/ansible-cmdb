@@ -46,14 +46,14 @@ tests/                          # python3 -m unittest discover -s tests -t .
 | Contrôleur | ansible-core, Python ≥ 3.8 (pour `cmdb_build.py`, bibliothèque standard uniquement) |
 | Cibles | SSH avec un compte dédié **non privilégié** : aucune élévation (ni sudo, ni `become`) ; Python facultatif (voir ci-dessous) |
 
-ansible-core 2.17 et suivants n'exécutent plus de modules sur des cibles en Python < 3.7. Tout ce qui est plus ancien passe par **`collect_legacy.yml`**, qui n'exécute aucun module Ansible sur la cible (voir « Systèmes anciens et très anciens »).
+ansible-core 2.17 et suivants n'exécutent plus de modules sur des cibles en Python < 3.7. Tout ce qui est plus ancien, et AIX, passe par une collecte qui n'exécute aucun module Ansible sur la cible : **`collect.yml` y bascule tout seul, hôte par hôte** (faits en échec, système autre que Linux, Python hors limites, groupes `aix` et `legacy`, `cmdb_force_shell`, ou échec en cours de collecte moderne, dont la trace reste dans `<run_id>.error.json`), sans rien changer à l'inventaire, et `collect_legacy.yml` y va directement (voir « Systèmes anciens et très anciens »).
 
 ## Utilisation
 
 ```bash
 # 1. Collecte : un passage par application et par plate-forme (étiquetage obligatoire)
-#    collect.yml vise par défaut tout l'inventaire sauf les groupes "legacy" et "aix",
-#    collect_legacy.yml ces deux groupes (cmdb_hosts ou -l pour choisir)
+#    collect.yml vise tout l'inventaire et choisit la méthode hôte par hôte (AIX et Linux
+#    anciens compris) ; collect_legacy.yml vise directement les groupes "legacy" et "aix"
 ansible-playbook collect.yml        -i inventaires/appdemo-prod.yml -e cmdb_app=APPDEMO -e cmdb_platform=prod
 ansible-playbook collect_legacy.yml -i inventaires/appdemo-prod.yml -l aix -e cmdb_app=APPDEMO -e cmdb_platform=prod
 
