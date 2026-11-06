@@ -116,6 +116,38 @@ python3 tools/cmdb_build.py --store store --app APPDEMO --platform 'prod*' --out
 
 Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaque passage lancé avec `-e cmdb_lot=true` produit une archive unique, que l'on transfère et que la consolidation lit sans l'extraire. Les anciennes collectes non étiquetées (`output/raw/<hôte>/`) restent lisibles : elles sont rangées sous l'application et la plate-forme `NA` (ou celles données par `--default-app` et `--default-platform`).
 
+**Travailler à plusieurs équipes : le dépôt de lots.** Il n'y a pas d'étape de fusion : chaque équipe collecte de son côté, et c'est la consolidation qui met tout en commun. Elle ne modifie pas les collectes et se relance autant de fois que nécessaire, à mesure que les lots arrivent.
+
+1. Chaque équipe collecte avec `-e cmdb_lot=true`, ce qui produit une archive unique par passage, `store/_lots/<run_id>.tar.gz` (collectes et manifeste) :
+
+   ```bash
+   ansible-playbook -i inventory/equipe1.yml collect.yml -e cmdb_app=APP1 -e cmdb_platform=prod -e cmdb_lot=true
+   ```
+
+2. Elle dépose cette archive dans un répertoire commun, par exemple `/depot/lots/`. L'identifiant du passage figure dans le nom du fichier.
+
+3. Avant la mise en commun, chaque équipe peut contrôler sa partie dans un répertoire de sortie séparé, sans effet sur les autres :
+
+   ```bash
+   python3 tools/cmdb_build.py --lot '/depot/lots/*.tar.gz' --app APP1 --out build-app1
+   ```
+
+4. Quand les lots attendus sont déposés, une seule personne produit la consolidation commune :
+
+   ```bash
+   ansible-playbook consolidate.yml -e '{"cmdb_lots": ["/depot/lots/*.tar.gz"]}'
+   ```
+
+Un rapport partiel ne voit que son périmètre : un lien vers une base collectée par une autre équipe y reste « hors inventaire », et ne se résout que dans la consolidation commune.
+
+À convenir entre équipes avant de commencer :
+
+- **Noms des serveurs.** L'identité d'un serveur est son nom dans l'inventaire Ansible : `srv01` et `srv01.exemple.test` donnent deux fiches.
+- **Applications, plates-formes et étiquettes.** Les valeurs sont comparées telles quelles : `PROD` et `prod` sont deux plates-formes. De même pour les clés de `cmdb_tags`.
+- **Serveur collecté deux fois.** Pour une même application et plate-forme, la collecte la plus récente l'emporte, d'après l'heure de lancement de la collecte, et la précédente sert au suivi des évolutions. Pour deux applications différentes, le serveur a deux fiches.
+- **Version de l'outil.** Toutes les équipes sur le même commit de préférence, et la consolidation sur le plus récent.
+- **Accès au dépôt.** Les lots ne contiennent ni clé privée ni mot de passe, mais ils décrivent précisément l'infrastructure : le répertoire commun doit être protégé en conséquence.
+
 `collect.yml` et `collect_legacy.yml` n'enchaînent plus la consolidation, sauf demande explicite (`-e cmdb_build=true`).
 
 ## AIX
