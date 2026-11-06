@@ -12,6 +12,19 @@
     cmdb_status_detail: "étiquetage application / plate-forme absent ou invalide"
     cmdb_lot_files: []
 
+# Avec « -e cmdb_tags=… », Ansible livre une chaîne et la coupe au premier espace.
+# On accepte donc aussi squad=S3,site=Paris et {"squad":"S3"} (sans espace).
+# set_fact ne peut pas remplacer une variable -e : d'où cmdb_tags_map.
+- name: Normaliser les étiquettes libres
+  ansible.builtin.set_fact:
+    cmdb_tags_map: >-
+      {{ cmdb_tags if cmdb_tags is mapping
+         else dict((cmdb_tags | string).split(',') | map('split', '=') | list)
+              if (cmdb_tags | string) is match('^[A-Za-z0-9._-]+=[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+=[A-Za-z0-9._-]+)*$')
+         else (cmdb_tags | from_yaml)
+              if (cmdb_tags | string) is match('^[{][^{}]+[}]$')
+         else cmdb_tags }}
+
 - name: Vérifier l'étiquetage application / plate-forme
   ansible.builtin.assert:
     that:
@@ -19,16 +32,18 @@
       - cmdb_platform is defined
       - (cmdb_app | string) is match(cmdb_tag_regex)
       - (cmdb_platform | string) is match(cmdb_tag_regex)
-      - cmdb_tags is mapping
-      - (cmdb_tags.keys() | map('string') | reject('match', cmdb_tag_regex) | list) == []
-      - (cmdb_tags.values() | map('string') | reject('match', cmdb_tag_regex) | list) == []
-      - "'app' not in cmdb_tags and 'platform' not in cmdb_tags"
+      - cmdb_tags_map is mapping
+      - (cmdb_tags_map.keys() | map('string') | reject('match', cmdb_tag_regex) | list) == []
+      - (cmdb_tags_map.values() | map('string') | reject('match', cmdb_tag_regex) | list) == []
+      - "'app' not in cmdb_tags_map and 'platform' not in cmdb_tags_map"
     fail_msg: >-
       Étiquetage obligatoire : chaque passage doit indiquer l'application et la plate-forme,
       par -e (ex. -e cmdb_app=APPDEMO -e cmdb_platform=prod) ou dans l'inventaire (group_vars).
       Valeurs : lettres, chiffres, « . », « _ », « - » (64 caractères au plus, sans espace).
+      Étiquettes libres : -e cmdb_tags=squad=S3,site=Paris ou -e '{"cmdb_tags": {"squad": "S3"}}'
+      (pas d'espace dans la forme cmdb_tags=… : Ansible y couperait la valeur).
       Reçu : application={{ cmdb_app | default('(absente)') }}, plate-forme={{ cmdb_platform | default('(absente)') }},
-      étiquettes={{ cmdb_tags | default({}) }}
+      étiquettes={{ cmdb_tags_map | default({}) }}
     quiet: true
 
 - name: Identifiant du passage (commun à tous les hôtes de l'exécution)
@@ -52,7 +67,7 @@
     cmdb_host_dir: "{{ cmdb_store }}/{{ cmdb_app }}/{{ cmdb_platform }}/{{ inventory_hostname }}"
     cmdb_tag_argv: >-
       {{ ['--run-id', cmdb_run_id, '--tag', 'app=' ~ cmdb_app, '--tag', 'platform=' ~ cmdb_platform]
-         + (cmdb_tags | dict2items | map(attribute='key') | zip(cmdb_tags | dict2items | map(attribute='value'))
+         + (cmdb_tags_map | dict2items | map(attribute='key') | zip(cmdb_tags_map | dict2items | map(attribute='value'))
             | map('join', '=') | map('regex_replace', '^', '--tag=') | list) }}
 
 - name: Créer le répertoire de stockage de l'hôte sur le contrôleur

@@ -71,7 +71,7 @@ Paramètres principaux (`roles/cmdb_collect/defaults/main.yml`) :
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `cmdb_app`, `cmdb_platform` | (obligatoires) | Application et plate-forme du passage (voir ci-dessous) |
-| `cmdb_tags` | `{}` | Étiquettes libres recopiées dans chaque collecte, ex. `{"site": "Paris"}` |
+| `cmdb_tags` | `{}` | Étiquettes libres recopiées dans chaque collecte, ex. `{"site": "Paris"}`. En ligne de commande : `-e cmdb_tags=site=Paris,squad=S3` |
 | `cmdb_store` | `store/` | Magasin des collectes sur le contrôleur |
 | `cmdb_lot` | false | Produire un lot transférable du passage (`store/_lots/<run_id>.tar.gz`) |
 | `cmdb_scan_max_seconds` | 900 | Budget du parcours disque ; au-delà, résultat partiel signalé (`fs_scan_truncated`) |
@@ -85,7 +85,7 @@ Paramètres principaux (`roles/cmdb_collect/defaults/main.yml`) :
 
 ## Applications et plates-formes : collecte et consolidation découplées
 
-**Étiquetage.** Chaque passage indique l'application et la plate-forme, par `-e cmdb_app=… -e cmdb_platform=…` ou dans l'inventaire de l'application (`group_vars`). Un passage sans étiquetage valide est refusé avant toute connexion aux cibles. Valeurs autorisées : lettres, chiffres, `.`, `_`, `-`, sans espace (64 caractères au plus). Des étiquettes libres s'ajoutent par `cmdb_tags`.
+**Étiquetage.** Chaque passage indique l'application et la plate-forme, par `-e cmdb_app=… -e cmdb_platform=…` ou dans l'inventaire de l'application (`group_vars`). Un passage sans étiquetage valide est refusé avant toute connexion aux cibles. Valeurs autorisées : lettres, chiffres, `.`, `_`, `-`, sans espace (64 caractères au plus). Des étiquettes libres s'ajoutent par `cmdb_tags`, sous l'une de ces formes : `-e cmdb_tags=squad=S3,site=Paris`, `-e '{"cmdb_tags": {"squad": "S3"}}'`, ou dans l'inventaire. Pas d'espace dans `cmdb_tags=…` : Ansible couperait la valeur. Un `-e` remplace les étiquettes de l'inventaire au lieu de s'y ajouter.
 
 Les étiquettes sont **écrites dans chaque collecte** (`meta.tags`, avec l'identifiant de passage `meta.run_id`), pas seulement dans le chemin du fichier : un fichier déplacé, renommé ou transmis reste correctement rattaché. Toutes les tables de la base portent les colonnes `app` et `platform` ; un serveur est identifié par le triplet (application, plate-forme, hôte). Un serveur mutualisé collecté pour deux applications apparaît donc deux fois, une fois par application, et sa fiche dans le rapport renvoie vers l'autre.
 

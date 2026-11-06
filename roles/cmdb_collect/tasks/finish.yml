@@ -23,7 +23,7 @@
       {{ {'run_id': cmdb_run_id, 'host': inventory_hostname, 'app': cmdb_app, 'platform': cmdb_platform,
           'status': cmdb_status, 'collector': cmdb_collector_kind | default(None),
           'file': cmdb_result_rel | default(None), 'detail': None if cmdb_status == 'ok' else cmdb_status_detail,
-          'tags': cmdb_tags} | to_nice_json }}
+          'tags': cmdb_tags_map | default({})} | to_nice_json }}
     mode: "0640"
   delegate_to: localhost
   become: false
