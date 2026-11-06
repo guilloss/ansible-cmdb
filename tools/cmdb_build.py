@@ -191,6 +191,9 @@ PURL_RPM_NS = {"rhel": "redhat", "centos": "centos", "rocky": "rocky", "almalinu
                "fedora": "fedora", "amzn": "amazon", "sles": "suse", "sled": "suse", "opensuse-leap": "opensuse",
                "opensuse-tumbleweed": "opensuse", "opensuse": "opensuse"}
 
+# ID de os-release -> famille d'OS de Trivy, quand ils diffèrent
+TRIVY_OS = {"rhel": "redhat", "ol": "oracle", "almalinux": "alma", "amzn": "amazon", "sled": "sles"}
+
 # Colonnes de la matrice (familles), dans l'ordre d'affichage
 MATRIX_FAMILIES = [
     "aix", "linux-kernel", "glibc", "openssl", "openssh", "sudo", "systemd", "polkit", "xz",
@@ -1211,15 +1214,20 @@ def build_sboms(db, outdir, include_managed=False):
                 comps[key] = c
             if loc and len(c["properties"]) < 25:
                 c["properties"].append({"name": "cmdb:location", "value": loc})
-        os_comp = {"type": "operating-system", "bom-ref": os_ref, "name": os_id or "linux", "version": os_ver or "",
-                   "description": os_pretty or ""}
+        # Trivy prend name pour sa famille d'OS (redhat, oracle…), sans message si elle est inconnue ;
+        # Syft et Grype lisent d'abord swid.name et attendent l'ID de os-release (rhel, ol…).
+        os_comp = {"type": "operating-system", "bom-ref": os_ref, "name": TRIVY_OS.get(os_id, os_id or "linux"),
+                   "version": os_ver or "", "description": os_pretty or ""}
+        if os_id:
+            os_comp["swid"] = {"tagId": os_ref, "name": os_id, "version": os_ver or ""}
         bom = {
             "bomFormat": "CycloneDX", "specVersion": "1.5",
             "serialNumber": "urn:uuid:%s" % uuid.uuid4(), "version": 1,
             "metadata": {
                 "timestamp": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                 "tools": {"components": [{"type": "application", "name": "cmdb_build", "version": BUILD_VERSION}]},
-                "component": {"type": "device", "bom-ref": "host:" + host, "name": host, "version": collected or "",
+                # pas "device" : valide en CycloneDX, mais erreur fatale pour Trivy sur le composant racine
+                "component": {"type": "application", "bom-ref": "host:" + host, "name": host, "version": collected or "",
                               "properties": [{"name": "cmdb:kernel", "value": kernel or ""},
                                              {"name": "cmdb:app", "value": app}, {"name": "cmdb:platform", "value": pf}]},
             },
