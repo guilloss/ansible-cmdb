@@ -29,5 +29,8 @@ vm.runInContext('"use strict";' + code + ";globalThis.__route = route;", ctx);
     for (const [id, e] of Object.entries(els)) if (/^t[a-z0-9]{6}$|^t[a-z0-9]{5}$/.test(id) && e.innerHTML) { body += "\n" + e.innerHTML; e.innerHTML = ""; }
     out[r] = body;
   }
+  sandbox.location.hash = "#/accueil";
+  sandbox.__route();
+  out.__scope = els.scope.innerHTML;
   console.log(JSON.stringify(out));
 })().catch(e => { console.error(e); process.exit(1); });

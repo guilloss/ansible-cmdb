@@ -19,6 +19,9 @@ ROUTES = ["accueil", "serveurs", "logiciels", "versions", "exposition", "materie
           "ecarts", "ecarts?onglet=jumeaux", "durcissement", "durcissement?onglet=regles", "durcissement?onglet=ecarts", "durcissement?onglet=couverture"]
 FOCUS = "carte?serveur=" + quote("APPDEMO|prod|pg1.exemple.test", safe="")
 ROUTES.append(FOCUS)
+TAG = "tag=" + quote("squad=S3", safe="")
+ROUTES += ["serveurs?" + TAG, "bases?onglet=liens&" + TAG, "logiciels?" + TAG, "carte?" + TAG, "ecarts?" + TAG, "accueil?" + TAG,
+           "serveurs?app=APPDEMO&pf=prod&" + TAG, "serveurs?tag=" + quote("squad=inconnue", safe=""), "serveurs?q=S4"]
 HOST = "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")
 ROUTES += [HOST + "?onglet=" + t for t in ("synthese", "bases", "web", "cles", "dependances", "durcissement", "evolutions", "alertes")]
 
@@ -30,7 +33,10 @@ class Rapport(unittest.TestCase):
         cls.d = tempfile.mkdtemp(prefix="cmdbr")
         store = os.path.join(cls.d, "store")
         old = fleet.oracle_host("r1", "2026-10-01T08:00:00Z", "19.21.0.0.231017", "35643107")
-        fleet.write_store(store, [old, fleet.oracle_host(), fleet.app_host(), fleet.pg_host(), fleet.pg_standby(), fleet.web_host(),
+        app, pg = fleet.app_host(), fleet.pg_host()
+        app["meta"]["tags"]["squad"] = "S3"
+        pg["meta"]["tags"].update({"squad": "S4", "site": "Paris"})
+        fleet.write_store(store, [old, fleet.oracle_host(), app, pg, fleet.pg_standby(), fleet.web_host(),
                                   fleet.twin("t1.exemple.test", "10.0.1.1"), fleet.twin("t2.exemple.test", "10.0.1.2"),
                                   fleet.twin("t3.exemple.test", "10.0.1.3", php="8.1.9"), fleet.twin("r1.exemple.test", "10.0.2.1", php="8.3.0", pf="recette")])
         out = os.path.join(cls.d, "build")
@@ -50,6 +56,36 @@ class Rapport(unittest.TestCase):
         p = self.pages["bases?onglet=liens"]
         for x in ("app1.exemple.test", "pg1.exemple.test", "appdb", "appuser", "hors inventaire", "10.9.9.9", "my9.exemple.test", "réplication"):
             self.assertIn(x, p)
+
+    def test_etiquettes_liste(self):
+        p = self.pages["serveurs"]
+        self.assertIn(">squad<", p.replace(" ▲", ""))
+        self.assertIn(">site<", p.replace(" ▲", ""))
+        self.assertIn("tag=squad%3DS3", p)
+
+    def test_etiquettes_filtre(self):
+        p = self.pages["serveurs?" + TAG]
+        self.assertIn("app1.exemple.test", p)
+        self.assertNotIn("pg1.exemple.test", p)
+        self.assertIn("squad=S3", p)
+        self.assertNotIn("t1.exemple.test", self.pages["logiciels?" + TAG])
+        self.assertIn("Aucun serveur", self.pages["serveurs?tag=" + quote("squad=inconnue", safe="")])
+
+    def test_etiquettes_lien_garde_les_deux_cotes(self):
+        p = self.pages["bases?onglet=liens&" + TAG]
+        self.assertIn("app1.exemple.test", p)
+        self.assertIn("pg1.exemple.test", p)
+
+    def test_etiquettes_recherche(self):
+        p = self.pages["serveurs?q=S4"]
+        self.assertIn("pg1.exemple.test", p)
+        self.assertNotIn("app1.exemple.test", p)
+
+    def test_etiquettes_selecteur(self):
+        p = self.pages["__scope"]
+        self.assertIn('id="s-tag"', p)
+        self.assertIn("squad=S3 (1)", p)
+        self.assertIn("site=Paris (1)", p)
 
     def test_filtre(self):
         p = self.pages["bases?onglet=liens&q=appdb"]

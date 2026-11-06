@@ -259,7 +259,7 @@ a:hover .v { border-color: var(--accent); }
 let D0 = null;         // données complètes
 let D = null;          // données du périmètre courant (application / plate-forme)
 let SW = null;         // logiciels : {cols, strings, rows}
-let SCOPE = {app: "", pf: ""};
+let SCOPE = {app: "", pf: "", tag: ""};
 let MULTI = false;     // plusieurs couples application / plate-forme dans l'inventaire
 const PAGE = 200;
 
@@ -300,6 +300,7 @@ function link(route, params) {
   const p = Object.assign({}, params || {});
   if (!("app" in p) && SCOPE.app) p.app = SCOPE.app;
   if (!("pf" in p) && SCOPE.pf) p.pf = SCOPE.pf;
+  if (!("tag" in p) && SCOPE.tag) p.tag = SCOPE.tag;
   for (const k of Object.keys(p)) if (p[k] == null || p[k] === "") delete p[k];
   const q = Object.keys(p).length ? "?" + new URLSearchParams(p).toString() : "";
   return "#/" + route + q;
@@ -409,27 +410,40 @@ const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci
   "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
   "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage"];
+// Étiquettes libres d'un serveur (cmdb_tags), sans app et platform qui ont leurs propres filtres
+function hostTags(h) {
+  let t = {};
+  try { t = JSON.parse(h.tags || "{}") || {}; } catch (e) { t = {}; }
+  return Object.fromEntries(Object.entries(t).filter(([k]) => k !== "app" && k !== "platform"));
+}
+const tagPairs = h => Object.entries(hostTags(h)).map(([k, v]) => k + "=" + v);
+const tagKeys = hs => [...new Set(hs.flatMap(h => Object.keys(hostTags(h))))].sort((a, b) => a.localeCompare(b, "fr"));
+const tagLink = (k, v) => `<a href="${link("serveurs", {tag: k + "=" + v})}" title="Filtrer sur cette étiquette">${esc(v)}</a>`;
 function applyScope() {
-  const on = SCOPE.app || SCOPE.pf;
-  const keep = (a, p) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf);
+  const on = SCOPE.app || SCOPE.pf || SCOPE.tag;
+  // Le filtre par étiquette s'applique serveur par serveur ; T = serveurs retenus, TP = leurs plates-formes
+  const tagged = SCOPE.tag ? rowsOf(D0.hosts).filter(h => tagPairs(h).includes(SCOPE.tag)) : null;
+  const T = tagged && new Set(tagged.map(h => h.hk)), TP = tagged && new Set(tagged.map(h => h.app + "|" + h.platform));
+  const keep = (a, p, h) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf)
+    && (!T || (h == null ? TP.has(a + "|" + p) : T.has(hkey(a, p, h))));
   D = Object.assign({}, D0);
   for (const k of SCOPED) {
     const t = D0[k];
     if (!t) { D[k] = {cols: [], rows: []}; continue; }
-    const ia = t.cols.indexOf("app"), ip = t.cols.indexOf("platform");
-    D[k] = on ? {cols: t.cols, rows: t.rows.filter(r => keep(r[ia], r[ip]))} : t;
+    const ia = t.cols.indexOf("app"), ip = t.cols.indexOf("platform"), ih = t.cols.indexOf("host");
+    D[k] = on ? {cols: t.cols, rows: t.rows.filter(r => keep(r[ia], r[ip], ih < 0 ? null : r[ih]))} : t;
   }
   // Un lien concerne le périmètre dès qu'un de ses deux côtés y est
   const LK = D0.links, lc = c => LK.cols.indexOf(c);
-  D.links = on ? {cols: LK.cols, rows: LK.rows.filter(r => keep(r[lc("client_app")], r[lc("client_platform")]) || keep(r[lc("server_app")], r[lc("server_platform")]))} : LK;
+  D.links = on ? {cols: LK.cols, rows: LK.rows.filter(r => keep(r[lc("client_app")], r[lc("client_platform")], r[lc("client_host")] || "") || keep(r[lc("server_app")], r[lc("server_platform")], r[lc("server_host")] || ""))} : LK;
   const FL = D0.flows, fc = c => FL.cols.indexOf(c);
-  D.flows = on ? {cols: FL.cols, rows: FL.rows.filter(r => keep(r[fc("src_app")], r[fc("src_platform")]) || keep(r[fc("dst_app")], r[fc("dst_platform")]))} : FL;
+  D.flows = on ? {cols: FL.cols, rows: FL.rows.filter(r => keep(r[fc("src_app")], r[fc("src_platform")], r[fc("src_host")] || "") || keep(r[fc("dst_app")], r[fc("dst_platform")], r[fc("dst_host")] || ""))} : FL;
   const DR = D0.drift, dc = c => DR.cols.indexOf(c);
-  D.drift = on ? {cols: DR.cols, rows: DR.rows.filter(r => keep(r[dc("app")], r[dc("left_platform")]) || keep(r[dc("app")], r[dc("right_platform")]))} : DR;
-  const s = D0.sw, ia = s.cols.indexOf("app"), ip = s.cols.indexOf("platform");
-  D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(s.strings[r[ia]], s.strings[r[ip]])) : s.rows});
+  D.drift = on ? {cols: DR.cols, rows: DR.rows.filter(r => keep(r[dc("app")], r[dc("left_platform")], r[dc("left_host")]) || keep(r[dc("app")], r[dc("right_platform")], r[dc("right_host")]))} : DR;
+  const s = D0.sw, ia = s.cols.indexOf("app"), ip = s.cols.indexOf("platform"), ih = s.cols.indexOf("host");
+  D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(s.strings[r[ia]], s.strings[r[ip]], s.strings[r[ih]])) : s.rows});
   const M = D0.matrix;
-  D.matrix = on && M.cols[0] === "app" ? {cols: M.cols, rows: M.rows.filter(r => keep(r[0], r[1]))} : M;
+  D.matrix = on && M.cols[0] === "app" ? {cols: M.cols, rows: M.rows.filter(r => keep(r[0], r[1], r[2]))} : M;
   prepare();
 }
 function renderScope() {
@@ -437,16 +451,25 @@ function renderScope() {
   const apps = [...new Set(H0.map(h => h.app))].sort((a, b) => a.localeCompare(b, "fr"));
   const pfs = [...new Set(H0.filter(h => !SCOPE.app || h.app === SCOPE.app).map(h => h.platform))].sort((a, b) => a.localeCompare(b, "fr"));
   const n = f => H0.filter(f).length;
+  const inPf = H0.filter(h => (!SCOPE.app || h.app === SCOPE.app) && (!SCOPE.pf || h.platform === SCOPE.pf));
+  const pairs = {};
+  inPf.forEach(h => tagPairs(h).forEach(t => { pairs[t] = (pairs[t] || 0) + 1; }));
+  if (SCOPE.tag && !pairs[SCOPE.tag]) pairs[SCOPE.tag] = 0;
+  const tags = Object.keys(pairs).sort((a, b) => a.localeCompare(b, "fr"));
   const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
   $("#scope").innerHTML = `<label>Application<select id="s-app">${opt("", "Toutes (" + apps.length + ")", SCOPE.app)}
       ${apps.map(a => opt(a, a + " (" + n(h => h.app === a) + ")", SCOPE.app)).join("")}</select></label>
     <label>Plate-forme<select id="s-pf">${opt("", "Toutes (" + pfs.length + ")", SCOPE.pf)}
       ${pfs.map(p => opt(p, p + " (" + n(h => h.platform === p && (!SCOPE.app || h.app === SCOPE.app)) + ")", SCOPE.pf)).join("")}</select></label>
-    ${SCOPE.app || SCOPE.pf ? `<a class="reset" href="${link("accueil", {app: "", pf: ""})}">Tout l'inventaire</a>` : ""}`;
-  const change = (app, pf) => {
+    ${tags.length ? `<label>Étiquette<select id="s-tag">${opt("", "Toutes (" + tags.length + ")", SCOPE.tag)}
+      ${tags.map(t => opt(t, t + " (" + pairs[t] + ")", SCOPE.tag)).join("")}</select></label>` : ""}
+    ${SCOPE.app || SCOPE.pf || SCOPE.tag ? `<a class="reset" href="${link("accueil", {app: "", pf: "", tag: ""})}">Tout l'inventaire</a>` : ""}`;
+  const change = (app, pf, tag) => {
     const h = location.hash.replace(/^#\/?/, "").split("?"), r = (h[0] || "accueil").split("/")[0];
     const p = Object.fromEntries(new URLSearchParams(h[1] || ""));
     p.app = app; p.pf = pf;
+    // une étiquette absente du nouveau périmètre est abandonnée, pour ne pas afficher un rapport vide
+    p.tag = tag !== undefined ? tag : (SCOPE.tag && H0.some(h => (!app || h.app === app) && (!pf || h.platform === pf) && tagPairs(h).includes(SCOPE.tag)) ? SCOPE.tag : "");
     go(r === "serveur" ? "serveurs" : r, p);
   };
   $("#s-app").onchange = e => {
@@ -454,9 +477,11 @@ function renderScope() {
     change(a, SCOPE.pf && H0.some(h => h.app === a && h.platform === SCOPE.pf) ? SCOPE.pf : "");
   };
   $("#s-pf").onchange = e => change(SCOPE.app, e.target.value);
+  if (tags.length) $("#s-tag").onchange = e => change(SCOPE.app, SCOPE.pf, e.target.value);
 }
 function scopeText() {
-  return SCOPE.app || SCOPE.pf ? [SCOPE.app || "toutes applications", SCOPE.pf || "toutes plates-formes"].join(" / ") : "";
+  const base = SCOPE.app || SCOPE.pf ? [SCOPE.app || "toutes applications", SCOPE.pf || "toutes plates-formes"].join(" / ") : "";
+  return [base, SCOPE.tag].filter(Boolean).join(", ");
 }
 
 // ---------------------------------------------------------------- données dérivées
@@ -540,7 +565,7 @@ function searchHosts(q) {
   const words = t.split(/\s+/);
   const ifs = byHost(D.interfaces);
   return D.H.filter(h => {
-    const hay = [h.host, h.app, h.platform, h.hostname, h.fqdn, h.ip_addresses, h.mac_addresses, h.os_pretty, h.serial, h.product_name,
+    const hay = [h.host, h.app, h.platform, tagPairs(h).join(" "), h.hostname, h.fqdn, h.ip_addresses, h.mac_addresses, h.os_pretty, h.serial, h.product_name,
       (ifs[h.hk] || []).map(i => [i.mac, i.permanent_mac, i.ipv4, i.ipv6].join(" ")).join(" ")].join(" ").toLowerCase();
     return words.every(w => hay.includes(w));
   });
@@ -599,7 +624,7 @@ function vAccueil() {
     .map(f => ({f, items: famVersions(f)})).filter(x => x.items.length).slice(0, 4);
   return `<section class="hero">
     <h2>Quel serveur fait tourner quoi, et dans quelle version&nbsp;?</h2>
-    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: ""})}">Voir tout l'inventaire</a>${(D0.dossiers || {})[SCOPE.app + "|" + SCOPE.pf] ? ` · <a href="${esc(D0.dossiers[SCOPE.app + "|" + SCOPE.pf])}">Ouvrir le dossier d'application</a>` : ""}</p>` : ""}
+    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: "", tag: ""})}">Voir tout l'inventaire</a>${(D0.dossiers || {})[SCOPE.app + "|" + SCOPE.pf] ? ` · <a href="${esc(D0.dossiers[SCOPE.app + "|" + SCOPE.pf])}">Ouvrir le dossier d'application</a>` : ""}</p>` : ""}
     <form id="herosearch" role="search">
       <input type="search" id="hq" aria-label="Rechercher" placeholder="log4j-core <2.17.1, php 5., openssl 1.0.2, 10.12.4.8…" autocomplete="off" autofocus>
       <button class="btn" type="submit">Rechercher</button>
@@ -662,7 +687,8 @@ function vServeurs(params) {
   const ifs = byHost(D.interfaces);
   const cols = [
     {k: "host", l: "Serveur", f: h => `<a href="${link("serveur/" + encodeURIComponent(h.hk))}">${esc(h.host)}</a>`}]
-    .concat(MULTI ? [{k: "app", l: "Application"}, {k: "platform", l: "Plate-forme"}] : []).concat([
+    .concat(MULTI ? [{k: "app", l: "Application"}, {k: "platform", l: "Plate-forme"}] : [])
+    .concat(tagKeys(D.H).map(t => ({k: "tag:" + t, l: t, sortv: h => hostTags(h)[t] || "", f: h => hostTags(h)[t] != null ? tagLink(t, hostTags(h)[t]) : ""}))).concat([
     {k: "os_pretty", l: "Système"},
     {k: "kernel", l: "Noyau", cls: "mono"},
     {k: "ip_addresses", l: "Adresses (interface)", f: h => esc((h.ip_addresses || "").split(" ").join("\n")).replace(/\n/g, "<br>")},
@@ -674,7 +700,7 @@ function vServeurs(params) {
     {k: "collected_at", l: "Collecté le", f: h => esc((h.collected_at || "").replace("T", " ").replace("Z", ""))},
   ]);
   return `<h2>Serveurs${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
-    <div class="toolbar"><input type="text" id="hostfilter" value="${esc(q)}" placeholder="Filtrer par nom, application, IP, MAC, système…" aria-label="Filtrer les serveurs">
+    <div class="toolbar"><input type="text" id="hostfilter" value="${esc(q)}" placeholder="Filtrer par nom, application, étiquette, IP, MAC, système…" aria-label="Filtrer les serveurs">
     <span class="spacer"></span><button class="btn ghost" type="button" id="hostcsv">Exporter en CSV</button></div>
     ${table(cols, hs, {sort: "host", empty: "Aucun serveur ne correspond."})}`;
 }
@@ -709,8 +735,8 @@ function vServeur(key, params) {
       ["Visibilité", h.processes_visible != null ? `${fmt(h.processes_exe_readable)} exécutables lisibles sur ${fmt(h.processes_visible)} processus` + (h.fs_unreadable_dirs ? `, ${fmt(h.fs_unreadable_dirs)} répertoires illisibles` : "") : ""],
       ["Version du collecteur", esc(h.collector_version)],
       ["Application / plate-forme", esc(h.app + " / " + h.platform)], ["Passage de collecte", `<code>${esc(h.run_id)}</code>`],
-      ["Étiquettes", esc(Object.entries(JSON.parse(h.tags || "{}")).filter(([k]) => k !== "app" && k !== "platform").map(([k, v]) => k + "=" + v).join(", "))],
-      ["Aussi collecté pour", others.map(x => `<a href="${link("serveur/" + encodeURIComponent(x.hk), {app: "", pf: ""})}">${esc(x.app + " / " + x.platform)}</a>`).join(", ")],
+      ["Étiquettes", Object.entries(hostTags(h)).map(([k, v]) => esc(k) + "=" + tagLink(k, v)).join(", ")],
+      ["Aussi collecté pour", others.map(x => `<a href="${link("serveur/" + encodeURIComponent(x.hk), {app: "", pf: "", tag: ""})}">${esc(x.app + " / " + x.platform)}</a>`).join(", ")],
     ]);
   } else if (tab === "reseau") {
     body = `<h3>Interfaces</h3>` + table([
@@ -1242,8 +1268,8 @@ function route() {
   const params = new URLSearchParams(qs || "");
   const parts = (path || "accueil").split("/");
   let r = parts[0] || "accueil", html;
-  const ns = {app: params.get("app") || "", pf: params.get("pf") || ""};
-  if (ns.app !== SCOPE.app || ns.pf !== SCOPE.pf || !D) { SCOPE = ns; applyScope(); renderScope(); updateGen(); }
+  const ns = {app: params.get("app") || "", pf: params.get("pf") || "", tag: params.get("tag") || ""};
+  if (ns.app !== SCOPE.app || ns.pf !== SCOPE.pf || ns.tag !== SCOPE.tag || !D) { SCOPE = ns; applyScope(); renderScope(); updateGen(); }
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,

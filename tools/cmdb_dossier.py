@@ -10,6 +10,7 @@ différence du rapport, qui contient tout le parc.
 """
 import datetime as dt
 import html
+import json
 import os
 
 import cmdb_hardening
@@ -157,6 +158,12 @@ def app_flows(db, app, pf):
     return out
 
 
+def free_tags(raw):
+    """Étiquettes libres d'un serveur, sans app et platform."""
+    tags = json.loads(raw) if raw else {}
+    return ", ".join("%s=%s" % (k, tags[k]) for k in sorted(tags) if k not in ("app", "platform"))
+
+
 def render(db, app, pf, mention, today=None):
     today = today or dt.date.today()
     K = (app, pf)
@@ -164,7 +171,7 @@ def render(db, app, pf, mention, today=None):
     def q(sql, *extra):
         return db.execute(sql, K + extra).fetchall()
     W = "app = ? AND platform = ?"
-    hosts = q("""SELECT host, os_pretty, kernel, cpu_cores, mem_total_mb, ip_addresses, virtualization, collected_at, privileged, collect_errors
+    hosts = q("""SELECT host, os_pretty, kernel, cpu_cores, mem_total_mb, ip_addresses, virtualization, collected_at, privileged, collect_errors, tags
                  FROM hosts WHERE %s ORDER BY host""" % W)
     flows = app_flows(db, app, pf)
     instances = q("SELECT host, engine, instance, status, role, version, patch_level, ports FROM db_instances WHERE %s ORDER BY host, engine" % W)
@@ -233,8 +240,11 @@ def render(db, app, pf, mention, today=None):
     S.append('<ul class="attention">%s</ul>' % "".join('<li class="%s">%s</li>' % (c, esc(t)) for c, t in attention) if attention else '<p class="ok">Rien à signaler sur les points contrôlés.</p>')
 
     S.append('<h2 id="serveurs">2. Serveurs</h2>')
-    S.append(table(["Serveur", "Système", "Cœurs", "Mémoire (Go)", "Adresses", "Virtualisation", "Collecte"],
-                   [(h[0], h[1], h[3], round(h[4] / 1024.0, 1) if h[4] else None, h[5], h[6], day(h[7])) for h in hosts]))
+    labels = [free_tags(h[10]) for h in hosts]
+    extra = ["Étiquettes"] if any(labels) else []
+    S.append(table(["Serveur", "Système", "Cœurs", "Mémoire (Go)", "Adresses", "Virtualisation", "Collecte"] + extra,
+                   [(h[0], h[1], h[3], round(h[4] / 1024.0, 1) if h[4] else None, h[5], h[6], day(h[7])) + ((t,) if extra else ())
+                    for h, t in zip(hosts, labels)]))
 
     S.append('<h2 id="architecture">3. Architecture et flux</h2>')
     S.append(graph(flows))
