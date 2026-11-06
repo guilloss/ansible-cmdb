@@ -22,6 +22,8 @@ ROUTES.append(FOCUS)
 TAG = "tag=" + quote("squad=S3", safe="")
 ROUTES += ["serveurs?" + TAG, "bases?onglet=liens&" + TAG, "logiciels?" + TAG, "carte?" + TAG, "ecarts?" + TAG, "accueil?" + TAG,
            "serveurs?app=APPDEMO&pf=prod&" + TAG, "serveurs?tag=" + quote("squad=inconnue", safe=""), "serveurs?q=S4"]
+ROUTES += ["logiciels?q=" + quote("webapps/gestion", safe=""), "logiciels?q=" + quote("chemin:webapps/gestion", safe=""), "logiciels?vue=versions",
+           "logiciels?gestion=um", "logiciels?q=" + quote("serveur:app1", safe="")]
 HOST = "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")
 ROUTES += [HOST + "?onglet=" + t for t in ("synthese", "bases", "web", "cles", "dependances", "durcissement", "evolutions", "alertes")]
 
@@ -86,6 +88,35 @@ class Rapport(unittest.TestCase):
         self.assertIn('id="s-tag"', p)
         self.assertIn("squad=S3 (1)", p)
         self.assertIn("site=Paris (1)", p)
+
+    def test_logiciels_sans_perte(self):
+        """Les tables compactes redonnent exactement la table software."""
+        import base64, gzip, re, sqlite3
+        out = os.path.join(self.d, "build")
+        with open(os.path.join(out, "cmdb_rapport.html"), encoding="utf-8") as handle:
+            data = json.loads(gzip.decompress(base64.b64decode(re.search(r'id="cmdb-data">([^<]*)<', handle.read()).group(1))))
+        sw = data["sw"]
+        strings, comps, locs, rows, cc = sw["strings"], sw["comps"], sw["locs"], sw["rows"], sw["comp_cols"]
+        got = []
+        for o in range(0, len(rows), 5):
+            c = rows[o + 3] * len(cc)
+            d, b = locs[rows[o + 4] * 2], strings[locs[rows[o + 4] * 2 + 1]]
+            row = {"app": strings[rows[o]], "platform": strings[rows[o + 1]], "host": strings[rows[o + 2]],
+                   "location": b if d < 0 else strings[d] + "/" + b}
+            for i, k in enumerate(cc):
+                row[k] = comps[c + i] if k == "managed" else strings[comps[c + i]]
+            got.append(tuple(row[k] for k in sw["cols"]))
+        db = sqlite3.connect(os.path.join(out, "cmdb.sqlite"))
+        want = [tuple((1 if v else 0) if k == "managed" else ("" if v is None else str(v)) for k, v in zip(sw["cols"], r))
+                for r in db.execute("SELECT %s FROM software" % ", ".join(sw["cols"]))]
+        db.close()
+        self.assertTrue(want)
+        self.assertEqual(got, want)
+
+    def test_recherche_dans_les_chemins(self):
+        # le terme chevauche le répertoire et le nom de fichier, stockés séparément
+        for q in ("webapps/gestion", "chemin:webapps/gestion"):
+            self.assertIn("1 composants correspondent", self.pages["logiciels?q=" + quote(q, safe="")], q)
 
     def test_filtre(self):
         p = self.pages["bases?onglet=liens&q=appdb"]

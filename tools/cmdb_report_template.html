@@ -258,7 +258,7 @@ a:hover .v { border-color: var(--accent); }
 "use strict";
 let D0 = null;         // données complètes
 let D = null;          // données du périmètre courant (application / plate-forme)
-let SW = null;         // logiciels : {cols, strings, rows}
+let SW = null;         // logiciels : tables compactes, une ligne = un entier, lue par swVal
 let SCOPE = {app: "", pf: "", tag: ""};
 let MULTI = false;     // plusieurs couples application / plate-forme dans l'inventaire
 const PAGE = 200;
@@ -440,8 +440,8 @@ function applyScope() {
   D.flows = on ? {cols: FL.cols, rows: FL.rows.filter(r => keep(r[fc("src_app")], r[fc("src_platform")], r[fc("src_host")] || "") || keep(r[fc("dst_app")], r[fc("dst_platform")], r[fc("dst_host")] || ""))} : FL;
   const DR = D0.drift, dc = c => DR.cols.indexOf(c);
   D.drift = on ? {cols: DR.cols, rows: DR.rows.filter(r => keep(r[dc("app")], r[dc("left_platform")], r[dc("left_host")]) || keep(r[dc("app")], r[dc("right_platform")], r[dc("right_host")]))} : DR;
-  const s = D0.sw, ia = s.cols.indexOf("app"), ip = s.cols.indexOf("platform"), ih = s.cols.indexOf("host");
-  D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(s.strings[r[ia]], s.strings[r[ip]], s.strings[r[ih]])) : s.rows});
+  const s = D0.sw;
+  D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(swVal(r, "app"), swVal(r, "platform"), swVal(r, "host"))) : s.rows});
   const M = D0.matrix;
   D.matrix = on && M.cols[0] === "app" ? {cols: M.cols, rows: M.rows.filter(r => keep(r[0], r[1], r[2]))} : M;
   prepare();
@@ -486,10 +486,7 @@ function scopeText() {
 
 // ---------------------------------------------------------------- données dérivées
 function prepare() {
-  const s = D.sw;
-  s.C = Object.fromEntries(s.cols.map((c, i) => [c, i]));
-  s.lower = null;
-  SW = s;
+  SW = D.sw;
   D.H = rowsOf(D.hosts);
   D.hostSet = new Set(D.H.map(h => h.hk));
   D.exposed = rowsOf(D.listening).filter(l => !/^(127\.|::1$|0000:0000:0000:0000:0000:0000:0000:0001)/.test(l.address));
@@ -513,8 +510,27 @@ function prepare() {
 const keyExposed = f => (f.has_private_key || ["gskit-stash", "oracle-wallet", "pkcs12"].includes(f.kind)) && (f.world_readable || f.empty_password);
 const oracleLate = h => h.present && ["database", "grid"].includes(h.product) && (h.patch_age_days >= 200 || h.behind_fleet);
 function lowerStrings() { if (!D0.sw.lower) D0.sw.lower = D0.sw.strings.map(x => x.toLowerCase()); return D0.sw.lower; }
-const swHk = r => hkey(SW.strings[r[SW.C.app]], SW.strings[r[SW.C.platform]], SW.strings[r[SW.C.host]]);
-function swVal(r, k) { return SW.strings[r[SW.C[k]]]; }
+const swHk = r => hkey(swVal(r, "app"), swVal(r, "platform"), swVal(r, "host"));
+// Tables à plat de cmdb_report.py, passées en tableaux typés : en mémoire, une ligne ne coûte que 5 entiers
+const SW_ROW = {app: 0, platform: 1, host: 2};
+function swPack(s) {
+  s.t = Int32Array.from(s.rows); s.ct = Int32Array.from(s.comps); s.lt = Int32Array.from(s.locs);
+  s.comps = s.locs = null;
+  s.rows = Array.from({length: s.t.length / 5}, (_, i) => i);
+  s.ci = Object.fromEntries(s.comp_cols.map((c, i) => [c, i]));
+  s.cn = s.comp_cols.length;
+  return s;
+}
+function swLoc(l) {
+  const d = SW.lt[l * 2], b = SW.strings[SW.lt[l * 2 + 1]];
+  return d < 0 ? b : SW.strings[d] + "/" + b;
+}
+const swComp = (r, k) => SW.ct[SW.t[r * 5 + 3] * SW.cn + SW.ci[k]];
+const swMan = r => swComp(r, "managed");
+function swVal(r, k) {
+  if (k === "location") return swLoc(SW.t[r * 5 + 4]);
+  return SW.strings[k in SW_ROW ? SW.t[r * 5 + SW_ROW[k]] : swComp(r, k)];
+}
 
 // Recherche : termes (ET), filtres champ:valeur, comparaisons de version (<, <=, >, >=, =)
 const FIELDS = {serveur: "host", host: "host", app: "app", appli: "app", application: "app", pf: "platform",
@@ -532,22 +548,36 @@ function parseQuery(q) {
   return out;
 }
 function searchSoftware(q, filt) {
-  const P = parseQuery(q), L = lowerStrings(), C = SW.C;
-  const cols = ["host", "app", "platform", "category", "ecosystem", "family", "name", "version", "location", "owner_pkg", "purl", "cpe"].map(k => C[k]);
-  const flags = P.terms.map(t => { const f = new Uint8Array(L.length); for (let i = 0; i < L.length; i++) if (L[i].includes(t)) f[i] = 1; return f; });
+  const P = parseQuery(q), L = lowerStrings();
+  const cc = ["category", "ecosystem", "family", "name", "version", "owner_pkg", "purl", "cpe"].map(k => SW.ci[k]);
+  // Chaque terme est testé une fois par chaîne, composant et emplacement distincts, pas par ligne
+  const tests = P.terms.map(t => {
+    const f = new Uint8Array(L.length), nc = SW.ct.length / SW.cn, cf = new Uint8Array(nc), nl = SW.lt.length / 2, lf = new Uint8Array(nl);
+    for (let i = 0; i < L.length; i++) if (L[i].includes(t)) f[i] = 1;
+    for (let c = 0; c < nc; c++) if (cc.some(j => f[SW.ct[c * SW.cn + j]])) cf[c] = 1;
+    for (let l = 0; l < nl; l++) {
+      const d = SW.lt[l * 2], b = L[SW.lt[l * 2 + 1]];
+      if ((d < 0 ? b : L[d] + "/" + b).includes(t)) lf[l] = 1;
+    }
+    return {f, cf, lf};
+  });
+  const low = (r, k) => k === "location" ? swVal(r, k).toLowerCase() : L[k in SW_ROW ? SW.t[r * 5 + SW_ROW[k]] : swComp(r, k)];
   const res = [];
   for (const r of SW.rows) {
-    if (filt.cat && SW.strings[r[C.category]] !== filt.cat) continue;
-    if (filt.managed === "um" && r[C.managed]) continue;
-    if (filt.managed === "m" && !r[C.managed]) continue;
-    if (filt.host && SW.strings[r[C.host]] !== filt.host) continue;
+    if (filt.cat && swVal(r, "category") !== filt.cat) continue;
+    if (filt.managed === "um" && swMan(r)) continue;
+    if (filt.managed === "m" && !swMan(r)) continue;
+    if (filt.host && swVal(r, "host") !== filt.host) continue;
+    const o = r * 5;
     let ok = true;
-    for (const f of flags) { if (!cols.some(ci => f[r[ci]])) { ok = false; break; } }
+    for (const x of tests) {
+      if (!(x.cf[SW.t[o + 3]] || x.lf[SW.t[o + 4]] || x.f[SW.t[o]] || x.f[SW.t[o + 1]] || x.f[SW.t[o + 2]])) { ok = false; break; }
+    }
     if (!ok) continue;
-    for (const f of P.fields) { if (!L[r[C[f.k]]].includes(f.v)) { ok = false; break; } }
+    for (const f of P.fields) { if (!low(r, f.k).includes(f.v)) { ok = false; break; } }
     if (!ok) continue;
     if (P.vers.length) {
-      const v = SW.strings[r[C.version]];
+      const v = swVal(r, "version");
       if (!v) continue;
       for (const c of P.vers) {
         const d = cmpVer(v, c.v);
@@ -595,7 +625,7 @@ function renderNav(route) {
 
 function vAccueil() {
   const a = D.alerts, H = D.H;
-  const um = SW.rows.reduce((n, r) => n + (r[SW.C.managed] ? 0 : (SW.strings[r[SW.C.category]] === "os-package" ? 0 : 1)), 0);
+  const um = SW.rows.reduce((n, r) => n + (swMan(r) ? 0 : (swVal(r, "category") === "os-package" ? 0 : 1)), 0);
   const osCount = {};
   H.forEach(h => { const k = h.os_pretty || h.os_id || "inconnu"; osCount[k] = (osCount[k] || 0) + 1; });
   // versions par famille : matrice déjà normalisée (versions amont, "*" = hors paquet)
@@ -662,8 +692,7 @@ function appsTable() {
     return g.get(k);
   };
   for (const h of D.H) { const e = get(h.app, h.platform); e.hosts++; e.os.add(h.os_pretty || h.os_id || "?"); if ((h.collected_at || "") > e.last) e.last = h.collected_at; }
-  const C = SW.C;
-  for (const r of SW.rows) if (!r[C.managed] && SW.strings[r[C.category]] !== "os-package") get(SW.strings[r[C.app]], SW.strings[r[C.platform]]).um++;
+  for (const r of SW.rows) if (!swMan(r) && swVal(r, "category") !== "os-package") get(swVal(r, "app"), swVal(r, "platform")).um++;
   for (const l of D.exposed) get(l.app, l.platform).exposed++;
   for (const x of rowsOf(D.java_risky).concat(rowsOf(D.deleted_running))) get(x.app, x.platform).risky++;
   for (const x of rowsOf(D.runs_failed)) get(x.app, x.platform).failed++;
@@ -769,9 +798,8 @@ function vServeur(key, params) {
       {k: "name", l: "Vulnérabilité"}, {k: "status", l: "État", f: v => /^Vulnerable/i.test(v.status) ? `<span class="badge risk">⚠ ${esc(v.status)}</span>` : esc(v.status)}],
       hostRows("cpu_vulns")) : "");
   } else if (tab === "composants") {
-    const C = SW.C;
     const mine = SW.rows.filter(r => swHk(r) === host);
-    const rs = mine.filter(r => ["runtime", "webapp", "embedded", "db-datadir"].includes(SW.strings[r[C.category]]));
+    const rs = mine.filter(r => ["runtime", "webapp", "embedded", "db-datadir"].includes(swVal(r, "category")));
     const sq = {q: "serveur:" + h.host, app: h.app, pf: h.platform};
     body = `<p class="lede">Moteurs d'exécution, serveurs, applications et bibliothèques embarquées détectés.
       <a href="${link("logiciels", sq)}">Voir les ${fmt(mine.length)} composants de ce serveur</a>
@@ -814,31 +842,31 @@ function vServeur(key, params) {
 }
 
 function swTable(rs, terms) {
-  const s = (r, k) => SW.strings[r[SW.C[k]]];
+  const s = swVal;
   return table([
     {k: "host", l: "Serveur", sortv: r => s(r, "host"), f: r => hostLabel(s(r, "app"), s(r, "platform"), s(r, "host"), terms)},
     {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}`},
-    {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !r[SW.C.managed]) : ""},
+    {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !swMan(r)) : ""},
     {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
-    {k: "managed", l: "Gestion", sortv: r => r[SW.C.managed], f: r => r[SW.C.managed] ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
+    {k: "managed", l: "Gestion", sortv: r => swMan(r), f: r => swMan(r) ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
     {k: "location", l: "Emplacement", cls: "path", sortv: r => s(r, "location"), f: r => hl(s(r, "location"), terms) + (s(r, "evidence") ? `<br><span class="cat">${esc(s(r, "evidence"))}</span>` : "")},
   ], rs, {empty: "Aucun composant ne correspond à cette recherche."});
 }
 
 function vLogiciels(params) {
   const q = params.get("q") || "", cat = params.get("cat") || "", gestion = params.get("gestion") || "", vue = params.get("vue") || "detail";
-  const cats = [...new Set(SW.rows.map(r => SW.strings[r[SW.C.category]]))].sort();
+  const cats = [...new Set(SW.rows.map(r => swVal(r, "category")))].sort();
   const res = searchSoftware(q, {cat, managed: gestion});
   const hosts = q ? searchHosts(q) : [];
   let body;
   if (vue === "versions") {
     const g = new Map();
     for (const r of res.rows) {
-      const name = SW.strings[r[SW.C.family]] || SW.strings[r[SW.C.name]], ver = SW.strings[r[SW.C.version]];
+      const name = swVal(r, "family") || swVal(r, "name"), ver = swVal(r, "version");
       const key = name + "\u0000" + ver;
       let e = g.get(key);
       if (!e) { e = {name, version: ver, hosts: new Set(), n: 0, um: 0}; g.set(key, e); }
-      e.hosts.add(swHk(r)); e.n++; if (!r[SW.C.managed]) e.um++;
+      e.hosts.add(swHk(r)); e.n++; if (!swMan(r)) e.um++;
     }
     const rows = [...g.values()].map(e => ({...e, nh: e.hosts.size}));
     body = table([
@@ -1296,7 +1324,7 @@ function bindView(r, params) {
     $("#swcsv").onclick = () => {
       const res = searchSoftware(params.get("q") || "", {cat: params.get("cat") || "", managed: params.get("gestion") || ""});
       const cols = SW.cols;
-      csvDownload("cmdb_logiciels.csv", cols, res.rows.map(r => cols.map(c => c === "managed" ? (r[SW.C.managed] ? "distribution" : "hors paquet") : SW.strings[r[SW.C[c]]])));
+      csvDownload("cmdb_logiciels.csv", cols, res.rows.map(r => cols.map(c => c === "managed" ? (swMan(r) ? "distribution" : "hors paquet") : swVal(r, c))));
     };
   }
   if (r === "serveurs") $("#hostcsv").onclick = () => csvDownload("cmdb_serveurs.csv", D.hosts.cols, D.hosts.rows);
@@ -1323,6 +1351,7 @@ async function load() {
   const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const txt = await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
   D0 = JSON.parse(txt);
+  SW = swPack(D0.sw);
   MULTI = new Set(D0.hosts.rows.map(r => r[0] + "|" + r[1])).size > 1;
 }
 function updateGen() {

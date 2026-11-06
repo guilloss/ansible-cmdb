@@ -36,6 +36,52 @@ def table(db, sql, params=()):
     return {"cols": [c[0] for c in cur.description], "rows": [list(r) for r in cur]}
 
 
+SW_COMP = ["category", "ecosystem", "family", "name", "version", "evidence", "managed", "owner_pkg", "purl", "cpe"]
+
+
+def software_tables(db, exclude_categories=()):
+    """Logiciels sous forme compacte, sans perte : c'est de loin la table la plus volumineuse.
+
+    Un composant identique sur plusieurs serveurs n'est stocké qu'une fois, un chemin est
+    découpé en répertoire et nom de fichier, et toutes les chaînes sont dédoublonnées.
+    Listes à plat, décodées par le rapport (voir swVal) :
+      rows  : app, platform, host, composant, emplacement (5 entiers par ligne)
+      comps : les champs de SW_COMP (managed vaut 0 ou 1, les autres sont des index de strings)
+      locs  : répertoire (-1 si le chemin n'a pas de « / »), nom de fichier"""
+    strings, index = [], {}
+
+    def si(v):
+        v = "" if v is None else str(v)
+        i = index.get(v)
+        if i is None:
+            i = index[v] = len(strings)
+            strings.append(v)
+        return i
+
+    comps, comp_index, locs, loc_index, rows = [], {}, [], {}, []
+    cols = ["app", "platform", "host", "location"] + SW_COMP
+    where = ""
+    if exclude_categories:
+        where = " WHERE category NOT IN (%s)" % ",".join("?" * len(exclude_categories))
+    for r in db.execute("SELECT %s FROM software%s" % (", ".join(cols), where), tuple(exclude_categories)):
+        comp = tuple((1 if v else 0) if k == "managed" else si(v) for k, v in zip(SW_COMP, r[4:]))
+        c = comp_index.get(comp)
+        if c is None:
+            c = comp_index[comp] = len(comp_index)
+            comps.extend(comp)
+        path = "" if r[3] is None else str(r[3])
+        l = loc_index.get(path)
+        if l is None:
+            l = loc_index[path] = len(loc_index)
+            head, sep, tail = path.rpartition("/")
+            locs.extend((si(head) if sep else -1, si(tail)))
+        rows.extend((si(r[0]), si(r[1]), si(r[2]), c, l))
+    return {"cols": ["app", "platform", "host", "category", "ecosystem", "family", "name", "version", "location", "evidence",
+                     "managed", "owner_pkg", "purl", "cpe"],
+            "comp_cols": SW_COMP, "strings": strings, "comps": comps, "locs": locs, "rows": rows,
+            "excluded": list(exclude_categories)}
+
+
 def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_version="", dossiers=None):
     db = sqlite3.connect(dbpath)
     K = "app, platform, host"   # clé de chaque serveur : un même hôte peut servir plusieurs applications
@@ -94,25 +140,7 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "hardening_scores": table(db, "SELECT * FROM hardening_scores ORDER BY %s" % K),
         "anssi": table(db, "SELECT * FROM anssi_recommendations"),
     }
-    # Logiciels : table la plus volumineuse -> chaînes dédoublonnées (interning)
-    strings, index = [], {}
-
-    def si(v):
-        v = "" if v is None else str(v)
-        i = index.get(v)
-        if i is None:
-            i = index[v] = len(strings)
-            strings.append(v)
-        return i
-    cols = ["app", "platform", "host", "category", "ecosystem", "family", "name", "version", "location", "evidence", "managed",
-            "owner_pkg", "purl", "cpe"]
-    where = ""
-    if exclude_categories:
-        where = " WHERE category NOT IN (%s)" % ",".join("?" * len(exclude_categories))
-    rows = []
-    for r in db.execute("SELECT %s FROM software%s" % (", ".join(cols), where), tuple(exclude_categories)):
-        rows.append([si(v) if k != "managed" else (1 if v else 0) for k, v in zip(cols, r)])
-    data["sw"] = {"cols": cols, "strings": strings, "rows": rows, "excluded": list(exclude_categories)}
+    data["sw"] = software_tables(db, exclude_categories)
     if matrix_csv and os.path.exists(matrix_csv):
         with open(matrix_csv, encoding="utf-8") as f:
             m = list(csv.reader(f, delimiter=";"))
@@ -128,7 +156,7 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
     html = html.replace("__CMDB_DATA__", payload)
     with open(outpath, "w", encoding="utf-8") as f:
         f.write(html)
-    return {"software_rows": len(rows), "strings": len(strings), "bytes": len(html)}
+    return {"software_rows": len(data["sw"]["rows"]) // 5, "strings": len(data["sw"]["strings"]), "bytes": len(html)}
 
 
 def main():
