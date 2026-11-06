@@ -16,7 +16,7 @@ cmdb-ansible/
 ├── consolidate.yml             # consolidation, indépendante des collectes
 ├── inventory/
 │   ├── hosts.yml               # exemple d'inventaire
-│   └── local.yml               # test sur la machine locale
+│   └── local.yml.example       # test sur la machine locale, à copier en local.yml
 ├── roles/cmdb_collect/
 │   ├── defaults/main.yml       # tous les paramètres
 │   ├── files/cmdb_collector.py # collecteur principal (stdlib, Python 2.6 / 2.7 / 3.6+)
@@ -63,6 +63,7 @@ ansible-playbook consolidate.yml
 python3 tools/cmdb_build.py --store store --out build
 
 # Essai local
+cp inventory/local.yml.example inventory/local.yml
 ansible-playbook -i inventory/local.yml collect.yml -e cmdb_app=ESSAI -e cmdb_platform=local
 ```
 
@@ -115,6 +116,8 @@ python3 tools/cmdb_build.py --store store --app APPDEMO --platform 'prod*' --out
 ```
 
 Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaque passage lancé avec `-e cmdb_lot=true` produit une archive unique, que l'on transfère et que la consolidation lit sans l'extraire. Les anciennes collectes non étiquetées (`output/raw/<hôte>/`) restent lisibles : elles sont rangées sous l'application et la plate-forme `NA` (ou celles données par `--default-app` et `--default-platform`).
+
+**Données réelles.** `store/`, `build/`, `build-*/` et `inventory/local.yml` sont ignorés par git, pour qu'un clone utilisé sur de vrais serveurs ne les publie pas par erreur. `inventory/hosts.yml` reste un exemple suivi par git : gardez vos inventaires réels hors du dépôt, ou dans `inventory/local.yml`.
 
 **Travailler à plusieurs équipes : le dépôt de lots.** Il n'y a pas d'étape de fusion : chaque équipe collecte de son côté, et c'est la consolidation qui met tout en commun. Elle ne modifie pas les collectes et se relance autant de fois que nécessaire, à mesure que les lots arrivent.
 
