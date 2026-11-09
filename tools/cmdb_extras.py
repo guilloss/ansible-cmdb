@@ -801,9 +801,10 @@ def label(key):
 
 
 def build_changes(db, builder_class, schema, previous, current_meta):
-    """previous : {clé: (doc, source)} ; current_meta : {clé: meta de la collecte courante}."""
+    """previous : {clé: (doc, source)}, ou suite de (clé, (doc, source)) déjà triée et lue
+    au fur et à mesure (un seul document en mémoire) ; current_meta : {clé: meta courante}."""
     n = 0
-    for key, (doc, source) in sorted(previous.items()):
+    for key, (doc, source) in (sorted(previous.items()) if hasattr(previous, "items") else previous):
         mem = sqlite3.connect(":memory:")
         mem.executescript(schema)
         b = builder_class(mem)

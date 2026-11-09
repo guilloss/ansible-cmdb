@@ -31,6 +31,7 @@ import sqlite3
 import sys
 import tarfile
 import uuid
+import zlib
 from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -312,13 +313,18 @@ class Store(object):
 
     Clé : (application, plate-forme, hôte), lue dans le document (meta.tags) et non
     dans le chemin : un fichier déplacé ou renommé reste correctement rattaché.
-    Pour chaque clé on garde la collecte la plus récente (meta.started_at)."""
+    Pour chaque clé on garde la collecte la plus récente (meta.started_at).
+
+    Mémoire : seul l'en-tête (meta) des collectes retenues reste en mémoire, avec de quoi
+    les relire : chemin du fichier, ou contenu encore compressé pour un lot. Les documents
+    sont relus un à un au moment de remplir la base (current(), previous_docs())."""
 
     def __init__(self, default_app=NA, default_platform=NA, apps=None, platforms=None, hosts=None, history=True):
-        self.docs = {}       # clé -> (doc, facts, source)
-        self.previous = {}   # clé -> (doc, source) : avant-dernière collecte, pour les évolutions
+        self.docs = {}       # clé -> (meta, réf. document, réf. faits Ansible, source)
+        self.previous = {}   # clé -> (meta, réf. document, source) : avant-dernière collecte
         self.history = history
         self.runs = {}       # run_id -> manifeste
+        self.dir_runs = set()   # passages présents dans les magasins lus (pour ignorer leurs lots)
         self.default_app, self.default_platform = default_app, default_platform
         self.filters = (apps or [], platforms or [], hosts or [])
         self.read = self.skipped = 0
@@ -327,7 +333,28 @@ class Store(object):
     def _match(v, pats):
         return not pats or any(fnmatch.fnmatchcase(v, p) for p in pats)
 
-    def offer(self, doc, facts, source, fallback_host, counted=True):
+    @staticmethod
+    def _head(doc):
+        """Ce qu'il faut garder d'un document pour le classer : meta et nom d'hôte de secours."""
+        return {"meta": doc.get("meta") or {}, "os": {"hostname": (doc.get("os") or {}).get("hostname")}}
+
+    @staticmethod
+    def load(ref):
+        """Relit un document ou des faits : ("file", chemin), ("gz", octets) ou ("z", octets zlib)."""
+        if ref is None:
+            return None
+        kind, data = ref
+        if kind == "file":
+            if data.endswith(".gz"):
+                with gzip.open(data, "rb") as f:
+                    return json.loads(f.read().decode("utf-8"))
+            with open(data, encoding="utf-8") as f:
+                return json.load(f)
+        if kind == "gz":
+            return json.loads(gzip.decompress(data).decode("utf-8"))
+        return json.loads(zlib.decompress(data).decode("utf-8"))
+
+    def offer(self, doc, ref, facts, source, fallback_host, counted=True):
         meta = doc.get("meta") or {}
         tags = meta.get("tags") or {}
         key = (tags.get("app") or self.default_app, tags.get("platform") or self.default_platform,
@@ -339,20 +366,47 @@ class Store(object):
             self.read += 1
         cur = self.docs.get(key)
         stamp = meta.get("started_at") or ""
-        if cur is None or stamp >= ((cur[0].get("meta") or {}).get("started_at") or ""):
-            if cur is not None and (cur[0].get("meta") or {}).get("run_id") != meta.get("run_id"):
-                self._offer_previous(key, cur[0], cur[2])
-            self.docs[key] = (doc, facts, source)
-        elif (cur[0].get("meta") or {}).get("run_id") != meta.get("run_id"):
-            self._offer_previous(key, doc, source)
+        if cur is None or stamp >= (cur[0].get("started_at") or ""):
+            if cur is not None and cur[0].get("run_id") != meta.get("run_id"):
+                self._offer_previous(key, cur[0], cur[1], cur[3])
+            self.docs[key] = (meta, ref, facts, source)
+        elif cur[0].get("run_id") != meta.get("run_id"):
+            self._offer_previous(key, meta, ref, source)
 
-    def _offer_previous(self, key, doc, source):
+    def _offer_previous(self, key, meta, ref, source):
         if not self.history:
             return
-        stamp = (doc.get("meta") or {}).get("started_at") or ""
+        stamp = meta.get("started_at") or ""
         old = self.previous.get(key)
-        if old is None or stamp >= ((old[0].get("meta") or {}).get("started_at") or ""):
-            self.previous[key] = (doc, source)
+        if old is None or stamp >= (old[0].get("started_at") or ""):
+            self.previous[key] = (meta, ref, source)
+
+    def current(self):
+        """(clé, document, faits, source) des collectes retenues, relues une à une."""
+        for key in sorted(self.docs):
+            meta, ref, fref, source = self.docs[key]
+            try:
+                doc = self.load(ref)
+            except (OSError, ValueError, EOFError) as e:
+                print("ERREUR relecture %s : %s" % (source, e), file=sys.stderr)
+                continue
+            try:
+                facts = self.load(fref)
+            except (OSError, ValueError, EOFError):
+                facts = None
+            yield key, doc, facts, source
+
+    def previous_docs(self):
+        """(clé, (document, source)) des avant-dernières collectes, relues une à une."""
+        for key in sorted(self.previous):
+            meta, ref, source = self.previous[key]
+            try:
+                yield key, (self.load(ref), source)
+            except (OSError, ValueError, EOFError) as e:
+                print("ERREUR relecture %s : %s" % (source, e), file=sys.stderr)
+
+    def metas(self):
+        return dict((k, v[0]) for k, v in self.docs.items())
 
     def add_manifest(self, m, source):
         """_runs/<run_id>/_run.json (en-tête) ou _runs/<run_id>/<app>__<pf>__<hôte>.json (statut d'un hôte)."""
@@ -371,12 +425,18 @@ class Store(object):
             if os.path.basename(d) == "_lots":
                 dirs[:] = []
                 continue
-            if "_runs" in os.path.relpath(d, root).split(os.sep):
+            rel = os.path.relpath(d, root).split(os.sep)
+            if "_runs" in rel:
+                if rel[-1] != "_runs":
+                    self.dir_runs.add(rel[-1])
                 for f in sorted(files):
                     if f.endswith(".json"):
                         try:
                             with open(os.path.join(d, f), encoding="utf-8") as fh:
-                                self.add_manifest(json.load(fh), os.path.join(d, f))
+                                m = json.load(fh)
+                            self.add_manifest(m, os.path.join(d, f))
+                            if isinstance(m, dict) and m.get("run_id"):
+                                self.dir_runs.add(m["run_id"])
                         except (OSError, ValueError) as e:
                             print("ERREUR manifeste %s : %s" % (f, e), file=sys.stderr)
                 continue
@@ -385,54 +445,60 @@ class Store(object):
                 continue
             path = os.path.join(d, "latest.json.gz" if "latest.json.gz" in cands else cands[-1])
             try:
-                with gzip.open(path, "rb") as f:
-                    doc = json.loads(f.read().decode("utf-8"))
-            except (OSError, ValueError) as e:
+                head = self._head(self.load(("file", path)))
+            except (OSError, ValueError, EOFError) as e:
                 print("ERREUR lecture %s : %s" % (path, e), file=sys.stderr)
                 continue
-            facts = None
-            rid = (doc.get("meta") or {}).get("run_id")
+            fref = None
+            rid = head["meta"].get("run_id")
             fcands = sorted(f for f in files if f.endswith(".ansible_facts.json"))
             fpath = rid and "%s.ansible_facts.json" % rid in fcands and "%s.ansible_facts.json" % rid or (fcands[-1] if fcands else None)
             if fpath:
-                try:
-                    with open(os.path.join(d, fpath), encoding="utf-8") as f:
-                        facts = json.load(f)
-                except (OSError, ValueError):
-                    facts = None
-            self.offer(doc, facts, path, os.path.basename(d))
+                fref = ("file", os.path.join(d, fpath))
+            self.offer(head, ("file", path), fref, path, os.path.basename(d))
             if self.history:
                 # Collectes horodatées : la plus récente dont le passage diffère de celui de latest
                 for f in reversed(cands):
                     if f == "latest.json.gz" or f == "%s.json.gz" % rid:
                         continue
+                    p = os.path.join(d, f)
                     try:
-                        with gzip.open(os.path.join(d, f), "rb") as fh:
-                            self.offer(json.loads(fh.read().decode("utf-8")), None, os.path.join(d, f), os.path.basename(d), counted=False)
-                    except (OSError, ValueError) as e:
+                        self.offer(self._head(self.load(("file", p))), ("file", p), None, p, os.path.basename(d), counted=False)
+                    except (OSError, ValueError, EOFError) as e:
                         print("ERREUR lecture %s : %s" % (f, e), file=sys.stderr)
                     break
 
     def add_lot(self, lot):
-        """Lot transféré depuis une autre plate-forme : lu sans extraction sur disque."""
+        """Lot transféré depuis une autre plate-forme : lu sans extraction sur disque.
+        Les documents retenus restent compressés en mémoire jusqu'à leur relecture.
+        Renvoie le passage déjà présent dans un magasin lu (lot ignoré), sinon None."""
         facts_by_dir, docs = {}, []
         with tarfile.open(lot, "r:*") as tf:
             for m in tf:
+                name = m.name
+                parts = ("/" + name).split("/")
+                if "_runs" in parts and parts.index("_runs") + 1 < len(parts):
+                    rid = parts[parts.index("_runs") + 1]
+                    if rid in self.dir_runs:
+                        return rid
                 if not m.isfile():
                     continue
-                name = m.name
                 try:
                     if name.endswith(".json.gz"):
-                        docs.append((name, json.loads(gzip.decompress(tf.extractfile(m).read()).decode("utf-8"))))
+                        raw = tf.extractfile(m).read()
+                        docs.append((name, self._head(json.loads(gzip.decompress(raw).decode("utf-8"))), raw))
                     elif name.endswith(".ansible_facts.json"):
-                        facts_by_dir[os.path.dirname(name)] = json.loads(tf.extractfile(m).read().decode("utf-8"))
+                        raw = tf.extractfile(m).read()
+                        json.loads(raw.decode("utf-8"))
+                        facts_by_dir[os.path.dirname(name)] = ("z", zlib.compress(raw, 1))
                     elif "/_runs/" in "/" + name and name.endswith(".json"):
                         self.add_manifest(json.loads(tf.extractfile(m).read().decode("utf-8")), "%s:%s" % (lot, name))
                 except (OSError, ValueError, EOFError) as e:
                     print("ERREUR %s:%s : %s" % (lot, name, e), file=sys.stderr)
-        for name, doc in docs:
+        for name, head, raw in docs:
             d = os.path.dirname(name)
-            self.offer(doc, facts_by_dir.get(d), "%s:%s" % (lot, name), os.path.basename(d))
+            self.offer(head, ("gz", raw), facts_by_dir.get(d), "%s:%s" % (lot, name), os.path.basename(d))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1189,6 +1255,7 @@ def export_csv(db, outdir):
 def build_matrix(db, path):
     hosts = [tuple(r) for r in db.execute("SELECT app, platform, host, os_pretty FROM hosts ORDER BY app, platform, host")]
     cells = {}
+    wanted = set(MATRIX_FAMILIES)
     q = """SELECT app, platform, host, family, version, managed, category, extra FROM software
            WHERE family IS NOT NULL AND version IS NOT NULL AND version != ''
              AND category IN ('runtime','os-package','webapp','java-archive','db-datadir','js-library','embedded')"""
@@ -1203,6 +1270,8 @@ def build_matrix(db, path):
                 continue
         if fam == "php-fpm":
             fam = "php"
+        if fam not in wanted:
+            continue            # seules les familles de la matrice : la mémoire ne dépend pas du nombre de bibliothèques
         label = ver if managed else ver + "*"
         cells.setdefault((host, fam), set()).add(label)
     present = [f for f in MATRIX_FAMILIES if any((h[:3], f) in cells for h in hosts)]
@@ -1298,8 +1367,7 @@ def write_runs(db, store):
                 rid, app, pf, host, h.get("status"), h.get("collector"),
                 m.get("started_at") or rid, h.get("file"), h.get("detail"), m.get("_source")))
             seen.add((rid, app, pf, host))
-    for (app, pf, host), (doc, _f, src) in store.docs.items():
-        meta = doc.get("meta") or {}
+    for (app, pf, host), (meta, _r, _f, src) in store.docs.items():
         if (meta.get("run_id"), app, pf, host) not in seen:
             db.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)", (
                 meta.get("run_id"), app, pf, host, "ok", meta.get("collector") or "python", meta.get("started_at"),
@@ -1359,7 +1427,9 @@ def main():
             return 2
         store.add_dir(d)
     for lot in lots:
-        store.add_lot(lot)
+        rid = store.add_lot(lot)
+        if rid:
+            print("Lot ignoré       : %s (passage %s déjà présent dans le magasin)" % (lot, rid))
     docs = store.docs
     if not docs:
         print("Aucune collecte trouvée (magasins : %s ; lots : %s)" % (", ".join(dirs) or "-", ", ".join(lots) or "-"))
@@ -1381,8 +1451,9 @@ def main():
     db = sqlite3.connect(tmp)
     db.executescript(SCHEMA)
     b = Builder(db, java_db)
-    for key, (doc, facts, src) in sorted(docs.items()):
+    for key, doc, facts, src in store.current():
         b.process_host(key, doc, None if a.no_raw_documents else facts, src)
+        del doc, facts
         if a.no_raw_documents:
             b.rows["raw_documents"] = []
         b.flush()
@@ -1399,8 +1470,7 @@ def main():
     cmdb_extras.build_cert_usage(db)
     cmdb_maps.build_flows(db)
     cmdb_maps.build_drift(db)
-    nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous,
-                                         dict((k, v[0].get("meta") or {}) for k, v in docs.items()))
+    nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous_docs(), store.metas())
     db.commit()
     db.close()
     os.replace(tmp, dbpath)

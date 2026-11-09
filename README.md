@@ -141,6 +141,10 @@ Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaq
    ansible-playbook consolidate.yml -e '{"cmdb_lots": ["/depot/lots/*.tar.gz"]}'
    ```
 
+Un lot dont le passage figure déjà dans le magasin lu (`_runs/<run_id>/`) est ignoré, avec le message « Lot ignoré ». C'est le cas des lots de `store/_lots/`, déjà présents dans `store/` : inutile de les repasser à `cmdb_lots` sur le contrôleur qui a collecté.
+
+La consolidation ne garde en mémoire que l'en-tête de chaque collecte et relit les collectes une à une. Les écarts se calculent application par application. La mémoire nécessaire dépend donc de la plus grosse collecte et de la plus grosse application, plus le rapport HTML qui contient tout le parc (`cmdb_report_exclude` l'allège).
+
 Un rapport partiel ne voit que son périmètre : un lien vers une base collectée par une autre équipe y reste « hors inventaire », et ne se résout que dans la consolidation commune.
 
 À convenir entre équipes avant de commencer :

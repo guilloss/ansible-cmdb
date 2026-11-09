@@ -159,44 +159,51 @@ def load_ignore(path=DRIFT_IGNORE):
         return [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
 
-def host_profiles(db):
-    """{serveur: {(nature, élément): valeur}} : ce qui devrait être identique entre deux serveurs comparables."""
+def host_profiles(db, app=None):
+    """{serveur: {(nature, élément): valeur}} : ce qui devrait être identique entre deux serveurs comparables.
+    app : limite aux serveurs d'une application (la mémoire dépend alors de la plus grosse application)."""
     prof = collections.defaultdict(dict)
     versions = collections.defaultdict(set)
-    q = "SELECT app, platform, host, family, version, extra FROM software WHERE family IS NOT NULL AND version IS NOT NULL AND category NOT IN ('go-module', 'npm-package')"
-    for app, pf, host, fam, version, extra in db.execute(q):
+    only, args = (" AND app = ?", (app,)) if app is not None else ("", ())
+
+    def rows(sql, extra=()):
+        return db.execute(sql.replace(" {APP}", only), tuple(extra) + args)
+    q = "SELECT app, platform, host, family, version, extra FROM software WHERE family IS NOT NULL AND version IS NOT NULL AND category NOT IN ('go-module', 'npm-package') {APP}"
+    for app_, pf, host, fam, version, extra in rows(q):
         v = version
         if extra:
             try:
                 v = json.loads(extra).get("upstream_version") or v
             except ValueError:
                 pass
-        versions[((app, pf, host), fam)].add(v)
+        versions[((app_, pf, host), fam)].add(v)
     for (k, fam), vs in versions.items():
         prof[k][("composant", fam)] = " | ".join(sorted(vs))
-    for app, pf, host, os_pretty in db.execute("SELECT app, platform, host, os_pretty FROM hosts"):
-        prof[(app, pf, host)][("système", "version")] = os_pretty
-    for app, pf, host, product, version, level in db.execute("SELECT app, platform, host, product, version, patch_level FROM oracle_homes WHERE product IS NOT NULL"):
+    del versions
+    for app_, pf, host, os_pretty in rows("SELECT app, platform, host, os_pretty FROM hosts WHERE 1 {APP}"):
+        prof[(app_, pf, host)][("système", "version")] = os_pretty
+    for app_, pf, host, product, version, level in rows("SELECT app, platform, host, product, version, patch_level FROM oracle_homes WHERE product IS NOT NULL {APP}"):
         if level:
-            prof[(app, pf, host)][("correctif Oracle", "%s %s" % (product, (version or "").split(".")[0]))] = level
-    for app, pf, host, product, module in db.execute("SELECT app, platform, host, product, module FROM service_modules"):
-        prof[(app, pf, host)][("module", "%s %s" % (product, module))] = "présent"
+            prof[(app_, pf, host)][("correctif Oracle", "%s %s" % (product, (version or "").split(".")[0]))] = level
+    for app_, pf, host, product, module in rows("SELECT app, platform, host, product, module FROM service_modules WHERE 1 {APP}"):
+        prof[(app_, pf, host)][("module", "%s %s" % (product, module))] = "présent"
     marks = ",".join("?" * len(REPORT_PHP_KEYS))
-    for app, pf, host, key, value in db.execute("SELECT app, platform, host, key, value FROM runtime_settings WHERE key IN (%s)" % marks, REPORT_PHP_KEYS):
-        prof[(app, pf, host)][("réglage PHP", key)] = value
-    for app, pf, host, ref, status in db.execute("SELECT app, platform, host, rule_id, status FROM hardening_results WHERE status != 'non vérifiable'"):
-        prof[(app, pf, host)][("durcissement", ref)] = status
+    for app_, pf, host, key, value in rows("SELECT app, platform, host, key, value FROM runtime_settings WHERE key IN (%s) {APP}" % marks, REPORT_PHP_KEYS):
+        prof[(app_, pf, host)][("réglage PHP", key)] = value
+    for app_, pf, host, ref, status in rows("SELECT app, platform, host, rule_id, status FROM hardening_results WHERE status != 'non vérifiable' {APP}"):
+        prof[(app_, pf, host)][("durcissement", ref)] = status
     return prof
 
 
-def twin_groups(db, prof):
+def twin_groups(db, prof, app=None):
     """Serveurs d'une même application et plate-forme qui font le même métier : mêmes composants, mêmes ports d'écoute."""
+    only, args = (" AND app = ?", (app,)) if app is not None else ("", ())
     ports = collections.defaultdict(set)
-    for app, pf, host, port in db.execute("SELECT app, platform, host, port FROM listening WHERE address NOT IN ('127.0.0.1', '::1')"):
+    for app, pf, host, port in db.execute("SELECT app, platform, host, port FROM listening WHERE address NOT IN ('127.0.0.1', '::1')" + only, args):
         if port and port < 32768 and port not in TWIN_IGNORED_PORTS:
             ports[(app, pf, host)].add(port)
     runtime = collections.defaultdict(set)
-    for app, pf, host, fam in db.execute("SELECT DISTINCT app, platform, host, family FROM software WHERE category = 'runtime' AND family IS NOT NULL"):
+    for app, pf, host, fam in db.execute("SELECT DISTINCT app, platform, host, family FROM software WHERE category = 'runtime' AND family IS NOT NULL" + only, args):
         if fam not in ("linux-kernel", "aix"):
             runtime[(app, pf, host)].add(fam)
     groups = collections.defaultdict(list)
@@ -207,9 +214,14 @@ def twin_groups(db, prof):
 
 
 def build_drift(db, ignore=None):
+    """Écarts entre plates-formes d'une application et entre serveurs jumeaux.
+    Calculés application par application : seul le profil d'une application est en mémoire."""
     ignore = load_ignore() if ignore is None else ignore
-    prof = host_profiles(db)
+    for (app,) in db.execute("SELECT DISTINCT app FROM hosts ORDER BY app").fetchall():
+        _drift_app(db, host_profiles(db, app), ignore, app)
 
+
+def _drift_app(db, prof, ignore, only_app):
     def skip(item):
         return any(fnmatch.fnmatchcase("%s:%s" % item, p) for p in ignore)
 
@@ -227,7 +239,7 @@ def build_drift(db, ignore=None):
                 if a != b and not skip(item):
                     put("plates-formes", app, left, right, None, None, item, " / ".join(sorted(a)) if a else None, " / ".join(sorted(b)) if b else None)
     # Serveurs jumeaux : le nœud différent se compare à la majorité du groupe
-    for group in twin_groups(db, prof):
+    for group in twin_groups(db, prof, only_app):
         app, pf = group[0][:2]
         for item in sorted(set(i for k in group for i in prof[k])):
             if skip(item):
