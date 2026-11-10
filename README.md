@@ -336,8 +336,22 @@ Un flux rare (traitement mensuel, sauvegarde) peut être absent d'une photo de l
 
 `drift` compare, sans nouvelle collecte, les versions de composants, le système, les niveaux de correctifs Oracle, les modules, les réglages PHP et les contrôles de durcissement :
 
-- **entre plates-formes** d'une même application, deux à deux (par exemple prod et recette) ;
+- **entre plates-formes** d'une même application : une ligne par élément, une colonne par plate-forme (table `drift_matrix`) ;
 - **entre serveurs jumeaux** d'une même plate-forme : ceux qui ont les mêmes ports d'écoute et les mêmes moteurs. Au-delà de deux, un serveur est comparé à la majorité du groupe.
+
+Entre plates-formes, les colonnes suivent l'ordre de promotion et chaque ligne reçoit un constat, une action et une gravité :
+
+| Constat | Gravité | Sens |
+|---|---|---|
+| `prod en avance sur rec` | critique | une version en aval n'est jamais passée par la plate-forme en amont : non testée |
+| `à promouvoir en prod` | à traiter | une version plus récente est validée en amont ; l'action donne la version cible |
+| `hétérogène en prod` | à traiter | les serveurs d'une même plate-forme n'ont pas la même valeur (mise à jour inachevée) |
+| `non conforme en prod` | à traiter | contrôle de durcissement non conforme sur cette plate-forme seulement |
+| `absent de prod`, `différent` | à examiner | élément présent ailleurs, ou valeurs non comparables (modules, réglages) |
+
+L'ordre par défaut reconnaît les noms courants et leurs variantes (`prod2`, `rec-a`, `PROD_DR`) : dev, int, rec/recette/qualif/test/uat, preprod/staging, prod/production. Pour d'autres noms : `-e '{"cmdb_platform_order": ["dev", "vabf", "vsr", "prod"]}'` (ou `--platform-order dev,vabf,vsr,prod`). Une plate-forme hors de cet ordre (formation, PRA…) est affichée sans constat d'avance ou de retard.
+
+Les lignes sont rangées par importance : socle, produits et bibliothèques sensibles (log4j, Spring…), puis configuration (modules, réglages PHP, durcissement). Les autres bibliothèques sont repliées dans le rapport et seulement comptées dans les dossiers. Une simple différence de révision de distribution (même version amont) n'est pas un écart. La liste deux à deux reste disponible : onglet « Détail par paire », table `drift` (`scope = 'plates-formes'`).
 
 Les jumeaux sont déduits, pas déclarés : deux serveurs de rôles différents mais de même profil peuvent être rapprochés. `tools/cmdb_drift_ignore.txt` retire les écarts assumés.
 
@@ -460,9 +474,9 @@ SELECT src_host, dst_host, dst_addr, detail FROM app_flows WHERE kind = 'stockag
 -- Qui appelle ce serveur ?
 SELECT COALESCE(src_host, src_addr) AS source, port, kind, detail, status FROM app_flows WHERE dst_host = 'app01.exemple.test';
 
--- Écarts de composants entre prod et recette
-SELECT item, left_value, right_value FROM drift
-WHERE scope = 'plates-formes' AND app = 'APPDEMO' AND left_platform = 'prod' AND right_platform = 'recette' AND kind = 'composant';
+-- Écarts entre plates-formes d'une application, les plus graves d'abord (valeurs par plate-forme en JSON)
+SELECT kind, item, finding, action, cells FROM drift_matrix
+WHERE app = 'APPDEMO' AND importance <= 2 ORDER BY severity DESC, kind, item;
 
 -- Serveurs les moins durcis au niveau intermédiaire
 SELECT app, platform, host, score, ok, ko, unknown FROM hardening_scores WHERE level = 'intermédiaire' ORDER BY score;

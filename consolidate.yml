@@ -27,6 +27,7 @@
     cmdb_build_dir: "{{ playbook_dir }}/build"
     cmdb_java_db: ""                                  # base trivy-java.db locale (archives Java sans pom.properties)
     cmdb_report_exclude: ""                           # ex. "go-module,npm-package" pour alléger le rapport
+    cmdb_platform_order: []                           # ordre de promotion, ex. [dev, rec, preprod, prod] ; vide = noms courants
   tasks:
     - name: Construire la base SQLite, les exports, les SBOM et le rapport HTML
       ansible.builtin.command:
@@ -37,7 +38,8 @@
              + (cmdb_filter_apps | map('regex_replace', '^', '--app=') | list)
              + (cmdb_filter_platforms | map('regex_replace', '^', '--platform=') | list)
              + (['--java-db', cmdb_java_db] if cmdb_java_db else [])
-             + (['--report-exclude-categories', cmdb_report_exclude] if cmdb_report_exclude else []) }}
+             + (['--report-exclude-categories', cmdb_report_exclude] if cmdb_report_exclude else [])
+             + (['--platform-order', cmdb_platform_order | join(',')] if cmdb_platform_order else []) }}
       register: cmdb_build_result
       changed_when: true
       when: cmdb_build | default(cmdb_build_default | default(true)) | bool

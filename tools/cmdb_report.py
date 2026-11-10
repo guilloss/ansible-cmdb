@@ -136,6 +136,7 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "certs_shared": table(db, "SELECT * FROM v_certs_shared"),
         "flows": table(db, "SELECT * FROM app_flows"),
         "drift": table(db, "SELECT * FROM drift ORDER BY app, scope, kind, item"),
+        "drift_matrix": table(db, "SELECT * FROM drift_matrix ORDER BY app, importance, severity DESC, kind, item"),
         "hardening": table(db, "SELECT * FROM hardening_results ORDER BY %s, ref" % K),
         "hardening_scores": table(db, "SELECT * FROM hardening_scores ORDER BY %s" % K),
         "anssi": table(db, "SELECT * FROM anssi_recommendations"),

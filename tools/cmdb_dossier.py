@@ -40,6 +40,7 @@ th, td { padding: 4px 7px; border: 1px solid #D5DCE0; vertical-align: top; overf
 .fact span { font-size: 12px; color: #5A6871; }
 .warn { color: #8A6100; font-weight: 600; }
 .risk { color: #B4322A; font-weight: 600; }
+.muted { color: #6B7780; }
 .ok { color: #2E7D5B; }
 ul.attention { padding-left: 18px; margin: 6px 0; }
 svg { max-width: 100%; height: auto; display: block; margin: 8px 0; }
@@ -67,6 +68,25 @@ def table(headers, rows, empty="Rien à signaler."):
     head = "".join("<th>%s</th>" % esc(h) for h in headers)
     body = "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % (c.html if isinstance(c, Raw) else esc(c)) for c in r) for r in rows)
     return "<table><thead><tr>%s</tr></thead><tbody>%s</tbody></table>" % (head, body)
+
+
+def drift_section(matrix, pf):
+    """Écarts de l'application, une ligne par élément ; les bibliothèques ordinaires sont seulement comptées."""
+    main = [m for m in matrix if m[2] <= 2][:200]
+    libs = [m for m in matrix if m[2] > 2]
+    if not matrix:
+        return '<p class="note">Aucun écart, ou plate-forme unique.</p>'
+    pfs = json.loads(matrix[0][6])
+    sev = {3: "risk", 2: "warn"}
+    rows = []
+    for kind, item, _imp, severity, finding, action, _p, cells in main:
+        c = json.loads(cells)
+        rows.append([kind, item] + [tag("muted", "absent") if c.get(p) is None else Raw("<b>%s</b>" % esc(c[p])) if p == pf else c[p] for p in pfs]
+                    + [tag(sev[severity], finding) if severity in sev else finding, action or ""])
+    out = table(["Nature", "Élément"] + [("%s (ce dossier)" % p) if p == pf else p for p in pfs] + ["Constat", "Action"], rows, "Aucun écart sur le socle ni la configuration.")
+    if libs:
+        out += '<p class="note">%d autre(s) bibliothèque(s) diffèrent entre plates-formes : voir le rapport HTML, page Écarts.</p>' % len(libs)
+    return out
 
 
 class Raw(object):
@@ -189,8 +209,8 @@ def render(db, app, pf, mention, today=None):
     eol = q("SELECT host, product, cycle, version, eol, extended, days_left, status, managed, location FROM eol_status WHERE %s AND status != 'supporté' ORDER BY days_left" % W)
     scores = q("SELECT host, level, score, ok, ko, unknown FROM hardening_scores WHERE %s ORDER BY host" % W)
     failing = q("""SELECT ref, level, title, COUNT(*) AS n FROM hardening_results WHERE %s AND status = 'non conforme' GROUP BY rule_id ORDER BY n DESC, ref LIMIT 25""" % W)
-    drift = db.execute("""SELECT left_platform, right_platform, kind, item, left_value, right_value FROM drift WHERE scope = 'plates-formes' AND app = ?
-                          AND (left_platform = ? OR right_platform = ?) ORDER BY kind, item LIMIT 200""", (app, pf, pf)).fetchall()
+    matrix = db.execute("""SELECT kind, item, importance, severity, finding, action, platforms, cells FROM drift_matrix WHERE app = ?
+                           ORDER BY importance, severity DESC, kind, item""", (app,)).fetchall()
     twins = db.execute("""SELECT left_host, right_host, kind, item, left_value, right_value FROM drift WHERE scope = 'jumeaux' AND app = ? AND left_platform = ?
                           ORDER BY kind, item LIMIT 200""", K).fetchall()
 
@@ -291,7 +311,7 @@ def render(db, app, pf, mention, today=None):
     S.append("<h3>Non-conformités les plus fréquentes</h3>" + table(["Reco.", "Niveau", "Contrôle", "Serveurs"], failing, "Aucune."))
 
     S.append('<h2 id="ecarts">10. Écarts</h2>')
-    S.append("<h3>Avec les autres plates-formes</h3>" + table(["A", "B", "Nature", "Élément", "Valeur A", "Valeur B"], drift, "Aucun écart, ou plate-forme unique."))
+    S.append("<h3>Avec les autres plates-formes</h3>" + drift_section(matrix, pf))
     S.append("<h3>Entre serveurs jumeaux</h3>" + table(["A", "B", "Nature", "Élément", "Valeur A", "Valeur B"], twins, "Aucun écart."))
 
     S.append('<h2 id="limites">11. Limites de ce document</h2><ul class="attention">'

@@ -1440,6 +1440,9 @@ def main():
     ap.add_argument("--no-dossiers", action="store_true", help="Ne pas produire les dossiers d'application")
     ap.add_argument("--dossier-mention", default=cmdb_dossier.DEFAULT_MENTION,
                     help="Mention de diffusion portée sur chaque page des dossiers d'application")
+    ap.add_argument("--platform-order", default="",
+                    help="Ordre de promotion des plates-formes, de l'amont vers la production (ex. dev,rec,preprod,prod). "
+                         "Défaut : noms courants reconnus (dev, int, rec/qualif, preprod, prod et variantes)")
     ap.add_argument("--report-exclude-categories", default="",
                     help="Catégories à exclure du rapport HTML pour l'alléger (ex. go-module,npm-package)")
     a = ap.parse_args()
@@ -1497,7 +1500,8 @@ def main():
                    [(r["ref"], r["level"], r["title"], r["coverage"], r["note"] or None) for r in cmdb_hardening.load_recos()])
     cmdb_extras.build_cert_usage(db)
     cmdb_maps.build_flows(db)
-    cmdb_maps.build_drift(db)
+    cmdb_maps.build_drift(db, order=[x for x in (a.platform_order or "").split(",") if x.strip()],
+                          important=PRODUCT_FAMILIES | frozenset(MATRIX_FAMILIES))
     nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous_docs(), store.metas())
     db.commit()
     db.close()

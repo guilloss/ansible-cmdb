@@ -440,6 +440,9 @@ function applyScope() {
   D.flows = on ? {cols: FL.cols, rows: FL.rows.filter(r => keep(r[fc("src_app")], r[fc("src_platform")], r[fc("src_host")] || "") || keep(r[fc("dst_app")], r[fc("dst_platform")], r[fc("dst_host")] || ""))} : FL;
   const DR = D0.drift, dc = c => DR.cols.indexOf(c);
   D.drift = on ? {cols: DR.cols, rows: DR.rows.filter(r => keep(r[dc("app")], r[dc("left_platform")], r[dc("left_host")]) || keep(r[dc("app")], r[dc("right_platform")], r[dc("right_host")]))} : DR;
+  // Matrice des écarts : une ligne concerne le périmètre dès qu'une de ses plates-formes y est
+  const DM = D0.drift_matrix || {cols: [], rows: []}, mc = c => DM.cols.indexOf(c);
+  D.drift_matrix = on ? {cols: DM.cols, rows: DM.rows.filter(r => JSON.parse(r[mc("platforms")]).some(p => keep(r[mc("app")], p, null)))} : DM;
   const s = D0.sw;
   D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(swVal(r, "app"), swVal(r, "platform"), swVal(r, "host"))) : s.rows});
   const M = D0.matrix;
@@ -611,7 +614,7 @@ const ROUTES = [
 function navCounts() {
   const a = D.alerts;
   return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
-    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, ecarts: rowsOf(D.drift).length,
+    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, ecarts: rowsOf(D.drift_matrix).filter(o => o.importance <= 2).length + rowsOf(D.drift).filter(o => o.scope === "jumeaux").length,
     alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol};
 }
 function renderNav(route) {
@@ -1221,12 +1224,37 @@ function driftTable(rows, twins) {
     {k: "left_value", l: "Valeur A", cls: "path", f: o => o.left_value == null ? '<span class="badge muted">absent</span>' : esc(o.left_value)},
     {k: "right_value", l: "Valeur B", cls: "path", f: o => o.right_value == null ? '<span class="badge muted">absent</span>' : esc(o.right_value)}]), rows, {empty: "Aucun écart."});
 }
+const SEV = {3: ["risk", "critique"], 2: ["warn", "à traiter"], 1: ["muted", "à examiner"]};
+function matrixRows() {
+  return rowsOf(D.drift_matrix).map(o => o._c ? o : Object.assign(o, {_c: JSON.parse(o.cells || "{}"), _p: JSON.parse(o.platforms || "[]")}));
+}
+function driftMatrixTable(rows, pfs) {
+  const cell = v => v == null ? '<span class="badge muted">absent</span>' : esc(v);
+  return table([{k: "severity", l: "Gravité", f: o => `<span class="badge ${SEV[o.severity][0]}">${SEV[o.severity][1]}</span>`, sortv: o => -o.severity},
+    {k: "kind", l: "Nature"}, {k: "item", l: "Élément", cls: "mono"}]
+    .concat(pfs.map(p => ({k: "pf:" + p, l: p, cls: "path", f: o => cell(o._c[p]), sortv: o => o._c[p]})))
+    .concat([{k: "finding", l: "Constat"}, {k: "action", l: "Action", f: o => esc(o.action || "")}]), rows, {empty: "Aucun écart."});
+}
+function driftMatrix(rows) {
+  if (!rows.length) return '<div class="empty">Aucun écart entre plates-formes (ou application sur une seule plate-forme).</div>';
+  const apps = [...new Set(rows.map(o => o.app))];
+  return apps.map(app => {
+    const rs = rows.filter(o => o.app === app), pfs = rs[0]._p;
+    const main = rs.filter(o => o.importance <= 2), libs = rs.filter(o => o.importance > 2);
+    const crit = rs.filter(o => o.severity === 3).length;
+    return `<h3>${esc(app)} <span class="hint">${pfs.map(esc).join(" → ")}${crit ? ` · <span class="badge risk">${fmt(crit)} critique(s)</span>` : ""}</span></h3>`
+      + driftMatrixTable(main, pfs)
+      + (libs.length ? `<details><summary>${fmt(libs.length)} autre(s) bibliothèque(s) diffèrent</summary>${driftMatrixTable(libs, pfs)}</details>` : "");
+  }).join("");
+}
 function vEcarts(params) {
   const rows = rowsOf(D.drift), pf = rows.filter(r => r.scope === "plates-formes"), tw = rows.filter(r => r.scope === "jumeaux");
-  return tabbed("ecarts", "Écarts", "Ce qui diffère entre les plates-formes d'une application, et entre des serveurs qui font le même métier (mêmes ports, mêmes composants). Exclusions : tools/cmdb_drift_ignore.txt.", [
-    ["pf", `Entre plates-formes (${fmt(pf.length)})`, m => driftTable(m(pf), false)],
+  const mx = matrixRows();
+  return tabbed("ecarts", "Écarts", "Ce qui diffère entre les plates-formes d'une application, dans l'ordre de promotion (dev → rec → preprod → prod ; réglable avec cmdb_platform_order), et entre des serveurs qui font le même métier. « En avance » : une version de production jamais passée par la plate-forme en amont. Exclusions : tools/cmdb_drift_ignore.txt.", [
+    ["pf", `Entre plates-formes (${fmt(mx.filter(o => o.importance <= 2).length)})`, m => driftMatrix(m(mx))],
     ["jumeaux", `Entre serveurs jumeaux (${fmt(tw.length)})`, m => driftTable(m(tw), true)],
-  ], params, "Filtrer (application, composant…)");
+    ["paires", `Détail par paire (${fmt(pf.length)})`, m => driftTable(m(pf), false)],
+  ], params, "Filtrer (application, composant, constat…)");
 }
 
 // ---------------------------------------------------------------- durcissement

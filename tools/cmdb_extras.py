@@ -73,6 +73,8 @@ CREATE TABLE app_flows (src_app TEXT, src_platform TEXT, src_host TEXT, src_addr
   dst_addr TEXT, port INTEGER, kind TEXT, detail TEXT, status TEXT);
 CREATE TABLE drift (scope TEXT, app TEXT, left_platform TEXT, right_platform TEXT, left_host TEXT, right_host TEXT, kind TEXT, item TEXT,
   left_value TEXT, right_value TEXT);
+CREATE TABLE drift_matrix (app TEXT, kind TEXT, item TEXT, importance INTEGER, severity INTEGER, finding TEXT, action TEXT,
+  platforms TEXT, cells TEXT);
 CREATE TABLE anssi_recommendations (ref TEXT, level TEXT, title TEXT, coverage TEXT, note TEXT);
 CREATE VIEW v_hardening_failures AS
   SELECT app, platform, host, ref, level, title, observed, expected FROM hardening_results WHERE status = 'non conforme'

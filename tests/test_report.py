@@ -16,7 +16,7 @@ ROUTES = ["accueil", "serveurs", "logiciels", "versions", "exposition", "materie
           "bases?onglet=patches", "bases?onglet=licences", "services", "services?onglet=runtimes", "services?onglet=modules",
           "services?onglet=php", "cles", "cles?onglet=certs", "cles?onglet=tout", "support", "support?onglet=tout", "evolutions",
           "bases?onglet=liens&app=APPDEMO&pf=prod", "bases?onglet=liens&q=appdb", "carte", "carte?onglet=flux", "carte?reseau=1",
-          "ecarts", "ecarts?onglet=jumeaux", "durcissement", "durcissement?onglet=regles", "durcissement?onglet=ecarts", "durcissement?onglet=couverture"]
+          "ecarts", "ecarts?onglet=jumeaux", "ecarts?onglet=paires", "durcissement", "durcissement?onglet=regles", "durcissement?onglet=ecarts", "durcissement?onglet=couverture"]
 FOCUS = "carte?serveur=" + quote("APPDEMO|prod|pg1.exemple.test", safe="")
 ROUTES.append(FOCUS)
 TAG = "tag=" + quote("squad=S3", safe="")
@@ -171,6 +171,11 @@ class Rapport(unittest.TestCase):
 
     def test_ecarts(self):
         self.assertIn("8.3.0", self.pages["ecarts"])
+        # une ligne par élément, dans l'ordre de promotion, avec constat et action
+        self.assertIn("recette → prod", self.pages["ecarts"])
+        self.assertIn("à promouvoir en prod", self.pages["ecarts"])
+        self.assertIn("passer prod à 8.3.0", self.pages["ecarts"])
+        self.assertIn("8.3.0", self.pages["ecarts?onglet=paires"])
         self.assertIn("majorité (2/3)", self.pages["ecarts?onglet=jumeaux"])
 
     def test_durcissement(self):

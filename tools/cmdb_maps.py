@@ -213,12 +213,134 @@ def twin_groups(db, prof, app=None):
     return [sorted(g) for g in groups.values() if len(g) > 1]
 
 
-def build_drift(db, ignore=None):
+# Ordre de promotion par défaut : noms courants des plates-formes et leur rang (plus petit = plus en amont).
+# Une plate-forme absente de cette liste est affichée sans constat d'avance ou de retard.
+DEFAULT_PLATFORM_RANKS = [
+    (10, ("dev", "devel", "developpement", "développement", "dvp")),
+    (20, ("int", "integ", "integration", "intégration", "inte", "itg")),
+    (30, ("rec", "recette", "qualif", "qualification", "qual", "qua", "test", "tests", "tst", "val", "valid", "validation",
+          "homol", "homologation", "uat", "vabf")),
+    (40, ("preprod", "pre-prod", "pre_prod", "préprod", "pré-prod", "pprod", "ppd", "pprd", "preproduction", "préproduction",
+          "staging", "stg", "perf", "bench", "vsr")),
+    (50, ("prod", "production", "prd")),
+]
+
+# Natures dont les valeurs sont des versions comparables
+VERSIONED_KINDS = ("composant", "système", "correctif Oracle")
+
+
+def platform_ranks(order=None):
+    """{nom normalisé: rang}. order : liste de noms dans l'ordre de promotion (remplace la liste par défaut)."""
+    if order:
+        return dict((n.strip().lower(), (i + 1) * 10) for i, n in enumerate(order) if n.strip())
+    return dict((n, r) for r, names in DEFAULT_PLATFORM_RANKS for n in names)
+
+
+def platform_rank(name, ranks):
+    """Rang d'une plate-forme : nom exact, sinon sans suffixe numérique ou après séparateur (prod2, rec-a, PROD_DR)."""
+    n = (name or "").strip().lower()
+    while n:
+        if n in ranks:
+            return ranks[n]
+        m = re.match(r"^(.*?)(?:[-_. ]+[^-_. ]*|\d+)$", n)
+        if not m or m.group(1) == n:
+            return None
+        n = m.group(1)
+    return None
+
+
+def version_key(v):
+    """Clé de tri d'une version : 1.10 > 1.9, 19.23.0.0.240416 > 19.21 ; plusieurs valeurs "a | b" -> la plus haute."""
+    keys = []
+    for part in str(v or "").split(" | "):
+        keys.append(tuple((0, int(t)) if t.isdigit() else (-1, t.lower()) for t in re.findall(r"\d+|[A-Za-z]+", part)))
+    return max(keys) if keys else ()
+
+
+def build_drift(db, ignore=None, order=None, important=None):
     """Écarts entre plates-formes d'une application et entre serveurs jumeaux.
-    Calculés application par application : seul le profil d'une application est en mémoire."""
+    Calculés application par application : seul le profil d'une application est en mémoire.
+    order : ordre de promotion des plates-formes ; important : familles de composants à afficher en premier."""
     ignore = load_ignore() if ignore is None else ignore
+    ranks = platform_ranks(order)
     for (app,) in db.execute("SELECT DISTINCT app FROM hosts ORDER BY app").fetchall():
-        _drift_app(db, host_profiles(db, app), ignore, app)
+        prof = host_profiles(db, app)
+        _drift_app(db, prof, ignore, app)
+        _drift_matrix(db, prof, ignore, app, ranks, important or ())
+
+
+def _importance(kind, item, important):
+    """1 : socle, produits et bibliothèques sensibles ; 2 : configuration ; 3 : autres bibliothèques."""
+    if kind in ("système", "correctif Oracle") or (kind == "composant" and item in important):
+        return 1
+    return 3 if kind == "composant" else 2
+
+
+def _drift_matrix(db, prof, ignore, app, ranks, important):
+    """Une ligne par élément : la valeur sur chaque plate-forme, un constat et l'action qui en découle."""
+    hosts = collections.defaultdict(list)
+    for k in prof:
+        hosts[k[1]].append(k)
+    rank = dict((pf, platform_rank(pf, ranks)) for pf in hosts)
+    pfs = sorted(hosts, key=lambda p: (rank[p] is None, rank[p] or 0, p))
+    if len(pfs) < 2:
+        return      # plate-forme unique : rien à comparer (les serveurs jumeaux ont leur propre liste)
+    items = set(i for k in prof for i in prof[k])
+    for item in sorted(items):
+        if any(fnmatch.fnmatchcase("%s:%s" % item, p) for p in ignore):
+            continue
+        kind = item[0]
+        vals = {}
+        for pf in pfs:
+            c = collections.Counter(prof[k][item] for k in hosts[pf] if prof[k].get(item) is not None)
+            vals[pf] = c
+        shapes = set(frozenset(c) for c in vals.values())
+        hetero = [pf for pf in pfs if len(vals[pf]) > 1]
+        if len(shapes) < 2 and not hetero:
+            continue
+        cells = {}
+        for pf in pfs:
+            c = vals[pf]
+            if not c:
+                cells[pf] = None
+            elif len(c) == 1:
+                cells[pf] = next(iter(c))
+            else:
+                cells[pf] = " · ".join("%s (%d/%d)" % (v, n, len(hosts[pf])) for v, n in c.most_common())
+        found, actions, sev = [], [], 1
+        versioned = kind in VERSIONED_KINDS and any(re.search(r"\d", v) for c in vals.values() for v in c)
+        chain = [pf for pf in pfs if rank[pf] is not None and vals[pf]]
+        if kind == "durcissement":
+            bad = [pf for pf in pfs if "non conforme" in vals[pf]]
+            if bad:
+                found.append("non conforme en " + ", ".join(bad))
+                actions.append("appliquer la règle en " + ", ".join(bad))
+                sev = 2
+        elif versioned:
+            for up, down in zip(chain, chain[1:]):
+                top_up = max(vals[up], key=version_key)
+                top_down = max(vals[down], key=version_key)
+                if version_key(top_down) > version_key(top_up):
+                    found.append("%s en avance sur %s" % (down, up))
+                    actions.append("%s non testé en %s : vérifier ou passer %s à %s" % (top_down, up, up, top_down))
+                    sev = 3
+                elif version_key(top_up) > version_key(min(vals[down], key=version_key)):
+                    found.append("à promouvoir en %s" % down)
+                    actions.append("passer %s à %s" % (down, top_up))
+                    sev = max(sev, 2)
+        for pf in hetero:
+            found.append("hétérogène en %s" % pf)
+            # pas de version cible ici : la plus haute peut être justement celle qui n'a pas été testée
+            actions.append("aligner les %d serveurs de %s (%d valeurs)" % (sum(vals[pf].values()), pf, len(vals[pf])))
+            sev = max(sev, 2)
+        absent = [pf for pf in pfs if not vals[pf]]
+        if absent:
+            found.append("absent de " + ", ".join(absent))
+        if not found:
+            found.append("différent")
+        db.execute("INSERT INTO drift_matrix VALUES (?,?,?,?,?,?,?,?,?)", (
+            app, kind, item[1], _importance(kind, item[1], important), sev, " ; ".join(found), " ; ".join(actions) or None,
+            json.dumps(pfs, ensure_ascii=False), json.dumps(cells, ensure_ascii=False)))
 
 
 def _drift_app(db, prof, ignore, only_app):

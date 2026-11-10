@@ -70,6 +70,12 @@ class Dossier(unittest.TestCase):
         for x in ("ora1.exemple.test", "19.23.0.0.240416", "www.exemple.test", "appdb", "nas1.exemple.test", "<svg", "ANSSI-BP-028", "site.exemple.test", "Limites de ce document"):
             self.assertIn(x, self.t, x)
 
+    def test_ecarts_entre_plates_formes(self):
+        sec = self.t[self.t.index('id="ecarts"'):]
+        self.assertIn("prod (ce dossier)", sec)
+        self.assertIn("à promouvoir en prod", sec)
+        self.assertIn("passer prod à 8.3.0", sec)
+
     def test_points_d_attention(self):
         self.assertIn("clé(s) privée(s) exposée(s)", self.t)
         self.assertIn("certificat à renouveler", self.t)
