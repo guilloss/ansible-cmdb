@@ -409,7 +409,7 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers",
   "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
-  "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage"];
+  "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage", "vulns"];
 // Étiquettes libres d'un serveur (cmdb_tags), sans app et platform qui ont leurs propres filtres
 function hostTags(h) {
   let t = {};
@@ -608,13 +608,13 @@ function searchHosts(q) {
 const ROUTES = [
   ["accueil", "Accueil"], ["serveurs", "Serveurs"], ["logiciels", "Logiciels"], ["versions", "Versions"],
   ["bases", "Bases de données"], ["carte", "Carte des flux"], ["services", "Services réseau"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
-  ["materiel", "Matériel"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"], ["support", "Fins de support"],
+  ["materiel", "Matériel"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"], ["vulnerabilites", "Vulnérabilités"], ["support", "Fins de support"],
   ["evolutions", "Évolutions"], ["alertes", "Alertes"],
 ];
 function navCounts() {
   const a = D.alerts;
   return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
-    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, ecarts: rowsOf(D.drift_matrix).filter(o => o.importance <= 2).length + rowsOf(D.drift).filter(o => o.scope === "jumeaux").length,
+    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, vulnerabilites: rowsOf(D.vulns).filter(vulnUrgent).length, ecarts: rowsOf(D.drift_matrix).filter(o => o.importance <= 2).length + rowsOf(D.drift).filter(o => o.scope === "jumeaux").length,
     alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol};
 }
 function renderNav(route) {
@@ -1108,6 +1108,40 @@ function vSupport(params) {
     ["tout", "Tout", m => table(cols, m(rows), {sort: "days_left"})],
   ], params, "Filtrer (serveur, produit, version…)");
 }
+// ---------------------------------------------------------------- vulnérabilités (base Trivy)
+const SEV_FR = {CRITICAL: "critique", HIGH: "haute", MEDIUM: "moyenne", LOW: "faible", UNKNOWN: "inconnue"};
+const vulnUrgent = o => o.fixable > 0 && (o.critical > 0 || o.high > 0);
+function vulnsTable(rows) {
+  const n = (v, cls) => v ? `<span class="badge ${cls}">${fmt(v)}</span>` : "";
+  return table([
+    {k: "app", l: "Application"}, {k: "platform", l: "Plate-forme"},
+    {k: "component", l: "Composant", f: o => `<b>${esc(o.component)}</b><br><span class="muted">${esc(o.source)} · ${esc(o.feed || "")}</span>`},
+    {k: "installed", l: "Version installée", cls: "path"},
+    {k: "hosts", l: "Serveurs", cls: "num", f: o => `${fmt(o.hosts)}<br><span class="path">${(o.host_list || "").split(" ").slice(0, 8).map(h => hostLabel(o.app, o.platform, h)).join(" ")}${o.hosts > 8 ? " …" : ""}</span>`},
+    {k: "critical", l: "Critiques", cls: "num", f: o => n(o.critical, "risk")}, {k: "high", l: "Hautes", cls: "num", f: o => n(o.high, "warn")},
+    {k: "medium", l: "Moyennes", cls: "num", f: o => o.medium ? fmt(o.medium) : ""}, {k: "total", l: "Total", cls: "num"},
+    {k: "max_cvss", l: "CVSS max", cls: "num"},
+    {k: "fix_to", l: "Corrigé en", cls: "path", f: o => o.fix_to ? `<b>${esc(o.fix_to)}</b>` + (o.fixable < o.total ? `<br><span class="muted">${fmt(o.total - o.fixable)} sans correctif</span>` : "") : '<span class="badge muted">aucun correctif</span>'},
+    {k: "top", l: "Principales", cls: "path", f: o => (o.top || "").split(" ").filter(Boolean).map(v => `<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(v)}" rel="noopener" target="_blank">${esc(v)}</a>`).join(" ")},
+  ], rows, {empty: "Aucune vulnérabilité dans ce périmètre."});
+}
+function vVulns(params) {
+  const rows = rowsOf(D.vulns), meta = rowsOf(D0.vuln_meta)[0];
+  if (!meta) return `<h2>Vulnérabilités</h2><p class="lede">Croisement non effectué : relancer la consolidation avec la base de Trivy
+    (<code>--trivy-db trivy.db</code>, ou <code>-e cmdb_trivy_db=…</code> avec <code>consolidate.yml</code>).</p>`;
+  const by = src => rows.filter(o => o.source === src);
+  const lede = `Base Trivy du ${day(meta.trivy_updated) || "?"}. Une ligne par composant et version installée, dans une application et une plate-forme.
+    Paquets : avis de la distribution, correctifs rétroportés compris ; seul le noyau en cours est évalué. Bibliothèques : GitHub Security Advisory.
+    Produits hors distribution : versions amont (base Bitnami). CVE sans correctif : ${meta.unfixed === "all" ? "toutes" : (meta.unfixed === "none" ? "aucune" : "hautes et critiques seulement")}.`
+    + (meta.os_unsupported ? ` Systèmes sans avis dans la base : ${esc(meta.os_unsupported)}.` : "");
+  return tabbed("vulnerabilites", "Vulnérabilités", lede, [
+    ["urgent", `À corriger (${fmt(rows.filter(vulnUrgent).length)})`, m => vulnsTable(m(rows.filter(vulnUrgent)))],
+    ["paquets", `Paquets (${fmt(by("paquet").length)})`, m => vulnsTable(m(by("paquet")))],
+    ["produits", `Produits (${fmt(by("produit").length)})`, m => vulnsTable(m(by("produit")))],
+    ["bibliotheques", `Bibliothèques (${fmt(by("bibliothèque").length)})`, m => vulnsTable(m(by("bibliothèque")))],
+    ["tout", `Tout (${fmt(rows.length)})`, m => vulnsTable(m(rows))],
+  ], params, "Filtrer (composant, version, serveur, CVE…)");
+}
 function changesTable(rows, host) {
   return table(hcolOf(host).concat([{k: "to_at", l: "Constaté le", f: c => day(c.to_at)}, {k: "kind", l: "Nature"},
     {k: "change", l: "Évolution", f: c => `<span class="badge ${c.change === "retrait" ? "warn" : (c.change === "ajout" ? "ok" : "")}">${esc(c.change)}</span>`},
@@ -1329,7 +1363,7 @@ function route() {
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,
-      materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, cles: vCles, support: vSupport, evolutions: vEvolutions}[r] || vAccueil)(params);
+      materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, cles: vCles, support: vSupport, vulnerabilites: vVulns, evolutions: vEvolutions}[r] || vAccueil)(params);
   } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
   renderNav(r);
   $("#topbar").hidden = r === "accueil";

@@ -28,6 +28,8 @@ cmdb-ansible/
     ├── cmdb_report.py          # génération du rapport HTML (appelé par cmdb_build.py)
     ├── cmdb_report_template.html # gabarit du rapport (HTML/CSS/JS sans dépendance)
     ├── cmdb_unpack.py          # décodage du mode « flux » (collect_legacy.yml)
+    ├── cmdb_cve.py             # croisement avec la base de vulnérabilités de Trivy (--trivy-db)
+    ├── cmdb_bolt.py            # lecture seule des bases BoltDB (trivy.db), en Python pur
     ├── cmdb_shell_parse.py     # conversion des collectes shell (Linux et AIX) au format JSON commun
     ├── cmdb_extras.py          # consolidation : Oracle, liens vers les bases, clés, évolutions, fins de support
     ├── cmdb_maps.py            # consolidation : carte des flux, écarts entre plates-formes et serveurs jumeaux
@@ -529,10 +531,57 @@ Le rapport contient tout l'inventaire (comptes, ports, chemins, numéros de sér
 
 ## Croiser avec les CVE
 
-La règle essentielle : **ne jamais comparer la version d'un paquet de distribution aux plages de versions amont d'une CVE.** Red Hat, Debian, Ubuntu ou SUSE rétroportent les correctifs : un `openssl-1.1.1k-12.el8_9` est corrigé de CVE postérieures à la 1.1.1k. Il faut donc séparer les deux mondes, ce que permet la colonne `managed` :
+### Avec la base de Trivy, sans autre outil
 
-1. **Composants gérés par la distribution** (`managed = 1`) : à confronter aux avis de l'éditeur (OVAL/CSAF Red Hat, Debian Security Tracker, USN). C'est ce que font Grype, Trivy ou Dependency-Track à partir des purl `pkg:rpm/…?distro=rhel-8.9` / `pkg:deb/…?distro=ubuntu-24.04` des SBOM. Sur RHEL, `-e cmdb_pending_updates=true` remonte en plus directement `dnf updateinfo list --with-cve`, c'est-à-dire la liste des CVE corrigées par des mises à jour disponibles mais non appliquées.
-2. **Composants hors distribution** (`managed = 0` : JDK dans `/opt`, jars, pip, npm, composer, binaires Go, applications PHP) : à confronter aux bases amont via leur purl (OSV, GitHub Advisory) ou, à défaut, leur CPE (NVD). Les CPE sont **indicatifs** : le dictionnaire NVD change (nginx est passé de `nginx:nginx` à `f5:nginx`, etc.) ; la table `CPE_MAP` de `cmdb_build.py` est à ajuster.
+La consolidation croise elle-même l'inventaire avec une copie locale de la base de vulnérabilités de Trivy (`trivy.db`, lue en Python, sans Go ni Trivy sur le contrôleur). Rien ne sort du contrôleur.
+
+```bash
+# Une fois par jour, sur une machine qui a accès au registre, puis copier le répertoire sur le contrôleur
+trivy image --download-db-only --cache-dir /srv/trivy        # donne /srv/trivy/db/trivy.db (≈ 1,7 Go) et metadata.json
+
+ansible-playbook consolidate.yml -e cmdb_trivy_db=/srv/trivy/db/trivy.db
+python3 tools/cmdb_build.py --store store --trivy-db /srv/trivy/db/trivy.db --out build
+```
+
+Sans Trivy, la base se télécharge aussi avec `oras pull ghcr.io/aquasecurity/trivy-db:2` (archive `db.tar.gz`).
+
+Chaque source est comparée à la base qui lui correspond :
+
+| Source | Base | Comparaison |
+|---|---|---|
+| Paquets de la distribution (RHEL, CentOS, Rocky, Alma, Oracle Linux, Debian, Ubuntu, SUSE, Amazon, Alpine) | avis de l'éditeur | rpm ou dpkg, **correctifs rétroportés compris** ; RHEL 8/9 : modules (`postgresql:10`…) déduits de la version ; noyau : **seul celui qui tourne** (`uname -r`) |
+| Bibliothèques (Maven, pip, npm, composer, RubyGems, Go, NuGet), y compris sous Windows | GitHub Security Advisory | plages de versions amont |
+| Produits hors distribution : PostgreSQL, Tomcat, nginx, httpd, PHP, Redis, MariaDB, Node, Kafka, Elasticsearch… installés à la main, ou par un dépôt tiers (PGDG, nginx.org) | Bitnami | version amont |
+
+Résultats :
+
+- `vulnerabilities` : une ligne par hôte, composant et CVE (gravité de l'éditeur, CVSS, version qui corrige, statut `corrigeable` ou sans correctif) ;
+- `vuln_by_app` et `vuln_components` : une ligne par composant et version installée, par application et plate-forme ou pour tout le parc : nombre de serveurs, de CVE critiques et hautes, **version qui corrige tout**, CVE principales ;
+- rapport HTML, page **Vulnérabilités** (onglet « À corriger » : critiques ou hautes avec correctif) ;
+- résumé dans la sortie de la consolidation.
+
+Les CVE sans correctif ne sont gardées que si elles sont hautes ou critiques (`--cve-unfixed all|high|none`, `cmdb_cve_unfixed`).
+
+```sql
+-- Quelle version du noyau, de PostgreSQL… pose problème, et où
+SELECT component, installed, hosts, critical, high, fix_to, apps FROM vuln_components
+WHERE critical + high > 0 ORDER BY critical DESC, high DESC;
+-- Une CVE donnée dans tout le parc
+SELECT app, platform, host, component, installed, fixed_version FROM vulnerabilities WHERE vuln_id = 'CVE-2024-6387';
+```
+
+**Limites.**
+- **Windows et AIX** : la base n'a aucun avis pour eux. Les bibliothèques et produits trouvés sur ces systèmes sont évalués, mais ni le système ni les KB.
+- **Version déduite** : les produits sont comparés sur leur version amont. Un binaire recompilé avec un correctif rétroporté peut donc être signalé à tort.
+- **Modules RHEL** : leur flux est déduit de la version, la collecte ne relevant pas l'étiquette de modularité.
+- **Base datée** : sa date figure dans le rapport ; elle se met à jour chaque jour.
+
+### Avec un outil externe (SBOM)
+
+Règle essentielle, déjà appliquée ci-dessus : **ne jamais comparer la version d'un paquet de distribution aux plages de versions amont d'une CVE.** Red Hat, Debian, Ubuntu ou SUSE rétroportent les correctifs : un `openssl-1.1.1k-12.el8_9` est corrigé de CVE postérieures à la 1.1.1k. La colonne `managed` sépare les deux mondes :
+
+1. **Composants gérés par la distribution** (`managed = 1`) : à confronter aux avis de l'éditeur (OVAL/CSAF Red Hat, Debian Security Tracker, USN), à partir des purl `pkg:rpm/…?distro=rhel-8.9` / `pkg:deb/…?distro=ubuntu-24.04` des SBOM. Sur RHEL, `-e cmdb_pending_updates=true` remonte en plus `dnf updateinfo list --with-cve`.
+2. **Composants hors distribution** (`managed = 0` : JDK dans `/opt`, jars, pip, npm, composer, binaires Go, applications PHP) : à confronter aux bases amont via leur purl (OSV, GitHub Advisory) ou, à défaut, leur CPE (NVD). Les CPE sont **indicatifs** : la table `CPE_MAP` de `cmdb_build.py` est à ajuster.
 
 Commandes (outils à installer sur un poste d'analyse, non testées dans cet environnement) :
 

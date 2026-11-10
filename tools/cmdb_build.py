@@ -39,6 +39,7 @@ import cmdb_extras  # noqa: E402
 import cmdb_hardening  # noqa: E402
 import cmdb_dossier  # noqa: E402
 import cmdb_maps  # noqa: E402
+import cmdb_cve  # noqa: E402
 
 BUILD_VERSION = "1.2.0"
 
@@ -635,6 +636,7 @@ SCHEMA += cmdb_extras.SCHEMA_GLOBAL
 SCHEMA += """
 CREATE TABLE eol_reference (product TEXT, cycle TEXT, eol TEXT, extended TEXT);
 """
+SCHEMA += cmdb_cve.SCHEMA
 
 
 # ---------------------------------------------------------------------------
@@ -1449,6 +1451,9 @@ def main():
     ap.add_argument("--sbom-include-managed", action="store_true",
                     help="Inclure aussi dans les SBOM les composants appartenant à un paquet OS (doublons, faux positifs)")
     ap.add_argument("--java-db", help="Base trivy-java.db locale : identifie par SHA-1 les archives Java sans pom.properties")
+    ap.add_argument("--trivy-db", help="Base trivy.db locale : croise paquets, bibliothèques et produits avec les CVE (table vulnerabilities)")
+    ap.add_argument("--cve-unfixed", choices=("all", "high", "none"), default="high",
+                    help="CVE sans correctif à garder : toutes, hautes et critiques seulement (défaut), aucune")
     ap.add_argument("--no-raw-documents", action="store_true", help="Ne pas stocker les documents JSON bruts dans SQLite")
     ap.add_argument("--no-report", action="store_true", help="Ne pas générer le rapport HTML")
     ap.add_argument("--no-history", action="store_true", help="Ne pas comparer aux collectes précédentes")
@@ -1461,6 +1466,9 @@ def main():
     ap.add_argument("--report-exclude-categories", default="",
                     help="Catégories à exclure du rapport HTML pour l'alléger (ex. go-module,npm-package)")
     a = ap.parse_args()
+    if a.trivy_db and not os.path.isfile(a.trivy_db):
+        print("ERREUR base Trivy introuvable : %s (fichier trivy.db attendu)" % a.trivy_db, file=sys.stderr)
+        return 1
 
     store = Store(a.default_app, a.default_platform, a.app, a.platform, a.host, history=not a.no_history)
     dirs = a.store + a.raw
@@ -1518,6 +1526,7 @@ def main():
     cmdb_maps.build_drift(db, order=[x for x in (a.platform_order or "").split(",") if x.strip()],
                           important=PRODUCT_FAMILIES | frozenset(MATRIX_FAMILIES))
     nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous_docs(), store.metas())
+    vstats = cmdb_cve.build_vulnerabilities(db, a.trivy_db, a.cve_unfixed) if a.trivy_db else None
     db.commit()
     db.close()
     os.replace(tmp, dbpath)
@@ -1546,6 +1555,14 @@ def main():
     if java_db:
         print("Archives Java    : %d sans pom.properties, dont %d avec empreinte, %d identifiées par %s"
               % (java_db.without_pom, java_db.hashed, java_db.found, os.path.basename(a.java_db)))
+    if vstats:
+        crit = db.execute("SELECT severity, COUNT(DISTINCT vuln_id) FROM vulnerabilities WHERE status = 'corrigeable' GROUP BY 1").fetchall()
+        print("Vulnérabilités   : %d constats sur %d hôtes (base Trivy du %s) ; CVE distinctes corrigeables : %s"
+              % (vstats["rows"], vstats["hosts"], (vstats["updated"] or "?")[:10],
+                 ", ".join("%s=%d" % (cmdb_cve.SEV_FR.get(s_, s_), n_) for s_, n_ in sorted(crit, key=lambda r: -cmdb_cve.SEVERITIES.index(r[0])))
+                 or "aucune"))
+        if vstats["os_unsupported"]:
+            print("                   systèmes sans avis dans la base : " + ", ".join(vstats["os_unsupported"]))
     print("Composants       : " + ", ".join("%s=%d" % kv for kv in sorted(stats.items())))
     one = lambda sql: db.execute(sql).fetchone()[0]
     print("Oracle           : %d ORACLE_HOME, %d instances, %d en retard de correctifs"

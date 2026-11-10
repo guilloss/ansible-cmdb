@@ -140,6 +140,8 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "hardening": table(db, "SELECT * FROM hardening_results ORDER BY %s, ref" % K),
         "hardening_scores": table(db, "SELECT * FROM hardening_scores ORDER BY %s" % K),
         "anssi": table(db, "SELECT * FROM anssi_recommendations"),
+        "vulns": table(db, "SELECT * FROM vuln_by_app ORDER BY critical DESC, high DESC, total DESC"),
+        "vuln_meta": table(db, "SELECT * FROM vuln_meta"),
     }
     data["sw"] = software_tables(db, exclude_categories)
     if matrix_csv and os.path.exists(matrix_csv):
