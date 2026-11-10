@@ -1,0 +1,156 @@
+{
+ "schema": "cmdb-collector/1",
+ "meta": {
+  "collector_version": "1.1.0",
+  "started_at": "2026-11-01T08:00:00Z",
+  "finished_at": "2026-11-01T08:05:00Z",
+  "duration_seconds": 300,
+  "host_label": "srv-py01",
+  "run_id": "20261101T080000Z-0001",
+  "tags": {
+   "app": "APPV1",
+   "platform": "prod"
+  },
+  "uid": 1001,
+  "user": "cmdb",
+  "privileged": false,
+  "argv": [],
+  "errors": [],
+  "section_timings": {},
+  "visibility": {}
+ },
+ "os": {
+  "hostname": "srv-py01",
+  "fqdn": "srv-py01.exemple.test",
+  "os_release": {
+   "ID": "rhel",
+   "VERSION_ID": "8.9",
+   "NAME": "Red Hat Enterprise Linux",
+   "PRETTY_NAME": "Red Hat Enterprise Linux 8.9 (Ootpa)"
+  },
+  "uname": {
+   "sysname": "Linux",
+   "nodename": "srv-py01",
+   "release": "4.18.0-513.24.1.el8_9.x86_64",
+   "version": "#1 SMP",
+   "machine": "x86_64"
+  }
+ },
+ "hardware": {},
+ "packages": {
+  "managers": {
+   "rpm": [
+    {
+     "name": "openssl",
+     "epoch": "1",
+     "version": "1.1.1k",
+     "release": "12.el8_9",
+     "arch": "x86_64",
+     "vendor": "Red Hat, Inc.",
+     "installtime": "1730000000",
+     "buildtime": "1720000000",
+     "sourcerpm": "openssl-1.1.1k-12.el8_9.src.rpm",
+     "packager": "Red Hat",
+     "sig_rsa": "",
+     "sig_pgp": "",
+     "summary": "Utilities from the general purpose cryptography library"
+    },
+    {
+     "name": "kernel",
+     "epoch": "",
+     "version": "4.18.0",
+     "release": "513.24.1.el8_9",
+     "arch": "x86_64",
+     "vendor": "Red Hat, Inc.",
+     "installtime": "1730000000",
+     "buildtime": "1720000000",
+     "sourcerpm": "kernel-4.18.0-513.24.1.el8_9.src.rpm",
+     "packager": "Red Hat",
+     "sig_rsa": "",
+     "sig_pgp": "",
+     "summary": "The Linux kernel"
+    },
+    {
+     "name": "postgresql-server",
+     "epoch": "",
+     "version": "10.23",
+     "release": "1.module+el8.7.0",
+     "arch": "x86_64",
+     "vendor": "Red Hat, Inc.",
+     "installtime": "1730000000",
+     "buildtime": "1720000000",
+     "sourcerpm": "postgresql-10.23-1.src.rpm",
+     "packager": "Red Hat",
+     "sig_rsa": "",
+     "sig_pgp": "",
+     "summary": "The programs needed to create and run a PostgreSQL server"
+    }
+   ]
+  }
+ },
+ "processes": {
+  "list": []
+ },
+ "network": {},
+ "services": {},
+ "scheduled": {},
+ "accounts": {},
+ "security": {},
+ "kernel": {},
+ "containers": {},
+ "oracle": {},
+ "software_dirs": [],
+ "filesystem": {
+  "java_archives": [
+   {
+    "path": "/opt/app/lib/commons-lang3-3.12.0.jar",
+    "entries": 2,
+    "manifest": {
+     "Manifest-Version": "1.0",
+     "Implementation-Title": "Apache Commons Lang",
+     "Implementation-Version": "3.12.0"
+    },
+    "maven": [
+     {
+      "groupId": "org.apache.commons",
+      "artifactId": "commons-lang3",
+      "version": "3.12.0"
+     }
+    ],
+    "size": 500,
+    "mtime": "2026-01-01T00:00:00Z",
+    "sha1": "39ebd50cc989db75eff003ce6dd658af0dd7566e"
+   }
+  ],
+  "maven_exploded": [],
+  "jdk_homes": [],
+  "python_packages": [],
+  "python_venvs": [],
+  "conda_packages": [],
+  "npm_packages": [],
+  "node_apps": [],
+  "npm_lockfiles": [],
+  "composer_installed": [],
+  "composer_locks": [],
+  "ruby_gems": [],
+  "dotnet_deps": [],
+  "webapps": [],
+  "js_libraries": [],
+  "native_libs": [],
+  "db_datadirs": [],
+  "db_refs": [],
+  "service_modules": [],
+  "crypto_files": [],
+  "endpoints": [],
+  "db_refs_resolved": {},
+  "stats": {
+   "files": 1,
+   "dirs": 4,
+   "walk_errors": 0,
+   "truncated": false
+  }
+ },
+ "process_artifacts": {},
+ "runtimes": {},
+ "go_binaries": []
+}

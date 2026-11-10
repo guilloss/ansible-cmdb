@@ -50,6 +50,62 @@ class Routing(unittest.TestCase):
         self.assertFalse(self.decide({"ansible_system": "Linux", "ansible_python": py(3, 9)}))
         self.assertFalse(self.decide({"ansible_system": "Linux", "ansible_python": py(2, 7)}))
 
+    def decide_windows(self, inventory, *extra):
+        inv, path = os.path.join(self.tmp, "inv"), os.path.join(self.tmp, "d.yml")
+        with open(inv, "w") as handle:
+            handle.write(inventory)
+        with open(path, "w") as handle:
+            handle.write(DECIDE.replace("hosts: localhost", "hosts: all").replace(
+                "ROUTE={{ cmdb_use_legacy }}", "ROUTE={{ cmdb_use_legacy }} WIN={{ cmdb_use_windows }}") % ROOT)
+        code, out = self.play("-i", inv, path, *extra)
+        self.assertEqual(code, 0, out)
+        return "WIN=True" in out, "ROUTE=True" in out
+
+    def test_windows_reconnu_sans_faits(self):
+        # winrm ou shell powershell : voie Windows, aucune tentative de faits Ansible (injoignable ici sinon)
+        self.assertEqual(self.decide_windows("w ansible_connection=local ansible_shell_type=powershell\n")[0], True)
+        self.assertEqual(self.decide_windows("[windows]\nw ansible_connection=local\n"), (True, False))
+        self.assertEqual(self.decide_windows("l ansible_connection=local\n"), (False, False))
+        self.assertEqual(self.decide_windows("l ansible_connection=local\n", "-e", "cmdb_force_windows=true"), (True, False))
+
+    def test_windows_ligne_de_commande(self):
+        import yaml
+        with open(os.path.join(ROOT, "roles/cmdb_collect/tasks/windows.yml")) as handle:
+            tasks = yaml.safe_load(handle)[0]["block"]
+        task = [t for t in tasks if t["name"].startswith("Construire")][0]
+        play = [{"hosts": "localhost", "gather_facts": False, "vars_files": [os.path.join(ROOT, "roles/cmdb_collect/defaults/main.yml")],
+                 "tasks": [task, {"ansible.builtin.copy": {"content": "{{ cmdb_win_args | trim }}", "dest": self.tmp + "/args"}}]}]
+        # -e : les valeurs du test doivent l'emporter sur les défauts du rôle
+        extra = {"cmdb_app": "APP", "cmdb_platform": "prod", "cmdb_run_id": "R1", "cmdb_tags_map": {"site": "Paris", "squad": "S3"},
+                 "cmdb_win_tmp": "C:\\Temp\\cmdb-x", "cmdb_hash_archives": False, "cmdb_win_scan_paths": ["D:\\Apps", "E:\\l'appli"]}
+        path = os.path.join(self.tmp, "w.yml")
+        with open(path, "w") as handle:
+            yaml.safe_dump(play, handle, allow_unicode=True)
+        code, out = self.play("-i", "localhost,", "-c", "local", path, "-e", json.dumps(extra))
+        self.assertEqual(code, 0, out)
+        with open(self.tmp + "/args") as handle:
+            args = " ".join(handle.read().split())
+        self.assertIn("-App 'APP' -Platform 'prod' -HostLabel 'localhost' -RunId 'R1' -OutFile 'C:\\Temp\\cmdb-x\\cmdb.out'", args)
+        self.assertIn("-Tag 'site=Paris,squad=S3'", args)
+        self.assertIn("-NoHash", args)
+        self.assertNotIn("-NoScan", args)
+        self.assertIn("-ScanPath 'D:\\Apps','E:\\l''appli'", args)
+
+    def test_windows_echec_trace(self):
+        # Sans vraie cible Windows : la commande PowerShell échoue sous sh, l'échec doit être tracé
+        # dans le manifeste, sans bascule vers les collecteurs Linux.
+        inv = os.path.join(self.tmp, "inv")
+        with open(inv, "w") as handle:
+            handle.write("[windows]\nw ansible_connection=local\n")
+        code, out = self.play("-i", inv, os.path.join(ROOT, "collect.yml"), "-e", "cmdb_app=TEST", "-e", "cmdb_platform=QUALIF",
+                              "-e", "cmdb_store=" + self.tmp + "/store")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Windows : collecte par cmdb_collector.ps1", out)
+        self.assertNotIn("Bascule vers la collecte sans module", out)
+        with open(glob.glob(self.tmp + "/store/_runs/*/TEST__QUALIF__w.json")[0]) as handle:
+            self.assertEqual(json.load(handle)["status"], "failed")
+        self.assertEqual(len(glob.glob(self.tmp + "/store/TEST/QUALIF/w/*.error.json")), 1)
+
     def collect(self, inventory, *extra, **kw):
         inv = os.path.join(self.tmp, "inv")
         with open(inv, "w") as handle:

@@ -11,6 +11,10 @@
 - name: Aiguiller l'hôte (collecteur déposé, ou collecte sans module Ansible)
   ansible.builtin.import_tasks: route.yml
 
+- name: Collecte Windows (cmdb_collector.ps1)
+  ansible.builtin.include_tasks: windows.yml
+  when: cmdb_use_windows | bool
+
 - name: Collecte sans module Ansible
   ansible.builtin.include_tasks: legacy.yml
   when: cmdb_use_legacy | bool
@@ -25,9 +29,10 @@
   when:
     - cmdb_save_ansible_facts | bool
     - not (cmdb_use_legacy | bool)
+    - not (cmdb_use_windows | bool)
 
 - name: Collecte
-  when: not (cmdb_use_legacy | bool)
+  when: not (cmdb_use_legacy | bool) and not (cmdb_use_windows | bool)
   block:
     - name: Créer un répertoire temporaire distant
       ansible.builtin.tempfile:

@@ -239,7 +239,8 @@ def evaluate(doc, rules):
 
 
 def is_linux(doc):
-    return ((doc.get("os") or {}).get("os_release") or {}).get("ID", "").lower() != "aix"
+    os_id = (((doc.get("os") or {}).get("os_release") or {}).get("ID") or "").lower()
+    return os_id != "aix" and not os_id.startswith("windows")
 
 
 def apply_eol(db, rules):
@@ -248,7 +249,7 @@ def apply_eol(db, rules):
         return
     q = """SELECT h.app, h.platform, h.host, e.status, e.product, e.cycle, e.eol FROM hosts h
            LEFT JOIN eol_status e ON e.app = h.app AND e.platform = h.platform AND e.host = h.host AND e.location = 'système'
-           WHERE h.os_id != 'aix'"""
+           WHERE h.os_id != 'aix' AND COALESCE(h.os_id, '') NOT LIKE 'windows%'"""
     for app, pf, host, status, product, cycle, eol in db.execute(q).fetchall():
         state = UNKNOWN if status is None else (KO if status == "expiré" else OK)
         seen = "%s %s, fin %s" % (product, cycle, eol) if status else None

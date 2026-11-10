@@ -21,7 +21,8 @@ cmdb-ansible/
 │   ├── defaults/main.yml       # tous les paramètres
 │   ├── files/cmdb_collector.py # collecteur principal (stdlib, Python 2.6 / 2.7 / 3.6+)
 │   ├── files/cmdb_collector.sh # collecteur de secours en shell POSIX (systèmes très anciens)
-│   └── tasks/                  # main.yml, context.yml (étiquetage, run_id), finish.yml (manifeste, lot)
+│   ├── files/cmdb_collector.ps1 # collecteur Windows (PowerShell 4.0 et plus)
+│   └── tasks/                  # main.yml, route.yml (aiguillage), windows.yml, legacy.yml, context.yml, finish.yml
 └── tools/
     ├── cmdb_build.py           # consolidation : SQLite, CSV, matrice, SBOM, rapport HTML
     ├── cmdb_report.py          # génération du rapport HTML (appelé par cmdb_build.py)
@@ -39,12 +40,17 @@ cmdb-ansible/
 tests/                          # python3 -m unittest discover -s tests -t .
 ```
 
+## Format de collecte (gelé)
+
+Le format des collectes, les options des collecteurs, les variables des playbooks, le magasin et les lots sont **gelés** depuis le 10 novembre 2026 (`cmdb-collector/1`) : une évolution peut ajouter, jamais retirer ni renommer, et la consolidation lit toutes les collectes déjà faites. Détail et règles : [docs/format-collecte.md](docs/format-collecte.md), vérifiés par `tests/test_format_v1.py`.
+
 ## Prérequis
 
 | Où | Quoi |
 |---|---|
 | Contrôleur | ansible-core, Python ≥ 3.8 (pour `cmdb_build.py`, bibliothèque standard uniquement) |
 | Cibles | SSH avec un compte dédié **non privilégié** : aucune élévation (ni sudo, ni `become`) ; Python facultatif (voir ci-dessous) |
+| Cibles Windows | WinRM (HTTPS + NTLM hors domaine) ou OpenSSH ; `pip install pywinrm` sur le contrôleur pour WinRM ; aucune collection Ansible requise |
 
 ansible-core 2.17 et suivants n'exécutent plus de modules sur des cibles en Python < 3.7. Tout ce qui est plus ancien, et AIX, passe par une collecte qui n'exécute aucun module Ansible sur la cible : **`collect.yml` y bascule tout seul, hôte par hôte** (faits en échec, système autre que Linux, Python hors limites, groupes `aix` et `legacy`, `cmdb_force_shell`, ou échec en cours de collecte moderne, dont la trace reste dans `<run_id>.error.json`), sans rien changer à l'inventaire, et `collect_legacy.yml` y va directement (voir « Systèmes anciens et très anciens »).
 
@@ -175,6 +181,21 @@ Le contrôleur convertit ces sorties au format commun : système `aix` avec vers
 **FLRTVC.** Pour chaque hôte AIX, la consolidation écrit `build/flrtvc/<app>__<pf>__<hôte>.lslpp.txt` (sortie de `lslpp -Lcq`) et, si la collecte a pu lire les correctifs provisoires, `….emgr.txt` (sortie de `emgr -lv3`). Ce sont les deux fichiers d'entrée de l'outil IBM FLRT Vulnerability Checker en ligne, qui en tire la liste des filesets vulnérables et des bulletins de sécurité correspondants. Sans `emgr.txt`, les correctifs provisoires installés ne sont pas pris en compte et le rapport FLRTVC peut signaler à tort des vulnérabilités déjà corrigées par un ifix.
 
 **Validation.** La branche AIX a été mise au point dans un environnement simulé (commandes AIX reproduites d'après leurs formats de sortie usuels, exécution sous ksh93 et sous un compte non privilégié). Elle doit être validée sur un vrai serveur AIX avant généralisation, en particulier les formats de `lscfg -vp`, `netstat -an` et `lslpp -f` selon les niveaux 7.1 à 7.3.
+
+## Windows
+
+`collect.yml` reconnaît un hôte Windows **avant** toute tentative de faits Ansible : groupe `windows`, connexion `winrm` ou `psrp`, ou `ansible_shell_type: powershell` (OpenSSH pour Windows). `-e cmdb_force_windows=true` l'impose. L'hôte passe alors par `tasks/windows.yml`, qui n'utilise que `raw`, `script` et `fetch` : aucun module ni collection Windows n'est nécessaire.
+
+1. un répertoire temporaire est créé sur la cible ;
+2. `cmdb_collector.ps1` y est exécuté en lecture seule, en priorité basse ;
+3. le résultat est rapatrié puis décodé par `tools/cmdb_unpack.py`, comme pour la collecte sans module, dans `store/<app>/<pf>/<hôte>/<run_id>.json.gz` ;
+4. le répertoire temporaire est supprimé, même en cas d'échec.
+
+Exemple d'inventaire : groupe `windows` de `inventory/hosts.yml`. Les paramètres `cmdb_scan_filesystem`, `cmdb_scan_max_seconds` et `cmdb_hash_archives` valent aussi pour Windows ; `cmdb_win_scan_paths`, `cmdb_win_exclude_paths` et `cmdb_win_archive_max_seconds` lui sont propres. Un compte administrateur local donne un relevé plus complet (configuration IIS, propriétaires des processus des autres comptes) ; un compte simple suffit pour le reste.
+
+Sans Ansible, le même script se lance à la main (voir son en-tête) et produit le même fichier, à décoder avec `tools/cmdb_unpack.py`.
+
+**Validation.** Le script a été exécuté à la main sur Windows 11. La voie Ansible (WinRM) est testée ici pour l'aiguillage, la ligne de commande et la trace d'un échec, pas encore contre un vrai serveur Windows.
 
 ## Systèmes anciens et très anciens
 

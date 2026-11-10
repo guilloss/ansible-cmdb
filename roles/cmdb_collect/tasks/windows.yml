@@ -1,0 +1,118 @@
+---
+# ---------------------------------------------------------------------------
+# Collecte Windows (WinRM, ou SSH avec PowerShell comme shell), sans module Ansible
+# ni collection supplémentaire : raw, script et fetch suffisent.
+#   1. répertoire temporaire sur la cible ;
+#   2. cmdb_collector.ps1 déposé et exécuté par le module script (lecture seule) ;
+#   3. résultat (JSON gzip en base64 entre marqueurs) rapatrié puis décodé par
+#      tools/cmdb_unpack.py, comme pour la collecte sans module ;
+#   4. répertoire temporaire supprimé dans tous les cas.
+# ---------------------------------------------------------------------------
+
+- name: Collecte
+  block:
+    - name: Créer un répertoire temporaire distant
+      ansible.builtin.raw: >-
+        $d = Join-Path ([System.IO.Path]::GetTempPath()) ('cmdb-' + [guid]::NewGuid().ToString('N'));
+        [void](New-Item -ItemType Directory -Path $d); Write-Output "CMDB_TMP=$d"
+      register: cmdb_win_tmp_out
+      changed_when: false
+
+    - name: Noter le répertoire temporaire
+      ansible.builtin.set_fact:
+        cmdb_win_tmp: >-
+          {{ (cmdb_win_tmp_out.stdout_lines | map('trim') | select('match', '^CMDB_TMP=') | first)[9:] }}
+
+    # Arguments PowerShell : chaque valeur entre apostrophes (apostrophe interne doublée),
+    # les listes en 'a','b'. Les étiquettes sont déjà contrôlées (lettres, chiffres, . _ -).
+    - name: Construire la ligne de commande du collecteur
+      vars:
+        q: "{{ \"'\" }}"
+        tags_kv: >-
+          {{ cmdb_tags_map | dict2items | map(attribute='key')
+             | zip(cmdb_tags_map | dict2items | map(attribute='value')) | map('join', '=') | list }}
+      ansible.builtin.set_fact:
+        cmdb_win_args: >-
+          -App '{{ cmdb_app }}' -Platform '{{ cmdb_platform }}' -HostLabel '{{ inventory_hostname }}'
+          -RunId '{{ cmdb_run_id }}' -OutFile '{{ cmdb_win_tmp | replace(q, q ~ q) }}\cmdb.out'
+          -ScanMaxSeconds {{ cmdb_scan_max_seconds | int }} -ArchiveMaxSeconds {{ cmdb_win_archive_max_seconds | int }}
+          {{ ('-Tag ' ~ q ~ (tags_kv | join(',')) ~ q) if tags_kv | length > 0 else '' }}
+          {{ '' if cmdb_scan_filesystem | bool else '-NoScan' }}
+          {{ '' if cmdb_hash_archives | bool else '-NoHash' }}
+          {{ ('-ScanPath ' ~ (cmdb_win_scan_paths | map('replace', q, q ~ q) | map('regex_replace', '^|$', q) | join(',')))
+             if cmdb_win_scan_paths | length > 0 else '' }}
+          {{ ('-ExcludePath ' ~ (cmdb_win_exclude_paths | map('replace', q, q ~ q) | map('regex_replace', '^|$', q) | join(',')))
+             if cmdb_win_exclude_paths | length > 0 else '' }}
+
+    - name: Exécuter cmdb_collector.ps1 (lecture seule, priorité basse)
+      ansible.builtin.script:
+        cmd: "{{ role_path }}/files/cmdb_collector.ps1 {{ cmdb_win_args | trim }}"
+      register: cmdb_run
+      changed_when: false
+      timeout: "{{ cmdb_task_timeout | default(cmdb_async_timeout) | int }}"
+
+    - name: Rapatrier le résultat sur le contrôleur
+      ansible.builtin.fetch:
+        src: "{{ cmdb_win_tmp }}\\cmdb.out"
+        dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.stdout.b64"
+        flat: true
+
+    - name: Décoder en {{ cmdb_run_id }}.json.gz
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/tools/cmdb_unpack.py"
+          - "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.stdout.b64"
+          - "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.json.gz"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Mettre à jour la copie « latest » et supprimer le fichier intermédiaire
+      ansible.builtin.shell: >-
+        cp -f '{{ cmdb_host_dir }}/{{ cmdb_run_id }}.json.gz' '{{ cmdb_host_dir }}/latest.json.gz' &&
+        rm -f '{{ cmdb_host_dir }}/{{ cmdb_run_id }}.stdout.b64'
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Collecte réussie
+      ansible.builtin.set_fact:
+        cmdb_status: ok
+        cmdb_collector_kind: powershell
+        cmdb_result_rel: "{{ cmdb_rel_dir }}/{{ cmdb_run_id }}.json.gz"
+        cmdb_lot_files: ["{{ cmdb_rel_dir }}/{{ cmdb_run_id }}.json.gz"]
+
+    - name: Résumé de la collecte
+      ansible.builtin.debug:
+        msg: "{{ cmdb_run.stdout_lines | map('trim') | select('match', '^\\{\"collector\"') | list | last | default('{}') | from_json }}"
+
+  rescue:
+    - name: Tracer l'échec sur le contrôleur
+      ansible.builtin.copy:
+        content: >-
+          {{ {'host': inventory_hostname, 'app': cmdb_app, 'platform': cmdb_platform, 'run_id': cmdb_run_id,
+              'failed_task': ansible_failed_task.name | default(''),
+              'result': ansible_failed_result | default({})} | to_nice_json }}
+        dest: "{{ cmdb_host_dir }}/{{ cmdb_run_id }}.error.json"
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    - name: Noter l'échec
+      ansible.builtin.set_fact:
+        cmdb_status: failed
+        cmdb_status_detail: >-
+          {{ ansible_failed_task.name | default('?') }} : {{ (ansible_failed_result.msg | default(''))[:300] }}
+          (voir {{ cmdb_rel_dir }}/{{ cmdb_run_id }}.error.json)
+
+  always:
+    - name: Supprimer le répertoire temporaire distant
+      ansible.builtin.raw: >-
+        Remove-Item -LiteralPath '{{ cmdb_win_tmp }}' -Recurse -Force -ErrorAction SilentlyContinue
+      changed_when: false
+      failed_when: false
+      when:
+        - cmdb_win_tmp is defined
+        - cmdb_win_tmp is match('.*cmdb-[0-9a-f]{32}$')
+        - not (cmdb_keep_remote_tmp_on_failure | bool and ansible_failed_task is defined)

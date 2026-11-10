@@ -327,6 +327,16 @@ def short_version(v, eco="deb"):
     return v
 
 
+# Formats de collecte lus par cette consolidation (voir docs/format-collecte.md). Un document
+# sans « schema » vient d'une version antérieure au gel (collecteur PowerShell 0.1.0) : lu comme v1.
+SUPPORTED_SCHEMAS = ("cmdb-collector/1",)
+
+
+def schema_supported(doc):
+    schema = doc.get("schema")
+    return schema is None or schema in SUPPORTED_SCHEMAS
+
+
 NA = "NA"   # application / plate-forme non renseignée (anciennes collectes non étiquetées)
 
 
@@ -354,6 +364,7 @@ class Store(object):
         self.default_app, self.default_platform = default_app, default_platform
         self.filters = (apps or [], platforms or [], hosts or [])
         self.read = self.skipped = 0
+        self.unsupported = []   # (source, schema) : format plus récent que cette consolidation
 
     @staticmethod
     def _match(v, pats):
@@ -362,7 +373,7 @@ class Store(object):
     @staticmethod
     def _head(doc):
         """Ce qu'il faut garder d'un document pour le classer : meta et nom d'hôte de secours."""
-        return {"meta": doc.get("meta") or {}, "os": {"hostname": (doc.get("os") or {}).get("hostname")}}
+        return {"schema": doc.get("schema"), "meta": doc.get("meta") or {}, "os": {"hostname": (doc.get("os") or {}).get("hostname")}}
 
     @staticmethod
     def load(ref):
@@ -381,6 +392,10 @@ class Store(object):
         return json.loads(zlib.decompress(data).decode("utf-8"))
 
     def offer(self, doc, ref, facts, source, fallback_host, counted=True):
+        if not schema_supported(doc):
+            # Jamais lu à moitié : un format inconnu est écarté et signalé (mettre à jour la consolidation)
+            self.unsupported.append((source, doc.get("schema")))
+            return
         meta = doc.get("meta") or {}
         tags = meta.get("tags") or {}
         key = (tags.get("app") or self.default_app, tags.get("platform") or self.default_platform,
@@ -1517,6 +1532,10 @@ def main():
     dossiers = {} if a.no_dossiers else cmdb_dossier.write_all(db, os.path.join(a.out, "dossiers"), safe_name, a.dossier_mention)
     apps = db.execute("SELECT app, platform, hosts FROM v_applications").fetchall()
     print("Hôtes consolidés : %d (%d collectes lues, %d écartées par les filtres)" % (len(docs), store.read, store.skipped))
+    for src, schema in store.unsupported[:20]:
+        print("ATTENTION : %s ignorée, format %s inconnu de cette consolidation (à mettre à jour)" % (src, schema), file=sys.stderr)
+    if len(store.unsupported) > 20:
+        print("ATTENTION : %d autres collectes au format inconnu ignorées" % (len(store.unsupported) - 20), file=sys.stderr)
     print("Applis / pf      : " + ", ".join("%s/%s=%d" % r for r in apps))
     print("Base SQLite      : %s" % dbpath)
     print("Exports CSV      : %d fichiers dans %s" % (len(tables), os.path.join(a.out, "csv")))

@@ -6,7 +6,7 @@ Usage : cmdb_unpack.py <fichier_stdout> <destination.json.gz>
 
 Le texte entre les marqueurs CMDB-B64-BEGIN / CMDB-B64-END est décodé ;
 tout ce qui précède ou suit (bannières, messages sudo...) est ignoré.
-  * collecteur Python (--output -) : JSON gzip, écrit tel quel ;
+  * collecteurs Python (--output -) et PowerShell : JSON gzip, écrit tel quel ;
   * collecteur shell (cmdb_collector.sh) : archive tar.gz de sorties brutes,
     convertie au schéma JSON par cmdb_shell_parse.py.
 """
@@ -37,8 +37,8 @@ def main():
         raw = gzip.compress(json.dumps(doc).encode("utf-8"))
         kind = "collecteur shell, converti"
     else:
-        json.loads(inner.decode("utf-8"))  # contrôle d'intégrité
-        kind = "collecteur Python"
+        meta = json.loads(inner.decode("utf-8")).get("meta") or {}  # contrôle d'intégrité
+        kind = "collecteur PowerShell" if meta.get("collector") == "powershell" else "collecteur Python"
     with open(dst, "wb") as f:
         f.write(raw)
     print("%s : %d octets (%s)" % (dst, len(raw), kind))

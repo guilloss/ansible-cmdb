@@ -45,6 +45,12 @@ cmdb_file_owners: true              # index fichier -> paquet (rpm/dpkg/apk)
 cmdb_pending_updates: false         # dnf/yum updateinfo, apt -s, debsecan : peut contacter les dépôts
 cmdb_nice: true                     # nice 19 + ionice idle
 
+# --- Windows (cmdb_collector.ps1, par WinRM ou SSH) ----------------------------
+# cmdb_scan_filesystem, cmdb_scan_max_seconds et cmdb_hash_archives valent aussi pour Windows.
+cmdb_win_archive_max_seconds: 900   # budget de lecture des archives Java
+cmdb_win_scan_paths: []             # vide = tous les disques locaux (ex. ['D:\\Apps'])
+cmdb_win_exclude_paths: []          # ajoutés aux exclusions du collecteur
+
 # Durée maximale d'exécution du collecteur sur un hôte (mode async)
 cmdb_async_timeout: 3600
 cmdb_async_poll: 10

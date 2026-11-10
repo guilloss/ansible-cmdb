@@ -1,0 +1,86 @@
+{
+ "os": {
+  "hostname": "srv-win01",
+  "fqdn": "srv-win01",
+  "machine_id": "00000000-0000-0000-0000-000000000000",
+  "os_release": {
+   "ID": "windows-server",
+   "NAME": "Windows",
+   "VERSION_ID": "2019",
+   "PRETTY_NAME": "Microsoft Windows Server 2019 Standard (build 17763.6414)"
+  },
+  "boot_time": "2026-10-01T06:00:00Z",
+  "uptime_seconds": 2678400,
+  "reboot_required_file": false
+ },
+ "hardware": {},
+ "processes": {
+  "list": []
+ },
+ "network": {},
+ "filesystem": {
+  "java_archives": [
+   {
+    "path": "D:/Apps/tomcat/webapps/app/WEB-INF/lib/commons-lang3-3.12.0.jar",
+    "size": 500,
+    "sha1": "39ebd50cc989db75eff003ce6dd658af0dd7566e",
+    "manifest": {
+     "Implementation-Title": "Apache Commons Lang",
+     "Implementation-Version": "3.12.0"
+    },
+    "maven": [
+     {
+      "groupId": "org.apache.commons",
+      "artifactId": "commons-lang3",
+      "version": "3.12.0"
+     }
+    ]
+   }
+  ],
+  "crypto_files": [],
+  "stats": {
+   "truncated": false,
+   "unreadable_dirs": 0,
+   "archives": 1
+  }
+ },
+ "windows": {
+  "os": {
+   "caption": "Microsoft Windows Server 2019 Standard",
+   "version": "10.0.17763.6414",
+   "build": "17763",
+   "ubr": "6414",
+   "product_type": 3
+  },
+  "programs": [
+   {
+    "name": "Apache Tomcat 9.0 Tomcat9",
+    "version": "9.0.85",
+    "publisher": "Apache Software Foundation"
+   }
+  ],
+  "hotfixes": [
+   {
+    "id": "KB5044277"
+   }
+  ]
+ },
+ "meta": {
+  "collector": "powershell",
+  "collector_version": "0.1.0-ps",
+  "schema": 1,
+  "host_label": "srv-win01",
+  "run_id": "20261101T080000Z-win",
+  "tags": {
+   "app": "APPV1",
+   "platform": "prod"
+  },
+  "started_at": "2026-11-01T08:00:00Z",
+  "finished_at": "2026-11-01T08:10:00Z",
+  "os": "Windows",
+  "user": "SRV-WIN01\\cmdb",
+  "uid": null,
+  "elevated": false,
+  "errors": []
+ }
+}
