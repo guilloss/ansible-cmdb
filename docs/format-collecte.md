@@ -31,7 +31,7 @@ Les fichiers de `tests/fixtures/format_v1/` sont des collectes produites par les
 | Étiquetage | `cmdb_app`, `cmdb_platform` (obligatoires), `cmdb_tags` ; valeurs `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
 | Variables du rôle | toutes celles de `roles/cmdb_collect/defaults/main.yml` au 10/11/2026 |
 | Variables de `consolidate.yml` | `cmdb_build_dir`, `cmdb_store_dirs`, `cmdb_lots`, `cmdb_filter_apps`, `cmdb_filter_platforms`, `cmdb_java_db`, `cmdb_platform_order`, `cmdb_report_exclude` |
-| `cmdb_collector.py` | `--output/-o`, `--host-label`, `--tag`, `--run-id`, `--scan-root`, `--exclude`, `--extra-exclude`, `--scan-max-seconds`, `--no-scan-filesystem`, `--no-exec-probes`, `--no-hash-archives`, `--no-file-owners`, `--no-nice`, `--include-network-fs`, `--include-container-storage`, `--pending-updates`, et les autres options présentes |
+| `cmdb_collector.py` | `--output/-o`, `--host-label`, `--tag`, `--run-id`, `--scan-root`, `--exclude`, `--extra-exclude`, `--scan-max-seconds`, `--no-scan-filesystem`, `--no-exec-probes`, `--no-hash-archives`, `--no-file-owners`, `--no-nice`, `--include-network-fs`, `--include-container-storage`, `--pending-updates`, et les autres options présentes (ajoutées depuis : `--no-container-content`, `--container-max-seconds`, `--container-max-images`) |
 | `cmdb_collector.sh` | `--host-label`, `--tag`, `--run-id`, `--scan-max-seconds`, `--exec-max-seconds`, `--exec-timeout`, `--no-scan-filesystem`, `--no-exec-probes`, `--no-hash-archives`, `--extra-exclude` |
 | `cmdb_collector.ps1` | `-App`, `-Platform`, `-HostLabel`, `-RunId`, `-Tag`, `-OutFile`, `-ScanMaxSeconds`, `-ArchiveMaxSeconds`, `-ScanPath`, `-ExcludePath`, `-NoScan`, `-NoHash` |
 | `cmdb_build.py` | toutes ses options au 10/11/2026 (`--store`, `--lot`, `--out`, `--java-db`, `--platform-order`…) |
@@ -49,6 +49,8 @@ Les fichiers de `tests/fixtures/format_v1/` sont des collectes produites par les
 Un objet JSON. Clés de premier niveau : `schema` (`"cmdb-collector/1"`), `meta`, `os`, `hardware`,
 `packages`, `processes`, `network`, `services`, `scheduled`, `accounts`, `security`, `kernel`,
 `containers`, `oracle`, `software_dirs`, `filesystem`, `process_artifacts`, `runtimes`, `go_binaries`.
+Ajouts depuis le gel (facultatifs à la lecture) : `container_content` (10/11/2026, contenu des
+conteneurs en marche : `engines`, `images[]` avec `os_release`, `packages.managers`, `filesystem`, `stats`).
 Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, `filesystem` et `windows`.
 
 - `meta` : `collector_version`, `started_at`, `finished_at`, `host_label`, `run_id`, `tags` (dont

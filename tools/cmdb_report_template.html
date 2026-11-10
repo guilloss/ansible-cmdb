@@ -406,7 +406,7 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 }
 
 // ---------------------------------------------------------------- périmètre
-const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers",
+const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers", "container_images",
   "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
   "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage", "vulns"];
@@ -812,7 +812,11 @@ function vServeur(key, params) {
       {k: "unit", l: "Unité"}, {k: "sub", l: "État"}, {k: "unit_file_state", l: "Au démarrage"}, {k: "user", l: "Utilisateur"},
       {k: "description", l: "Description"}], hostRows("services"), {sort: "unit", empty: "Aucun service actif relevé (systemd absent ou collecte shell sur système SysV)."})
       + (hostRows("containers").length ? `<h3>Conteneurs et images</h3>` + table([{k: "engine", l: "Moteur"}, {k: "kind", l: "Type"},
-      {k: "name", l: "Nom"}, {k: "image", l: "Image"}, {k: "status", l: "État"}], hostRows("containers")) : "");
+      {k: "name", l: "Nom"}, {k: "image", l: "Image"}, {k: "status", l: "État"}], hostRows("containers")) : "")
+      + (hostRows("container_images").length ? `<h3>Contenu des conteneurs en marche</h3>` + table([{k: "engine", l: "Moteur"},
+      {k: "image", l: "Image", f: o => `<b>${esc(o.image || "")}</b>`}, {k: "containers", l: "Conteneurs"}, {k: "os_pretty", l: "Système de l'image"},
+      {k: "packages", l: "Paquets", cls: "num"}, {k: "components", l: "Autres composants", cls: "num", f: o => o.components ? `<a href="${link("logiciels", {q: o.engine + ":"})}">${fmt(o.components)}</a>` : ""},
+      {k: "note", l: "Remarque", f: o => (o.truncated ? '<span class="badge warn">partiel</span> ' : "") + esc(o.note || "")}], hostRows("container_images")) : "");
   } else if (tab === "bases") {
     const mine = rowsOf(D.links).filter(l => hkey(l.client_app, l.client_platform, l.client_host) === host || hkey(l.server_app, l.server_platform, l.server_host) === host);
     body = `<h3>Instances</h3>` + instancesTable(hostRows("db_instances"), host) + (hostRows("oracle_homes").length ? `<h3>ORACLE_HOME</h3>` + oracleHomesTable(hostRows("oracle_homes"), host) : "")
@@ -1132,13 +1136,14 @@ function vVulns(params) {
   const by = src => rows.filter(o => o.source === src);
   const lede = `Base Trivy du ${day(meta.trivy_updated) || "?"}. Une ligne par composant et version installée, dans une application et une plate-forme.
     Paquets : avis de la distribution, correctifs rétroportés compris ; seul le noyau en cours est évalué. Bibliothèques : GitHub Security Advisory.
-    Produits hors distribution : versions amont (base Bitnami). CVE sans correctif : ${meta.unfixed === "all" ? "toutes" : (meta.unfixed === "none" ? "aucune" : "hautes et critiques seulement")}.`
+    Produits hors distribution : versions amont (base Bitnami). Conteneurs : paquets de l'image, avis de sa distribution ; leurs bibliothèques sont dans l'onglet Bibliothèques. CVE sans correctif : ${meta.unfixed === "all" ? "toutes" : (meta.unfixed === "none" ? "aucune" : "hautes et critiques seulement")}.`
     + (meta.os_unsupported ? ` Systèmes sans avis dans la base : ${esc(meta.os_unsupported)}.` : "");
   return tabbed("vulnerabilites", "Vulnérabilités", lede, [
     ["urgent", `À corriger (${fmt(rows.filter(vulnUrgent).length)})`, m => vulnsTable(m(rows.filter(vulnUrgent)))],
     ["paquets", `Paquets (${fmt(by("paquet").length)})`, m => vulnsTable(m(by("paquet")))],
     ["produits", `Produits (${fmt(by("produit").length)})`, m => vulnsTable(m(by("produit")))],
     ["bibliotheques", `Bibliothèques (${fmt(by("bibliothèque").length)})`, m => vulnsTable(m(by("bibliothèque")))],
+    ["conteneurs", `Conteneurs (${fmt(by("conteneur").length)})`, m => vulnsTable(m(by("conteneur")))],
     ["tout", `Tout (${fmt(rows.length)})`, m => vulnsTable(m(rows))],
   ], params, "Filtrer (composant, version, serveur, CVE…)");
 }

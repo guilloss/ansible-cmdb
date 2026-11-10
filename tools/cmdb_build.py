@@ -579,6 +579,10 @@ CREATE TABLE connections (host TEXT, direction TEXT, local_port INTEGER, remote_
   process TEXT, count INTEGER);
 CREATE TABLE services (host TEXT, unit TEXT, load TEXT, active TEXT, sub TEXT, unit_file_state TEXT,
   main_pid INTEGER, exec_start TEXT, user TEXT, fragment_path TEXT, description TEXT);
+CREATE TABLE container_images (host TEXT, engine TEXT, image TEXT, image_id TEXT, containers TEXT, os_id TEXT, os_version TEXT,
+  os_pretty TEXT, packages INTEGER, components INTEGER, truncated INTEGER, seconds REAL, note TEXT);
+CREATE TABLE container_packages (host TEXT, image_id TEXT, image TEXT, manager TEXT, name TEXT, epoch TEXT, version TEXT,
+  release TEXT, arch TEXT, vendor TEXT, source TEXT, purl TEXT);
 CREATE TABLE containers (host TEXT, engine TEXT, kind TEXT, id TEXT, name TEXT, image TEXT, digest TEXT,
   status TEXT, created TEXT);
 CREATE TABLE cpu_vulnerabilities (host TEXT, name TEXT, status TEXT);
@@ -766,6 +770,7 @@ class Builder(cmdb_extras.ExtrasMixin):
         self.network(host, doc)
         self.services(host, doc)
         self.containers(host, doc)
+        self.container_content(host, doc)
         self.misc(host, doc)
         self.runtimes(host, doc)
         self.filesystem(host, doc, fs)
@@ -994,6 +999,48 @@ class Builder(cmdb_extras.ExtrasMixin):
             self.add("containers", (host, "cri", "container", ctr.get("id"), (ctr.get("metadata") or {}).get("name"),
                                     (ctr.get("image") or {}).get("image"), ctr.get("imageRef"), ctr.get("state"),
                                     str(ctr.get("createdAt"))))
+
+    def container_content(self, host, doc):
+        """Contenu des conteneurs (docker / podman export) : une ligne par image lue, ses paquets à part
+        (container_packages, la distribution de l'image n'est pas celle de l'hôte) et ses autres composants
+        dans software, l'emplacement préfixé par « moteur:conteneur: »."""
+        cc = doc.get("container_content") or {}
+        for e in cc.get("images") or []:
+            osr = e.get("os_release") or {}
+            os_id, os_ver = (osr.get("ID") or "").lower(), osr.get("VERSION_ID") or ""
+            names = [c.get("name") for c in e.get("containers") or [] if c.get("name")]
+            label = (names[0] if names else (e.get("image_id") or "?")[:12]) + (" (+%d)" % (len(names) - 1) if len(names) > 1 else "")
+            prefix = "%s:%s:" % (e.get("engine"), label)
+            saved, self.rows = self.rows, {}
+            self.packages(host, e, os_id, os_ver)
+            self.filesystem(host, e, e.get("filesystem") or {})
+            got, self.rows = self.rows, saved
+            for r in got.get("packages") or []:
+                # (app, pf, host, manager, name, epoch, version, release, arch, vendor, source, source_version, installtime, summary, purl)
+                self.rows.setdefault("container_packages", []).append(
+                    r[:3] + (e.get("image_id"), e.get("image"), r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[14]))
+            ncomp = 0
+            for r in got.get("software") or []:
+                if r[3] == "os-package":
+                    continue
+                r = list(r)
+                r[8] = prefix + (r[8] or "")
+                extra = json.loads(r[14]) if r[14] else {}
+                extra.update(container=label, image=e.get("image"))
+                r[14] = json.dumps(extra, ensure_ascii=False)
+                self.rows.setdefault("software", []).append(tuple(r))
+                ncomp += 1
+            for r in got.get("java_markers") or []:
+                self.rows.setdefault("java_markers", []).append(r[:3] + (prefix + (r[3] or ""),) + r[4:])
+            st = e.get("stats") or {}
+            notes = [x for x in (e.get("error"), e.get("packages_note")) if x]
+            self.add("container_images", (host, e.get("engine"), e.get("image"), e.get("image_id"), " ".join(names), os_id or None,
+                                          os_ver or None, osr.get("PRETTY_NAME"), len(got.get("packages") or []), ncomp,
+                                          1 if st.get("truncated") else 0, st.get("seconds"), " ; ".join(notes) or None))
+        for engine, st in sorted((cc.get("engines") or {}).items()):
+            if not st.get("readable"):
+                self.add("container_images", (host, engine, None, None, None, None, None, None, None, None, None, None,
+                                              "moteur non lisible par le compte de collecte : %s" % (st.get("error") or "")[:200]))
 
     def misc(self, host, doc):
         for k, v in ((doc.get("hardware") or {}).get("cpu_vulnerabilities") or {}).items():

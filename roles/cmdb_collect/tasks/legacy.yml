@@ -35,6 +35,7 @@
         cmd: >-
           {{ role_path }}/files/{{ cmdb_script }}
           {{ '--output -' if cmdb_script.endswith('.py') else '' }}
+          {{ '--no-container-content' if cmdb_script.endswith('.py') and not (cmdb_container_content | default(true) | bool) else '' }}
           --host-label {{ inventory_hostname }} --scan-max-seconds {{ cmdb_scan_max_seconds | default(900) }}
           {{ cmdb_tag_argv | map('quote') | join(' ') }} {{ cmdb_extra_args | default('') }}
         executable: "{{ cmdb_interp }}"

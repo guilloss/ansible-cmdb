@@ -88,6 +88,8 @@ Paramètres principaux (`roles/cmdb_collect/defaults/main.yml`) :
 | `cmdb_scan_extra_excludes` | `[]` | Exclusions supplémentaires (gros volumes de données, maildirs…) |
 | `cmdb_include_network_fs` | false | Parcourir aussi NFS/CIFS/GPFS… |
 | `cmdb_include_container_storage` | false | Parcourir `/var/lib/docker`, `/var/lib/containers`… |
+| `cmdb_container_content` | true | Lire le contenu des conteneurs en marche (`docker`/`podman export`), si le compte de collecte a accès au moteur (voir « Conteneurs ») |
+| `cmdb_container_max_seconds` | 600 | Durée maximale de lecture des conteneurs d'un hôte |
 | `cmdb_exec_probes` | true | Exécuter les sondes de version (`java -version`, `php -v`…) |
 | `cmdb_hash_archives` | true | SHA-1 des `.jar/.war/.ear` (identification exacte) |
 | `cmdb_pending_updates` | false | `dnf/yum updateinfo --with-cve`, `apt-get -s`, `debsecan` (peut contacter les dépôts) |
@@ -282,8 +284,23 @@ Certaines informations ci-dessous exigent root et manquent donc en collecte non 
 | Services | Unités systemd (ExecStart, utilisateur, état), timers, SysV, cron, `at` | |
 | Sécurité | `sshd -T`, sudoers, iptables/nftables/firewalld, auditd, FIPS, politique crypto, lockdown | |
 | Noyau | Modules chargés, `sysctl -a`, taint, livepatch (kpatch, Canonical) | Correctifs noyau appliqués à chaud |
-| Conteneurs | docker/podman (info, conteneurs, images avec digests), crictl | Images à scanner séparément |
+| Conteneurs | docker/podman (info, conteneurs, images avec digests), crictl ; contenu des conteneurs en marche (voir « Conteneurs ») | |
 | Répertoires logiciels | Deux niveaux de `/opt`, `/usr/local`, `/srv`, `/app*`, `/u01`, `/var/www`… | Repérer à l'œil les installations manuelles |
+
+## Conteneurs
+
+Pour chaque hôte docker ou podman, la collecte lit le **contenu des conteneurs en marche**, dès que le compte de collecte peut parler au moteur (`cmdb_container_content: false` pour s'en passer) :
+
+- les conteneurs sont regroupés par image ; **une seule lecture par image**, par `docker export` (ou `podman export`) du premier conteneur, lue au fil de l'eau, sans rien écrire sur le disque (sauf une copie temporaire de la base rpm, lue par le `rpm` de l'hôte puis supprimée) ;
+- rien n'est exécuté dans les conteneurs (pas de `docker exec`) ; ni leurs variables d'environnement ni leurs fichiers de configuration ne sont relevés ;
+- sont relevés : système de l'image (`os-release`), paquets dpkg, apk et rpm, archives Java, paquets Python, npm et composer, JDK (`release`) ; les montages de chaque conteneur ;
+- durée totale bornée (`cmdb_container_max_seconds`), 50 images au plus par moteur, archives Java de plus de 128 Mo ignorées.
+
+Résultats : tables `container_images` (image, conteneurs, système, nombre de paquets et de composants, remarques) et `container_packages` (paquets de chaque image, séparés de ceux de l'hôte). Les autres composants vont dans `software`, l'emplacement préfixé par `moteur:conteneur:` (ex. `docker:web-1 (+1):/app/lib/log4j-core-2.14.1.jar`) : la recherche du rapport les trouve (`docker:`), et ils sont croisés avec les CVE comme ceux de l'hôte. Les paquets d'une image sont croisés avec les avis de **sa** distribution (onglet « Conteneurs » de la page Vulnérabilités). Dans le rapport, la fiche du serveur (onglet « Ports et services ») liste les images lues.
+
+**Droits.** Être dans le groupe `docker` **équivaut à être root sur l'hôte** (`docker run -v /:/host …`) : le collecteur ne fait que lire, mais le compte en a le pouvoir. C'est une décision de sécurité à prendre hôte par hôte. Avec podman sans root, le compte ne voit que ses propres conteneurs. Sans accès au moteur, la collecte continue et la table `container_images` porte « moteur non lisible par le compte de collecte ».
+
+**Limites.** Les volumes ne font pas partie d'un `export` : ceux montés depuis un répertoire de l'hôte sont vus par le parcours habituel, les volumes nommés (`/var/lib/docker/volumes`) sont réservés à root. Une image sans `rpm` sur l'hôte (hôte Debian avec des images UBI, par exemple) a ses paquets rpm non lus, ce qui est signalé. Les conteneurs arrêtés et Kubernetes ne sont pas couverts. Mis au point avec un moteur simulé (sorties de `ps`, `inspect` et `export` reproduites) : à valider sur un vrai hôte docker.
 
 ## Sécurité et impact sur les serveurs
 

@@ -393,7 +393,8 @@ class Matcher(object):
                         elif self.keep_unfixed(sev):
                             out.append((vid, sev, cvss, title, pub, None, RH_UNFIXED.get(e.get("Status"), "sans correctif")))
             return out
-        pkg = _deb_source(name, source) if kind == "deb" else name
+        # Debian et Alpine rangent leurs avis par paquet source (origin pour apk)
+        pkg = _deb_source(name, source) if kind == "deb" else ((source or name) if kind == "apk" else name)
         # Gravité donnée par l'éditeur de la distribution, sinon la gravité générale (NVD), comme Trivy
         src_name = VENDOR_SOURCE.get(feed.rsplit(" ", 1)[0], feed.split(" ")[0].lower())
         for vid, adv in self.tdb.advisories(feed, pkg):
@@ -467,7 +468,7 @@ def build_vulnerabilities(db, path, unfixed="high", log=None):
                 if not _running_kernel(name, evr, kernel) or (name, evr) in seen:
                     continue
                 seen.add((name, evr))
-                lookup = name if kind != "deb" else _deb_source(name, source)
+                lookup = _deb_source(name, source) if kind == "deb" else ((source or name) if kind == "apk" else name)
                 # Paquet de la distribution : connu de ses avis, ou publié par son éditeur (rpm).
                 # Les autres (PGDG, dépôt d'éditeur…) sont évalués comme produits, par version amont.
                 if (kind == "rpm" and (tdb.known(feed, lookup) or DISTRO_VENDORS.search(vendor or ""))) \
@@ -475,6 +476,23 @@ def build_vulnerabilities(db, path, unfixed="high", log=None):
                     os_pkgs.add(name)
                 for vid, sev, cvss, title, pub, fix, status in m.os_package(feed, kind, major, name, source, evr, arch):
                     rows.append((app, pf, host, "paquet", name, evr, None, vid, sev, cvss, fix, status, title, pub, feed))
+        # Paquets des images de conteneurs : avis de la distribution de l'image, pas de celle de l'hôte
+        for image_id, image, c_os, c_ver, names in db.execute(
+                "SELECT image_id, image, os_id, os_version, containers FROM container_images "
+                "WHERE app = ? AND platform = ? AND host = ? AND image_id IS NOT NULL", (app, pf, host)).fetchall():
+            cf = _os_feed(c_os, c_ver)
+            if cf is None:
+                continue
+            feed, kind, major = cf
+            where = "image %s (%s)" % (image or image_id[:19], names or "?")
+            for name, epoch, version, release, arch, source in db.execute(
+                    "SELECT name, epoch, version, release, arch, source FROM container_packages "
+                    "WHERE app = ? AND platform = ? AND host = ? AND image_id = ?", (app, pf, host, image_id)).fetchall():
+                evr = ("%s%s%s" % ("%s:" % epoch if epoch not in (None, "", "0", "(none)") else "", version or "",
+                                   "-" + release if release else "")) if kind == "rpm" else (version or "")
+                for vid, sev, cvss, title, pub, fix, status in m.os_package(feed, kind, major, name, source, evr, arch):
+                    rows.append((app, pf, host, "conteneur", name, evr, where, vid, sev, cvss, fix, status, title, pub,
+                                 "%s · %s" % (feed, image or image_id[:19])))
         seen = set()
         for category, family, name, version, location, owner, managed, purl in db.execute(
                 "SELECT category, family, name, version, location, owner_pkg, managed, purl FROM software "

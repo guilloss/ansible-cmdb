@@ -103,6 +103,7 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "services": table(db, "SELECT %s, unit, active, sub, unit_file_state, user, description FROM services "
                               "WHERE active = 'active' ORDER BY %s, unit" % (K, K)),
         "containers": table(db, "SELECT %s, engine, kind, name, image, digest, status FROM containers ORDER BY %s" % (K, K)),
+        "container_images": table(db, "SELECT * FROM container_images ORDER BY %s, image" % K),
         "cpu_vulns": table(db, "SELECT %s, name, status FROM cpu_vulnerabilities ORDER BY %s, name" % (K, K)),
         "java_risky": table(db, "SELECT %s, archive, marker FROM v_java_risky ORDER BY %s" % (K, K)),
         "restart": table(db, "SELECT %s, pid, user, comm, exe, deleted_files_count FROM v_restart_needed" % K),

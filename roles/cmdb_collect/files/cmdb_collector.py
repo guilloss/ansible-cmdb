@@ -35,8 +35,11 @@ import re
 import socket
 import stat
 import struct
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import traceback
@@ -426,6 +429,11 @@ EXTRA_BIN_GLOBS = [
 # Règles de détection sur le système de fichiers
 # --------------------------------------------------------------------------
 ARCHIVE_EXT = (".jar", ".war", ".ear", ".hpi", ".jpi", ".sar")
+RPM_QF = "\t".join(["%{NAME}", "%{EPOCH}", "%{VERSION}", "%{RELEASE}", "%{ARCH}", "%{VENDOR}",
+                    "%{INSTALLTIME}", "%{BUILDTIME}", "%{SOURCERPM}", "%{PACKAGER}",
+                    "%{RSAHEADER:pgpsig}", "%{SIGPGP:pgpsig}", "%{SUMMARY}"]) + "\n"
+RPM_KEYS = ["name", "epoch", "version", "release", "arch", "vendor", "installtime", "buildtime",
+            "sourcerpm", "packager", "sig_rsa", "sig_pgp", "summary"]
 MANIFEST_DROP = set(["Class-Path", "Import-Package", "Export-Package", "Private-Package", "Include-Resource",
                      "Require-Capability", "Provide-Capability", "DynamicImport-Package", "Embedded-Artifacts",
                      "Embed-Dependency", "Ignore-Package", "Sealed", "Name", "Bnd-LastModified", "Tool"])
@@ -2147,14 +2155,11 @@ class Collector(object):
     def collect_packages(self):
         d = {"managers": {}}
         if which("rpm"):
-            qf = "\t".join(["%{NAME}", "%{EPOCH}", "%{VERSION}", "%{RELEASE}", "%{ARCH}", "%{VENDOR}",
-                            "%{INSTALLTIME}", "%{BUILDTIME}", "%{SOURCERPM}", "%{PACKAGER}",
-                            "%{RSAHEADER:pgpsig}", "%{SIGPGP:pgpsig}", "%{SUMMARY}"]) + "\n"
+            qf = RPM_QF
             r = run(["rpm", "-qa", "--qf", qf], 300)
             rows = []
             if r and r["rc"] == 0:
-                keys = ["name", "epoch", "version", "release", "arch", "vendor", "installtime", "buildtime",
-                        "sourcerpm", "packager", "sig_rsa", "sig_pgp", "summary"]
+                keys = RPM_KEYS
                 for line in r["out"].splitlines():
                     p = line.split("\t")
                     if len(p) < 5:
@@ -2852,6 +2857,100 @@ class Collector(object):
             d["crictl"] = c
         return d
 
+    # -- contenu des conteneurs en marche ---------------------------------
+    def collect_container_content(self):
+        """docker / podman : conteneurs en marche, regroupés par image ; le premier conteneur de chaque image
+        est lu par « export » (archive de son système de fichiers, sans les volumes), au fil de l'eau.
+        Rien n'est exécuté dans les conteneurs. Le compte de collecte doit pouvoir parler au moteur
+        (groupe docker, ou podman sans root pour ses propres conteneurs)."""
+        a = self.args
+        if not a.container_content:
+            return {"disabled": True}
+        out = {"images": [], "engines": {}}
+        deadline = time.time() + a.container_max_seconds
+        env = dict(CLEAN_ENV)
+        for k in ("HOME", "XDG_RUNTIME_DIR", "DOCKER_HOST", "CONTAINER_HOST"):
+            if os.environ.get(k):
+                env[k] = os.environ[k]
+        opts = {"archive_max": min(a.hash_max_mb, 128) << 20, "archive_opts": {"max_depth": 3, "nested_max": 100 << 20},
+                "max_npm": 20000}
+        for tool in ("docker", "podman"):
+            path = which(tool)
+            if not path:
+                continue
+            r = run([tool, "ps", "-q", "--no-trunc"], 60, env=env)
+            if not r or r["rc"] != 0:
+                out["engines"][tool] = {"readable": False, "error": u((r or {}).get("err") or "")[:300]}
+                continue
+            ids = r["out"].split()
+            out["engines"][tool] = {"readable": True, "running": len(ids)}
+            if not ids:
+                continue
+            r = run([tool, "inspect"] + ids[:500], 120, env=env)
+            try:
+                ctrs = json.loads(r["out"]) if r and r["rc"] == 0 else []
+            except ValueError:
+                ctrs = []
+            groups = {}
+            order = []
+            for c in ctrs:
+                img = c.get("Image") or "?"
+                if img not in groups:
+                    groups[img] = []
+                    order.append(img)
+                groups[img].append(c)
+            for img in order[:a.container_max_images]:
+                cs = groups[img]
+                cfg = cs[0].get("Config") or {}
+                entry = {"engine": tool, "image_id": img, "image": cfg.get("Image") or cs[0].get("ImageName"),
+                         "containers": [{"id": (c.get("Id") or "")[:12], "name": (c.get("Name") or "").lstrip("/"),
+                                         "started_at": (c.get("State") or {}).get("StartedAt"),
+                                         "mounts": [{"type": m.get("Type"), "source": m.get("Source"), "destination": m.get("Destination")}
+                                                    for m in (c.get("Mounts") or [])][:50]} for c in cs]}
+                out["images"].append(entry)
+                if time.time() > deadline:
+                    entry["error"] = "non lu : durée maximale atteinte (%d s)" % a.container_max_seconds
+                    continue
+                entry.update(self._export_container(path, cs[0].get("Id"), env, opts, deadline))
+            if len(order) > a.container_max_images:
+                out["engines"][tool]["images_not_read"] = len(order) - a.container_max_images
+        return out
+
+    def _export_container(self, tool, cid, env, opts, deadline):
+        t0 = time.time()
+        tmpdir = tempfile.mkdtemp(prefix="cmdb-ctr-")
+        errf = tempfile.TemporaryFile()
+        proc = None
+        try:
+            proc = subprocess.Popen([tool, "export", cid], stdout=subprocess.PIPE, stderr=errf, env=env, close_fds=True, cwd="/")
+            try:
+                res, rpmdb = scan_container_tar(proc.stdout, opts, deadline, tmpdir)
+            except (tarfile.TarError, IOError, OSError, EOFError) as e:
+                res, rpmdb = {"error": "lecture de l'export : %s" % u(repr(e))[:300]}, None
+            if proc.poll() is None:
+                proc.kill()   # durée dépassée : export interrompu, résultat partiel
+            proc.stdout.close()
+            proc.wait()
+            if rpmdb:
+                rows, err = rpm_rows_from(rpmdb)
+                if rows is not None:
+                    res.setdefault("packages", {"managers": {}})["managers"]["rpm"] = rows
+                else:
+                    res["packages_note"] = err
+            if proc.returncode not in (0, None) and not (res.get("stats") or {}).get("members"):
+                errf.seek(0)
+                res["error"] = "export impossible (rc %s) : %s" % (proc.returncode, u(errf.read(2000)).strip()[:300])
+        except OSError as e:
+            res = {"error": u(repr(e))[:300]}
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            errf.close()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        res.setdefault("stats", {})["seconds"] = round(time.time() - t0, 1)
+        return res
+
     # -- Oracle et assimilés ----------------------------------------------
     def collect_oracle(self, doc=None):
         d = {}
@@ -3465,6 +3564,7 @@ class Collector(object):
         doc["security"] = self.section("security", self.collect_security)
         doc["kernel"] = self.section("kernel", self.collect_kernel)
         doc["containers"] = self.section("containers", self.collect_containers)
+        doc["container_content"] = self.section("container_content", self.collect_container_content)
         doc["oracle"] = self.section("oracle", lambda: self.collect_oracle(doc))
         doc["software_dirs"] = self.section("software_dirs", self.software_dirs)
         if a.scan_filesystem:
@@ -3496,6 +3596,174 @@ def lower_priority():
         pass
     # ionice idle (classe 3) via l'appel système ioprio_set si possible, sinon l'outil ionice
     run(["ionice", "-c", "3", "-p", str(os.getpid())], 5)
+
+
+
+# --- Contenu des conteneurs (docker / podman export, lecture au fil de l'eau) -------------
+CONTAINER_OS_RELEASE = ("etc/os-release", "usr/lib/os-release")
+CONTAINER_RPMDB_DIRS = ("var/lib/rpm/", "usr/lib/sysimage/rpm/")
+CONTAINER_RPMDB_FILES = ("Packages", "Packages.db", "rpmdb.sqlite", "Index.db")
+
+
+def parse_dpkg_status(text):
+    """Paragraphes de /var/lib/dpkg/status (ou status.d/*) -> lignes au format de dpkg-query."""
+    rows, cur, last = [], {}, None
+    for line in text.splitlines() + [""]:
+        if not line.strip():
+            if cur.get("Package"):
+                src = cur.get("Source") or ""
+                m = re.match(r"^(\S+)(?:\s+\((.+)\))?", src)
+                rows.append({"name": cur["Package"], "version": cur.get("Version"), "arch": cur.get("Architecture"),
+                             "status": cur.get("Status") or "install ok installed",
+                             "source": m.group(1) if m else cur["Package"],
+                             "source_version": (m.group(2) if m and m.group(2) else cur.get("Version")),
+                             "maintainer": cur.get("Maintainer"), "installed_size": cur.get("Installed-Size"),
+                             "summary": (cur.get("Description") or "")[:200]})
+            cur, last = {}, None
+            continue
+        if line[0] in " \t":
+            continue
+        if ":" in line:
+            last, v = line.split(":", 1)
+            cur[last] = v.strip()
+    return rows
+
+
+def parse_apk_installed(text):
+    rows, cur = [], {}
+    for line in text.splitlines() + [""]:
+        if not line.strip():
+            if cur.get("P"):
+                rows.append({"name": cur.get("P"), "version": cur.get("V"), "arch": cur.get("A"),
+                             "origin": cur.get("o"), "maintainer": cur.get("m"), "summary": cur.get("T")})
+            cur = {}
+            continue
+        if len(line) > 2 and line[1] == ":" and line[0] in "PVAomT":
+            cur[line[0]] = line[2:]
+    return rows
+
+
+def python_meta_text(text):
+    name = version = None
+    for line in text.splitlines():
+        if not line.strip():
+            break
+        if line.startswith("Name:"):
+            name = line[5:].strip()
+        elif line.startswith("Version:"):
+            version = line[8:].strip()
+    return name, version
+
+
+def scan_container_tar(stream, opts, deadline, tmpdir):
+    """Parcourt une archive tar (docker export) sans l'écrire : système, paquets, archives Java,
+    paquets Python, npm, composer, JDK. Seule la base rpm est recopiée (dans tmpdir) pour être lue
+    par le rpm de l'hôte. Renvoie (résultat, chemin de la base rpm copiée ou None)."""
+    fs = {"java_archives": [], "jdk_homes": [], "python_packages": [], "npm_packages": [], "composer_installed": []}
+    res = {"os_release": {}, "packages": {"managers": {}}, "filesystem": fs,
+           "stats": {"members": 0, "bytes": 0, "truncated": False}}
+    dpkg_rows, rpmdb = [], None
+    tf = tarfile.open(fileobj=stream, mode="r|")
+    try:
+        for m in tf:
+            st = res["stats"]
+            st["members"] += 1
+            if time.time() > deadline:
+                st["truncated"] = True
+                break
+            if not m.isfile():
+                continue
+            st["bytes"] += m.size
+            name = m.name.lstrip("./").lstrip("/")
+            low = name.lower()
+            base = name.rsplit("/", 1)[-1]
+
+            def data(limit):
+                if m.size > limit:
+                    return None
+                f = tf.extractfile(m)
+                return f.read() if f else None
+            if name in CONTAINER_OS_RELEASE and not res["os_release"]:
+                res["os_release"] = kv_text(u(data(64 * 1024) or b""))
+            elif name == "var/lib/dpkg/status" or name.startswith("var/lib/dpkg/status.d/"):
+                if not name.endswith(".md5sums"):
+                    dpkg_rows.extend(parse_dpkg_status(u(data(64 << 20) or b"")))
+            elif name == "lib/apk/db/installed":
+                res["packages"]["managers"]["apk"] = parse_apk_installed(u(data(64 << 20) or b""))
+            elif any(name == d + f for d in CONTAINER_RPMDB_DIRS for f in CONTAINER_RPMDB_FILES):
+                raw = data(512 << 20)
+                if raw is not None:
+                    rpmdb = os.path.join(tmpdir, "rpm")
+                    if not os.path.isdir(rpmdb):
+                        os.mkdir(rpmdb)
+                    with open(os.path.join(rpmdb, base), "wb") as f:
+                        f.write(raw)
+            elif low.endswith(ARCHIVE_EXT):
+                raw = data(opts["archive_max"])
+                if raw is None:
+                    fs["java_archives"].append({"path": "/" + name, "size": m.size, "skipped": "too_large"})
+                    continue
+                info = inspect_archive(io.BytesIO(raw), "/" + name, 0, opts["archive_opts"])
+                info["size"] = len(raw)
+                info["sha1"] = hashlib.sha1(raw).hexdigest()
+                fs["java_archives"].append(info)
+            elif (base == "METADATA" and ".dist-info/" in name) or (base == "PKG-INFO" and ".egg-info/" in name):
+                n, v = python_meta_text(u(data(256 * 1024) or b""))
+                if n:
+                    fs["python_packages"].append({"site": "/" + name.rsplit("/", 2)[0], "name": n, "version": v,
+                                                  "meta": "/" + name})
+            elif base == "package.json" and "/node_modules/" in "/" + name:
+                parts = name.split("/")
+                # node_modules/<paquet>/package.json ou node_modules/@portée/<paquet>/package.json
+                if len(parts) >= 3 and (parts[-3] == "node_modules" or (len(parts) >= 4 and parts[-4] == "node_modules"
+                                                                         and parts[-3].startswith("@"))):
+                    if len(fs["npm_packages"]) < opts["max_npm"]:
+                        try:
+                            meta = json.loads(u(data(2 << 20) or b"{}"))
+                            if isinstance(meta, dict) and meta.get("name"):
+                                fs["npm_packages"].append({"path": "/" + name.rsplit("/", 1)[0], "name": meta.get("name"),
+                                                           "version": meta.get("version")})
+                        except ValueError:
+                            pass
+            elif name.endswith("vendor/composer/installed.json"):
+                try:
+                    dj = json.loads(u(data(64 << 20) or b"{}"))
+                    pk = dj if isinstance(dj, list) else dj.get("packages", [])
+                    fs["composer_installed"].append({"path": "/" + name, "packages": [
+                        {"name": x.get("name"), "version": x.get("version"), "version_normalized": x.get("version_normalized"),
+                         "type": x.get("type")} for x in pk if isinstance(x, dict)]})
+                except ValueError:
+                    pass
+            elif base == "release" and m.size < 8192:
+                rel = kv_text(u(data(8192) or b""))
+                if rel.get("JAVA_VERSION"):
+                    fs["jdk_homes"].append({"path": "/" + name.rsplit("/", 1)[0],
+                                            "release": dict((k, v.strip('"')) for k, v in rel.items())})
+    finally:
+        tf.close()
+    if dpkg_rows:
+        res["packages"]["managers"]["dpkg"] = dpkg_rows
+    return res, rpmdb
+
+
+def rpm_rows_from(dbpath):
+    """Lit une base rpm recopiée avec le rpm de l'hôte (lecture seule)."""
+    r = run(["rpm", "-qa", "--dbpath", dbpath, "--qf", RPM_QF], 300)
+    if r is None:
+        return None, "rpm absent sur l'hôte : paquets rpm de l'image non lus"
+    if r["rc"] != 0:
+        return None, "rpm --dbpath : %s" % (r["err"] or "")[:300]
+    rows = []
+    for line in r["out"].splitlines():
+        p = line.split("\t")
+        if len(p) < 5:
+            continue
+        row = dict(zip(RPM_KEYS, p))
+        for k in list(row):
+            if row[k] == "(none)":
+                row[k] = None
+        rows.append(row)
+    return rows, None
 
 
 class _OptparseAdapter(object):
@@ -3547,6 +3815,10 @@ def parse_args(argv=None):
     p.add_argument("--scan-max-seconds", type=int, default=900)
     p.add_argument("--include-network-fs", action="store_true", default=False)
     p.add_argument("--include-container-storage", action="store_true", default=False)
+    p.add_argument("--no-container-content", dest="container_content", action="store_false", default=True,
+                   help="Ne pas lire le contenu des conteneurs en marche (docker/podman export)")
+    p.add_argument("--container-max-seconds", type=int, default=600, help="Durée maximale de lecture des conteneurs")
+    p.add_argument("--container-max-images", type=int, default=50, help="Nombre maximal d'images lues par moteur")
     p.add_argument("--no-hash-archives", dest="hash_archives", action="store_false", default=True)
     p.add_argument("--hash-max-mb", type=int, default=256)
     p.add_argument("--max-js-libs", type=int, default=30000)

@@ -65,6 +65,8 @@
             + ([] if cmdb_nice | bool else ['--no-nice'])
             + (['--include-network-fs'] if cmdb_include_network_fs | bool else [])
             + (['--include-container-storage'] if cmdb_include_container_storage | bool else [])
+            + ([] if cmdb_container_content | bool else ['--no-container-content'])
+            + ['--container-max-seconds', cmdb_container_max_seconds | string]
             + (['--pending-updates'] if cmdb_pending_updates | bool else [])
             + (cmdb_scan_roots | map('regex_replace', '^', '--scan-root=') | list)
             + (cmdb_scan_replace_excludes | map('regex_replace', '^', '--exclude=') | list)

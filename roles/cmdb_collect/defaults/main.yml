@@ -32,6 +32,11 @@ cmdb_scan_extra_excludes: []        # ajoutés aux exclusions par défaut du col
 cmdb_scan_replace_excludes: []      # si non vide, REMPLACE les exclusions par défaut
 cmdb_include_network_fs: false      # NFS/CIFS/GPFS... (attention au volume)
 cmdb_include_container_storage: false  # /var/lib/docker, /var/lib/containers... (doublons de couches)
+# Contenu des conteneurs EN MARCHE (docker / podman export, lecture seule, une lecture par image) : système,
+# paquets, archives Java, paquets Python, npm, composer de chaque image. Actif dès que le compte de collecte
+# peut parler au moteur (groupe docker : équivaut à root sur l'hôte ; podman sans root : ses propres conteneurs).
+cmdb_container_content: true
+cmdb_container_max_seconds: 600     # budget total de lecture des conteneurs d'un hôte
 cmdb_hash_archives: true            # SHA-1 des .jar/.war/.ear (identification exacte côté Maven Central / OSV)
 cmdb_hash_max_mb: 256
 
