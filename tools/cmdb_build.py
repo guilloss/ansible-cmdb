@@ -210,6 +210,32 @@ MATRIX_FAMILIES = [
     "zend-framework-1", "jquery",
 ]
 
+# Familles de produits (serveurs, environnements d'exécution, socle). Une bibliothèque ne doit jamais
+# en prendre le nom : le pilote JDBC postgresql-42.7.1.jar ou le paquet Python redis ne sont pas le
+# serveur PostgreSQL ou Redis (matrice, fins de support, écarts, dossiers d'application).
+# (Pas les paquets conda : un environnement conda embarque de vrais python, openssl, postgresql.)
+LIBRARY_CATEGORIES = frozenset(["java-archive", "python-package", "npm-package", "ruby-gem", "go-module",
+                                "composer-package", "dotnet-package"])
+PRODUCT_FAMILIES = frozenset(MATRIX_FAMILIES[:MATRIX_FAMILIES.index("log4j-core")]) \
+    | frozenset(cmdb_extras.SOFT_PRODUCTS) | frozenset(cmdb_dossier.KEY_FAMILIES)
+
+
+def library_family(family, ecosystem):
+    """Famille d'une bibliothèque : suffixée par son écosystème si elle porte le nom d'un produit."""
+    if family and family in PRODUCT_FAMILIES:
+        return "%s-%s" % (family, (ecosystem or "lib").split("-")[0])
+    return family
+
+
+def jar_family(family, group=None, manifest=None, version=None):
+    """Pilotes JDBC nommés comme leur base : famille propre (postgresql-42.7.1.jar -> postgresql-jdbc)."""
+    if family == "postgresql":
+        sym = ((manifest or {}).get("Bundle-SymbolicName") or "").split(";")[0]
+        major = re.match(r"^(\d+)\.", version or "")
+        if group == "org.postgresql" or sym.startswith("org.postgresql") or (not group and major and int(major.group(1)) >= 8):
+            return "postgresql-jdbc"
+    return family
+
 
 # ---------------------------------------------------------------------------
 # Utilitaires
@@ -651,6 +677,8 @@ class Builder(cmdb_extras.ExtrasMixin):
              managed=None, purl_=None, cpe=None, extra=None):
         if managed is None:
             managed = 1 if owner_pkg else 0
+        if category in LIBRARY_CATEGORIES:
+            family = library_family(family, ecosystem)
         self.add("software", (host, category, ecosystem, family, name, version, location, evidence, owner_pkg,
                               managed, purl_, cpe, json.dumps(extra, ensure_ascii=False) if extra else None))
 
@@ -1172,7 +1200,7 @@ class Builder(cmdb_extras.ExtrasMixin):
         g, a, v = m.get("groupId"), m.get("artifactId"), m.get("version")
         if not a:
             return
-        self.soft(host, "java-archive", "maven", a, "%s:%s" % (g, a), v, location, evidence, owner,
+        self.soft(host, "java-archive", "maven", jar_family(a, g, None, v), "%s:%s" % (g, a), v, location, evidence, owner,
                   purl_=purl("maven", a, v, g))
 
     def _archive(self, host, a, owner, top, origin=None):
@@ -1189,7 +1217,7 @@ class Builder(cmdb_extras.ExtrasMixin):
                       cpe=java_cpe(v, man.get("Implementation-Vendor")))
         hit = self.java_db.find(a.get("sha1")) if self.java_db and not mavens else None
         if hit:
-            self.soft(host, "java-archive", "maven", hit[1], "%s:%s" % (hit[0], hit[1]), hit[2], path,
+            self.soft(host, "java-archive", "maven", jar_family(hit[1], hit[0], None, hit[2]), "%s:%s" % (hit[0], hit[1]), hit[2], path,
                       "sha1 trivy-java-db" + suffix, owner, purl_=purl("maven", hit[1], hit[2], hit[0]),
                       extra={"sha1": a.get("sha1")})
         elif not mavens:
@@ -1198,7 +1226,7 @@ class Builder(cmdb_extras.ExtrasMixin):
             name = man.get("Bundle-SymbolicName", "").split(";")[0] or man.get("Implementation-Title") or \
                 (fm.group(1) if fm else fname)
             ver = man.get("Implementation-Version") or man.get("Bundle-Version") or (fm.group(2) if fm else None)
-            fam = fm.group(1).lower() if fm else None
+            fam = jar_family(fm.group(1).lower(), None, man, ver) if fm else None
             self.soft(host, "java-archive", "maven-unidentified", fam, name, ver, path,
                       ("manifest" if man else "filename") + suffix, owner,
                       extra={"sha1": a.get("sha1"), "title": man.get("Implementation-Title")} if a.get("sha1") else None)
