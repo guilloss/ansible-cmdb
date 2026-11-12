@@ -80,6 +80,15 @@ class Lots(unittest.TestCase):
         for t in TABLES:
             self.assertEqual(self.from_store[1][t], self.from_lots[1][t], t)
 
+    def test_lien_dur_lu_une_fois(self):
+        d = tempfile.mkdtemp(prefix="cmdbl")
+        self.addCleanup(shutil.rmtree, d, True)
+        os.link(os.path.join(self.lots, "r2.tar.gz"), os.path.join(d, "APP__pf__r2.tar.gz"))
+        os.link(os.path.join(self.lots, "r2.tar.gz"), os.path.join(d, "r2.tar.gz"))
+        log, rows = build(d, "o", "--lot", os.path.join(d, "*.tar.gz"))
+        self.assertIn("même fichier que", log)
+        self.assertEqual(log.count("Lot ignoré"), 1)
+
     def test_lot_deja_dans_le_magasin_ignore(self):
         log, rows = build(self.d, "c", "--store", self.store, "--lot", self.lot_glob)
         self.assertEqual(log.count("Lot ignoré"), 2)

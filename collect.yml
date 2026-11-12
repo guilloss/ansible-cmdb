@@ -11,7 +11,7 @@
 #
 # Résultat : store/APPDEMO/prod/<hôte>/<run_id>.json.gz + latest.json.gz
 #            store/_runs/<run_id>/  (manifeste : statut de chaque hôte)
-#   -e cmdb_lot=true    : produit aussi store/_lots/<run_id>.tar.gz à transférer
+#   -e cmdb_lot=true    : produit aussi store/_lots/<app>__<pf>__<run_id>.tar.gz à transférer
 #   -e cmdb_build=true  : enchaîne la consolidation (sinon : consolidate.yml, plus tard)
 #
 # AIX et Linux anciens (Python trop ancien ou absent) : bascule automatique, hôte par

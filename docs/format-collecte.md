@@ -73,5 +73,11 @@ Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, 
 <store>/_lots/<run_id>.tar.gz                       lot : les fichiers ci-dessus, chemins relatifs au magasin
 ```
 
+Ajout depuis le gel (12/11/2026) : le lot porte aussi le nom `<app>__<pf>__<run_id>.tar.gz` (plusieurs
+valeurs jointes par `+`, au-delà de trois `multi` ; `cmdb_lot_name` impose un nom). `<run_id>.tar.gz`
+reste produit, en lien dur vers le même fichier (`cmdb_lot_keep_run_id_name: false` pour s'en passer).
+La consolidation ne tire rien du nom d'un lot : tout nom est accepté, et un même fichier sous deux noms
+n'est lu qu'une fois.
+
 L'hôte, l'application et la plate-forme se lisent dans le document (`meta.host_label`, `meta.tags`),
 pas dans le chemin : un fichier déplacé reste correctement rattaché.

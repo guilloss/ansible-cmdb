@@ -4,7 +4,8 @@
 # lot transférable optionnel, puis échec visible des hôtes non collectés.
 #   <cmdb_store>/_runs/<run_id>/_run.json                  en-tête du passage
 #   <cmdb_store>/_runs/<run_id>/<app>__<pf>__<hôte>.json   statut par hôte
-#   <cmdb_store>/_lots/<run_id>.tar.gz                     si cmdb_lot=true
+#   <cmdb_store>/_lots/<app>__<pf>__<run_id>.tar.gz        si cmdb_lot=true
+#   <cmdb_store>/_lots/<run_id>.tar.gz                     même lot, nom d'origine (lien dur)
 # ---------------------------------------------------------------------------
 
 - name: Créer le répertoire du manifeste
@@ -74,17 +75,52 @@
         state: directory
         mode: "0750"
 
+    # Nom du lot : applications et plates-formes du passage, puis run_id. Plusieurs valeurs sont
+    # jointes par « + » (au plus 3, sinon « multi »).
+    - name: Vérifier le nom imposé du lot
+      ansible.builtin.assert:
+        that: cmdb_lot_name | trim is match('^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}$')
+        fail_msg: "cmdb_lot_name invalide : lettres, chiffres, . _ + - seulement, sans répertoire ni .tar.gz"
+        quiet: true
+      when: cmdb_lot_name | trim | length > 0
+
+    - name: Nommer le lot
+      ansible.builtin.set_fact:
+        cmdb_lot_path: >-
+          {{ cmdb_store_dir ~ '/_lots/' ~ ((cmdb_lot_name | trim) if (cmdb_lot_name | trim)
+             else (_apps ~ '__' ~ _pfs ~ '__' ~ cmdb_run_id)) ~ '.tar.gz' }}
+      vars:
+        _hosts: "{{ ansible_play_hosts_all | map('extract', hostvars) | list }}"
+        _app_list: >-
+          {{ _hosts | selectattr('cmdb_app', 'defined') | map(attribute='cmdb_app') | map('string')
+             | select('match', cmdb_tag_regex) | unique | sort }}
+        _pf_list: >-
+          {{ _hosts | selectattr('cmdb_platform', 'defined') | map(attribute='cmdb_platform') | map('string')
+             | select('match', cmdb_tag_regex) | unique | sort }}
+        _apps: "{{ 'NA' if not _app_list else ('multi' if _app_list | length > 3 else _app_list | join('+')) }}"
+        _pfs: "{{ 'NA' if not _pf_list else ('multi' if _pf_list | length > 3 else _pf_list | join('+')) }}"
+
     - name: Archiver les collectes et le manifeste du passage
       ansible.builtin.command:
         argv: >-
-          {{ ['tar', '-czf', cmdb_store_dir ~ '/_lots/' ~ cmdb_run_id ~ '.tar.gz', '-C', cmdb_store_dir,
-              '_runs/' ~ cmdb_run_id]
+          {{ ['tar', '-czf', cmdb_lot_path, '-C', cmdb_store_dir, '_runs/' ~ cmdb_run_id]
              + (ansible_play_hosts | map('extract', hostvars, 'cmdb_lot_files') | flatten | list) }}
       changed_when: true
 
+    # Nom d'origine conservé (même fichier, sans place en plus) pour les procédures déjà écrites
+    - name: Garder aussi le nom d'origine du lot
+      ansible.builtin.file:
+        src: "{{ cmdb_lot_path }}"
+        dest: "{{ cmdb_store_dir }}/_lots/{{ cmdb_run_id }}.tar.gz"
+        state: hard
+        force: true
+      when:
+        - cmdb_lot_keep_run_id_name | bool
+        - cmdb_lot_path != cmdb_store_dir ~ '/_lots/' ~ cmdb_run_id ~ '.tar.gz'
+
     - name: Lot prêt
       ansible.builtin.debug:
-        msg: "Lot à transférer : {{ cmdb_store_dir }}/_lots/{{ cmdb_run_id }}.tar.gz"
+        msg: "Lot à transférer : {{ cmdb_lot_path }}"
 
 - name: Signaler les collectes en échec
   ansible.builtin.fail:

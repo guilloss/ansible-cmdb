@@ -155,3 +155,31 @@ class Routing(unittest.TestCase):
         out, doc, status = self.collect("recent ansible_connection=local ansible_python_interpreter=%s\n" % shutil.which("python3"))
         self.assertNotIn("Bascule vers la collecte sans module", out)
         self.assertEqual(status["collector"], "python")
+
+    def test_lot_nomme_par_application_et_plateforme(self):
+        py = shutil.which("python3")
+        out, doc, status = self.collect("a ansible_connection=local ansible_python_interpreter=%s\n" % py,
+                                        "-e", "cmdb_lot=true", "-e", "cmdb_scan_filesystem=false")
+        rid = doc["meta"]["run_id"]
+        lots = self.tmp + "/store/_lots/"
+        self.assertEqual(sorted(os.listdir(lots)), sorted(["TEST__QUALIF__%s.tar.gz" % rid, "%s.tar.gz" % rid]), out)
+        # même fichier sous les deux noms
+        self.assertTrue(os.path.samefile(lots + "TEST__QUALIF__%s.tar.gz" % rid, lots + rid + ".tar.gz"))
+        self.assertIn("Lot à transférer : %s/store/_lots/TEST__QUALIF__%s.tar.gz" % (self.tmp, rid), out)
+
+    def test_lot_plusieurs_applications_nom_impose(self):
+        py = shutil.which("python3")
+        inv = os.path.join(self.tmp, "inv")
+        with open(inv, "w") as handle:
+            handle.write("a ansible_connection=local ansible_python_interpreter=%s cmdb_app=APPB cmdb_platform=prod\n"
+                         "b ansible_connection=local ansible_python_interpreter=%s cmdb_app=APPA cmdb_platform=prod\n" % (py, py))
+        code, out = self.play("-i", inv, os.path.join(ROOT, "collect.yml"), "-e", "cmdb_store=" + self.tmp + "/store",
+                              "-e", "cmdb_scan_filesystem=false", "-e", "cmdb_lot=true", "-e", "cmdb_lot_keep_run_id_name=false")
+        self.assertEqual(code, 0, out)
+        names = os.listdir(self.tmp + "/store/_lots")
+        self.assertEqual(len(names), 1, names)
+        self.assertRegex(names[0], r"^APPA\+APPB__prod__[0-9TZ]+-[0-9a-f]+\.tar\.gz$")
+        code, out = self.play("-i", inv, os.path.join(ROOT, "collect.yml"), "-e", "cmdb_store=" + self.tmp + "/store2",
+                              "-e", "cmdb_scan_filesystem=false", "-e", "cmdb_lot=true", "-e", "cmdb_lot_name=../x")
+        self.assertNotEqual(code, 0)
+        self.assertIn("cmdb_lot_name invalide", out)

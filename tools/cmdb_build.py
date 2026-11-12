@@ -1527,7 +1527,18 @@ def main():
             print("Magasin introuvable : %s" % d, file=sys.stderr)
             return 2
         store.add_dir(d)
+    seen_lots = {}
     for lot in lots:
+        # Un lot et son nom d'origine (<run_id>.tar.gz, lien dur) sont le même fichier : lu une fois
+        try:
+            st = os.stat(lot)
+            ident = (st.st_dev, st.st_ino)
+        except OSError:
+            ident = lot
+        if ident in seen_lots:
+            print("Lot ignoré       : %s (même fichier que %s)" % (lot, seen_lots[ident]))
+            continue
+        seen_lots[ident] = lot
         rid = store.add_lot(lot)
         if rid:
             print("Lot ignoré       : %s (passage %s déjà présent dans le magasin)" % (lot, rid))

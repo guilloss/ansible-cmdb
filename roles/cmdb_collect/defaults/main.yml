@@ -16,7 +16,9 @@ cmdb_tag_regex: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 #   <cmdb_store>/_runs/<run_id>/   manifeste du passage (statut de chaque hôte)
 #   <cmdb_store>/_lots/            lots transférables (cmdb_lot: true)
 cmdb_store: "{{ playbook_dir }}/store"
-cmdb_lot: false                     # produire <cmdb_store>/_lots/<run_id>.tar.gz à transférer
+cmdb_lot: false                     # produire <cmdb_store>/_lots/<app>__<pf>__<run_id>.tar.gz à transférer
+cmdb_lot_name: ""                   # nom imposé du lot (sans .tar.gz) ; vide : <app>__<pf>__<run_id>
+cmdb_lot_keep_run_id_name: true     # garder aussi <run_id>.tar.gz (lien dur, même fichier) pour les procédures existantes
 
 # Interpréteur Python distant (2.7 ou >= 3.6). Par défaut celui découvert par Ansible.
 cmdb_python: "{{ ansible_facts.python.executable | default(ansible_python_interpreter) | default('/usr/bin/python3') }}"

@@ -82,7 +82,9 @@ Paramètres principaux (`roles/cmdb_collect/defaults/main.yml`) :
 | `cmdb_app`, `cmdb_platform` | (obligatoires) | Application et plate-forme du passage (voir ci-dessous) |
 | `cmdb_tags` | `{}` | Étiquettes libres recopiées dans chaque collecte, ex. `{"site": "Paris"}`. En ligne de commande : `-e cmdb_tags=site=Paris,squad=S3` |
 | `cmdb_store` | `store/` | Magasin des collectes sur le contrôleur |
-| `cmdb_lot` | false | Produire un lot transférable du passage (`store/_lots/<run_id>.tar.gz`) |
+| `cmdb_lot` | false | Produire un lot transférable du passage (`store/_lots/<app>__<pf>__<run_id>.tar.gz`) |
+| `cmdb_lot_name` | "" | Nom imposé du lot (sans `.tar.gz`) ; vide : `<app>__<pf>__<run_id>` |
+| `cmdb_lot_keep_run_id_name` | true | Garder aussi `<run_id>.tar.gz` (lien dur vers le même fichier, pour les procédures existantes) |
 | `cmdb_scan_max_seconds` | 900 | Budget du parcours disque ; au-delà, résultat partiel signalé (`fs_scan_truncated`) |
 | `cmdb_scan_roots` | `[]` (= `/`) | Limiter le parcours à certaines racines |
 | `cmdb_scan_extra_excludes` | `[]` | Exclusions supplémentaires (gros volumes de données, maildirs…) |
@@ -110,7 +112,8 @@ store/
 ├── APPDEMO/prod/aixprd01/…error.json                     # trace d'échec, le cas échéant
 ├── _runs/20261105T090000Z-1a2b/_run.json                 # manifeste du passage : en-tête…
 │                              /APPDEMO__prod__aixprd02.json  # …et statut de chaque hôte
-└── _lots/20261105T090000Z-1a2b.tar.gz                    # lot transférable (cmdb_lot=true)
+├── _lots/APPDEMO__prod__20261105T090000Z-1a2b.tar.gz      # lot transférable (cmdb_lot=true)
+└── _lots/20261105T090000Z-1a2b.tar.gz                    # le même lot sous son nom d'origine (lien dur)
 ```
 
 Le manifeste du passage enregistre le statut de **chaque hôte visé**, y compris ceux qui étaient injoignables ou en échec (`ok`, `failed`, `unreachable`). Le rapport signale ainsi un serveur non collecté au dernier passage, dont la fiche affichée est plus ancienne. Un hôte en échec reste en échec dans le récapitulatif d'Ansible, après l'écriture du manifeste.
@@ -131,13 +134,13 @@ Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaq
 
 **Travailler à plusieurs équipes : le dépôt de lots.** Il n'y a pas d'étape de fusion : chaque équipe collecte de son côté, et c'est la consolidation qui met tout en commun. Elle ne modifie pas les collectes et se relance autant de fois que nécessaire, à mesure que les lots arrivent.
 
-1. Chaque équipe collecte avec `-e cmdb_lot=true`, ce qui produit une archive unique par passage, `store/_lots/<run_id>.tar.gz` (collectes et manifeste) :
+1. Chaque équipe collecte avec `-e cmdb_lot=true`, ce qui produit une archive unique par passage, `store/_lots/<app>__<pf>__<run_id>.tar.gz` (collectes et manifeste), par exemple `APP1__prod__20261105T090000Z-1a2b.tar.gz`. Si le passage couvre plusieurs applications ou plates-formes, leurs noms sont joints par `+` (`APP1+APP2__prod__…`), et au-delà de trois remplacés par `multi`. Le même lot reste aussi disponible sous son nom d'origine `<run_id>.tar.gz` (lien dur, sans place en plus), pour les procédures déjà écrites :
 
    ```bash
    ansible-playbook -i inventory/equipe1.yml collect.yml -e cmdb_app=APP1 -e cmdb_platform=prod -e cmdb_lot=true
    ```
 
-2. Elle dépose cette archive dans un répertoire commun, par exemple `/depot/lots/`. L'identifiant du passage figure dans le nom du fichier.
+2. Elle dépose cette archive dans un répertoire commun, par exemple `/depot/lots/`, sans la renommer : l'application, la plate-forme et l'identifiant du passage figurent dans le nom. La consolidation ne se sert pas du nom : un lot renommé reste lisible, et un même fichier passé sous deux noms n'est lu qu'une fois.
 
 3. Avant la mise en commun, chaque équipe peut contrôler sa partie dans un répertoire de sortie séparé, sans effet sur les autres :
 
