@@ -550,6 +550,7 @@ function prepare() {
     partial: D.H.filter(h => h.fs_scan_truncated || !h.privileged).length,
     errors: rowsOf(D.errors).length,
     failed: rowsOf(D.runs_failed).length,
+    svcfail: rowsOf(D.services).filter(svcFailed).length,
     fsfull: D.fsfull.length,
     keys: rowsOf(D.crypto_files).filter(keyExposed).length,
     certs: rowsOf(D.crypto_certs).filter(c => !c.is_ca && c.days_left != null && c.days_left <= 30).length,
@@ -660,15 +661,15 @@ function searchHosts(q) {
 // ---------------------------------------------------------------- vues
 const ROUTES = [
   ["accueil", "Accueil"], ["serveurs", "Serveurs"], ["logiciels", "Logiciels"], ["versions", "Versions"],
-  ["bases", "Bases de données"], ["carte", "Carte des flux"], ["services", "Services réseau"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
+  ["bases", "Bases de données"], ["carte", "Carte des flux"], ["services", "Services réseau"], ["systeme", "Services système"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
   ["materiel", "Matériel"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"], ["vulnerabilites", "Vulnérabilités"], ["support", "Fins de support"],
   ["evolutions", "Évolutions"], ["alertes", "Alertes"],
 ];
 function navCounts() {
   const a = D.alerts;
   return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
-    services: rowsOf(D.endpoints).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, vulnerabilites: rowsOf(D.vulns).filter(vulnUrgent).length, ecarts: rowsOf(D.drift_matrix).filter(o => o.importance <= 2).length + rowsOf(D.drift).filter(o => o.scope === "jumeaux").length,
-    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol};
+    services: rowsOf(D.endpoints).length, systeme: rowsOf(D.services).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, vulnerabilites: rowsOf(D.vulns).filter(vulnUrgent).length, ecarts: rowsOf(D.drift_matrix).filter(o => o.importance <= 2).length + rowsOf(D.drift).filter(o => o.scope === "jumeaux").length,
+    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol + a.svcfail};
 }
 function renderNav(route) {
   const c = navCounts();
@@ -703,6 +704,7 @@ function vAccueil() {
     ["oracle", a.oracle, "warn", "ORACLE_HOME en retard de correctifs", "Plus de 200 jours, ou plus ancien que le reste du parc", "bases?onglet=homes"],
     ["eol", a.eol, "warn", "Fins de support dépassées", "Systèmes et composants hors paquet", "support"],
     ["fsfull", a.fsfull, "warn", "Systèmes de fichiers presque pleins", "Occupation ou inodes à 90 % ou plus", "alertes"],
+    ["svcfail", a.svcfail, "warn", "Services en échec", "Unités systemd en échec : à relancer ou à désactiver", "systeme?onglet=echec"],
     ["failed", a.failed, "warn", "Serveurs non collectés au dernier passage", "Injoignables ou en échec : la fiche affichée est plus ancienne", "alertes"],
     ["partial", a.partial, "", "Collectes partielles", "Sans root ou parcours disque interrompu : couverture réduite", "serveurs"],
   ];
@@ -861,9 +863,9 @@ function vServeur(key, params) {
       <a href="${link("logiciels", sq)}">Voir les ${fmt(mine.length)} composants de ce serveur</a>
       ou seulement <a href="${link("logiciels", {...sq, gestion: "um"})}">ceux hors paquet</a>.</p>` + swTable(rs, []);
   } else if (tab === "exposition") {
-    body = `<h3>Ports en écoute</h3>` + listeningTable(hostRows("listening"), false) + `<h3>Services actifs</h3>` + table([
-      {k: "unit", l: "Unité"}, {k: "sub", l: "État"}, {k: "unit_file_state", l: "Au démarrage"}, {k: "user", l: "Utilisateur"},
-      {k: "description", l: "Description"}], hostRows("services"), {sort: "unit", empty: "Aucun service actif relevé (systemd absent ou collecte shell sur système SysV)."})
+    body = `<h3>Ports en écoute</h3>` + listeningTable(hostRows("listening"), false) + `<h3>Services</h3>`
+      + `<p class="hint">En marche, en échec ou activés au démarrage. <a href="${link("systeme", {onglet: "tout", q: h.host})}">Voir dans les services du parc</a>.</p>`
+      + svcTable(hostRows("services"), host)
       + (hostRows("containers").length ? `<h3>Conteneurs et images</h3>` + table([{k: "engine", l: "Moteur"}, {k: "kind", l: "Type"},
       {k: "name", l: "Nom"}, {k: "image", l: "Image"}, {k: "status", l: "État"}], hostRows("containers")) : "")
       + (hostRows("container_images").length ? `<h3>Contenu des conteneurs en marche</h3>` + table([{k: "engine", l: "Moteur"},
@@ -1106,6 +1108,59 @@ function modulesTable(rows, host) {
 function runtimesTable(rows, host) {
   return table(hcolOf(host).concat([{k: "port", l: "Port", cls: "num"}, {k: "address", l: "Adresse", cls: "mono"}, {k: "exposed", l: "Exposé", f: r => r.exposed ? '<span class="badge warn">réseau</span>' : "local"},
     {k: "runtime", l: "Langage"}, {k: "version", l: "Version"}, {k: "app_ref", l: "Application", cls: "path"}, {k: "options", l: "Options", cls: "path"}, {k: "user", l: "Compte"}, {k: "exe", l: "Exécutable", cls: "path"}]), rows, {empty: "Aucun langage derrière un port en écoute."});
+}
+// ---------------------------------------------------------------- services système
+const svcFailed = o => o.active === "failed";
+const svcStopped = o => o.active === "inactive" && o.unit_file_state === "enabled" && o.service_type !== "oneshot";
+const SVC_KIND = {systemd: "systemd", sysv: "SysV", src: "SRC (AIX)", windows: "Windows"};
+const SVC_BOOT = {enabled: "activé", "enabled-runtime": "activé", disabled: "désactivé", manual: "manuel", static: "statique",
+  masked: "masqué", indirect: "indirect", generated: "généré", alias: "alias"};
+function svcState(o) {
+  if (svcFailed(o)) return '<span class="badge risk">en échec</span>';
+  if (o.active === "active") return o.sub === "exited" ? '<span class="badge muted" title="Service ponctuel, terminé normalement">exécuté</span>'
+    : '<span class="badge ok">en marche</span>';
+  if (o.active === "inactive") return svcStopped(o) ? '<span class="badge warn" title="Activé au démarrage mais arrêté">arrêté</span>'
+    : `<span class="badge muted">${esc(o.sub && o.sub !== "dead" && o.sub !== "stopped" ? o.sub : "arrêté")}</span>`;
+  if (o.active == null) return '<span class="badge muted" title="Script SysV sans fichier PID ni processus reconnaissable">inconnu</span>';
+  return esc(o.active + (o.sub ? " / " + o.sub : ""));
+}
+const svcName = o => o.kind === "systemd" ? String(o.unit || "").replace(/\.service$/, "") : (o.unit || "");
+function svcTable(rows, host) {
+  return table(hcolOf(host).concat([
+    {k: "unit", l: "Service", f: o => `<b>${esc(svcName(o))}</b>`}, {k: "kind", l: "Gestionnaire", f: o => esc(SVC_KIND[o.kind] || o.kind || "")},
+    {k: "active", l: "État", f: svcState}, {k: "unit_file_state", l: "Au démarrage", f: o => esc(SVC_BOOT[o.unit_file_state] || o.unit_file_state || "")},
+    {k: "software", l: "Composant", f: o => o.software ? `<b>${esc(o.software)}</b>` : ""},
+    {k: "software_location", l: "Emplacement", cls: "path"}, {k: "main_pid", l: "PID", cls: "num"}, {k: "user", l: "Compte"},
+    {k: "description", l: "Description"}]), rows, {sort: host ? "unit" : undefined, empty: "Aucun service relevé."});
+}
+function vSysteme(params) {
+  const all = rowsOf(D.services);
+  const groups = new Map();
+  all.forEach(o => {
+    const k = o.kind + "|" + svcName(o);
+    if (!groups.has(k)) groups.set(k, {unit: svcName(o), kind: o.kind, hosts: 0, up: 0, failed: 0, stopped: 0, sw: new Set(), desc: o.description || ""});
+    const g = groups.get(k);
+    g.hosts++;
+    if (o.active === "active" && o.sub !== "exited") g.up++;
+    if (svcFailed(o)) g.failed++;
+    if (svcStopped(o)) g.stopped++;
+    if (o.software) g.sw.add(o.software);
+  });
+  const agg = [...groups.values()].map(g => Object.assign(g, {software: [...g.sw].sort().join(" ; ")}));
+  const failed = all.filter(svcFailed), stopped = all.filter(svcStopped);
+  const n = v => v ? fmt(v) : "";
+  return tabbed("systeme", "Services système", "Services gérés par systemd, les scripts SysV, le SRC d'AIX ou Windows, avec le composant (et sa version) que chacun exécute. "
+    + "Le lien se fait par les processus du service et l'exécutable qu'il déclare ; il fonctionne sans collecte privilégiée.", [
+    ["parservice", `Par service (${fmt(agg.length)})`, m => table([
+      {k: "unit", l: "Service", f: g => `<a href="${link("systeme", {onglet: "tout", q: g.unit})}"><b>${esc(g.unit)}</b></a>`},
+      {k: "kind", l: "Gestionnaire", f: g => esc(SVC_KIND[g.kind] || g.kind || "")}, {k: "hosts", l: "Serveurs", cls: "num"},
+      {k: "up", l: "En marche", cls: "num", f: g => n(g.up)}, {k: "failed", l: "En échec", cls: "num", f: g => g.failed ? `<span class="badge risk">${fmt(g.failed)}</span>` : ""},
+      {k: "stopped", l: "Activés mais arrêtés", cls: "num", f: g => g.stopped ? `<span class="badge warn">${fmt(g.stopped)}</span>` : ""},
+      {k: "software", l: "Composants exécutés"}, {k: "desc", l: "Description"}], m(agg), {sort: "hosts", dir: -1, empty: "Aucun service relevé."})],
+    ["tout", `Détail (${fmt(all.length)})`, m => svcTable(m(all))],
+    ["echec", `En échec (${fmt(failed.length)})`, m => svcTable(m(failed))],
+    ["arretes", `Activés mais arrêtés (${fmt(stopped.length)})`, m => `<p class="hint">Activés au démarrage mais arrêtés au moment de la collecte (services ponctuels exclus).</p>` + svcTable(m(stopped))],
+  ], params, "Filtrer (serveur, service, composant…)");
 }
 function vServices(params) {
   const eps = rowsOf(D.endpoints);
@@ -1460,7 +1515,7 @@ function route() {
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,
-      materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, cles: vCles, support: vSupport, vulnerabilites: vVulns, evolutions: vEvolutions}[r] || vAccueil)(params);
+      materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, systeme: vSysteme, cles: vCles, support: vSupport, vulnerabilites: vVulns, evolutions: vEvolutions}[r] || vAccueil)(params);
   } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
   renderNav(r);
   $("#topbar").hidden = r === "accueil";

@@ -193,3 +193,25 @@ class Shell(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServicesSansPrivilege(unittest.TestCase):
+    def test_fichiers_pid_shell(self):
+        got = cmdb_shell_parse.pid_files("/run/sshd.pid 812\n/var/run/httpd/httpd.pid 30\n/run/vide.pid\n")
+        self.assertEqual(got, {"/run/sshd.pid": 812, "/var/run/httpd/httpd.pid": 30})
+
+    def test_fichiers_pid_python(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cmdb_collector_mod", COLLECTOR)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        got = mod.pid_files()
+        self.assertIsInstance(got, dict)
+        self.assertTrue(all(isinstance(v, int) for v in got.values()))
+
+    def test_lssrc(self):
+        from cmdb_build import parse_lssrc
+        u = parse_lssrc("Subsystem Group PID Status\n syslogd ras 3932356 active\n sendmail mail inoperative\n portmap 4194 active\n")
+        self.assertEqual([(x["unit"], x["main_pid"], x["active"]) for x in u],
+                         [("syslogd", 3932356, "active"), ("sendmail", None, "inactive"), ("portmap", 4194, "active")])
+        self.assertEqual(u[0]["description"], "SRC groupe ras")

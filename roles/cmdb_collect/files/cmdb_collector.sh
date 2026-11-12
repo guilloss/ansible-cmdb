@@ -370,6 +370,7 @@ section_services() {
     cap chkconfig chkconfig --list
     cap initctl initctl list
     cap rc_dirs sh -c 'ls -l /etc/rc.d/rc[0-6].d /etc/rc[0-6S].d /etc/init.d 2>/dev/null'
+    cap pid_files sh -c 'for f in /run/*.pid /run/*/*.pid /var/run/*.pid /var/run/*/*.pid /etc/*.pid; do [ -f "$f" ] && [ -r "$f" ] && { read p < "$f"; echo "$f $p"; }; done 2>/dev/null'
     if have systemctl; then
         cap systemctl_units systemctl list-units --all --no-legend --no-pager
         cap systemctl_files systemctl list-unit-files --no-legend --no-pager
@@ -897,6 +898,7 @@ section_aix() {
     capt 120 netstat_an netstat -an
     cap lssrc lssrc -a
     cap rc_dirs sh -c 'ls -l /etc/rc.d/rc2.d 2>/dev/null'
+    cap pid_files sh -c 'for f in /run/*.pid /run/*/*.pid /var/run/*.pid /var/run/*/*.pid /etc/*.pid; do [ -f "$f" ] && [ -r "$f" ] && { read p < "$f"; echo "$f $p"; }; done 2>/dev/null'
     cap no_a no -a
 }
 

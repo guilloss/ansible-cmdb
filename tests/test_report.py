@@ -28,6 +28,8 @@ ROUTES += ["serveurs?pf=prod,recette", "serveurs?pf=prod", "serveurs?tag=" + quo
            "serveurs?tag=" + quote("squad=S4,site=Paris", safe=""), "serveurs?tag=" + quote("squad=S3,site=Paris", safe="")]
 ROUTES += ["cles?onglet=certs&etat=expires", "cles?onglet=certs&du=2026-11-18", "cles?onglet=certs&au=2026-11-16",
            "cles?onglet=certs&etat=30x"]
+ROUTES += ["systeme", "systeme?onglet=tout", "systeme?onglet=echec", "systeme?onglet=arretes", "systeme?onglet=tout&q=pg1",
+           "serveur/" + quote("APPDEMO|prod|pg1.exemple.test", safe="") + "?onglet=exposition"]
 HOST = "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")
 ROUTES += [HOST + "?onglet=" + t for t in ("synthese", "bases", "web", "cles", "dependances", "durcissement", "evolutions", "alertes")]
 
@@ -42,6 +44,14 @@ class Rapport(unittest.TestCase):
         app, pg = fleet.app_host(), fleet.pg_host()
         app["meta"]["tags"]["squad"] = "S3"
         pg["meta"]["tags"].update({"squad": "S4", "site": "Paris"})
+        pg["runtimes"] = {"list": [{"probe": "postgresql", "realpath": "/usr/pgsql-14/bin/postgres", "paths": ["/usr/pgsql-14/bin/postgres"],
+                                    "outputs": [{"args": ["/usr/pgsql-14/bin/postgres", "--version"], "rc": 0, "output": "postgres (PostgreSQL) 14.9"}]}]}
+        pg["services"] = {"units": [{"unit": "postgresql-14.service", "load": "loaded", "active": "active", "sub": "running", "description": "PostgreSQL 14"},
+                                    {"unit": "kdump.service", "load": "loaded", "active": "failed", "sub": "failed", "description": "Crash recovery kernel"},
+                                    {"unit": "chronyd.service", "load": "loaded", "active": "inactive", "sub": "dead", "description": "NTP"}],
+                          "unit_files": [{"unit": "chronyd.service", "state": "enabled"}, {"unit": "postgresql-14.service", "state": "enabled"}],
+                          "service_details": [{"Id": "postgresql-14.service", "MainPID": "20", "User": "postgres", "Type": "notify"},
+                                              {"Id": "chronyd.service", "MainPID": "0", "Type": "forking"}]}
         fleet.write_store(store, [old, fleet.oracle_host(), app, pg, fleet.pg_standby(), fleet.web_host(),
                                   fleet.twin("t1.exemple.test", "10.0.1.1"), fleet.twin("t2.exemple.test", "10.0.1.2"),
                                   fleet.twin("t3.exemple.test", "10.0.1.3", php="8.1.9"), fleet.twin("r1.exemple.test", "10.0.2.1", php="8.3.0", pf="recette")])
@@ -53,6 +63,18 @@ class Rapport(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.d, ignore_errors=True)
+
+    def test_services_systeme(self):
+        p = self.pages["systeme"]
+        self.assertIn("postgresql-14", p)
+        self.assertIn("postgres 14.9", p)
+        self.assertIn("kdump", self.pages["systeme?onglet=echec"])
+        self.assertNotIn("postgresql-14", self.pages["systeme?onglet=echec"])
+        self.assertIn("chronyd", self.pages["systeme?onglet=arretes"])
+        h = self.pages["serveur/" + quote("APPDEMO|prod|pg1.exemple.test", safe="") + "?onglet=exposition"]
+        self.assertIn("postgres 14.9", h)
+        self.assertIn("en échec", h)
+        self.assertIn("Services en échec", self.pages["accueil"])
 
     def test_aucune_erreur(self):
         for r in ROUTES:

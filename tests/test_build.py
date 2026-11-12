@@ -181,6 +181,142 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ServicesSysteme(unittest.TestCase):
+    """Services systemd, SysV, SRC et Windows ; lien service -> composant sans collecte privilégiée."""
+
+    @classmethod
+    def setUpClass(cls):
+        import gzip as _gz
+        import json as _json
+        import sqlite3 as _sq
+        import subprocess as _sp
+        import tempfile as _tf
+        from tests import fleet
+        from tests.common import TOOLS
+        cls.dir = _tf.mkdtemp(prefix="cmdbsvc")
+
+        def probe(v, path):
+            return {"probe": "postgresql", "realpath": path, "paths": [path],
+                    "outputs": [{"args": [path, "--version"], "rc": 0, "output": "postgres (PostgreSQL) %s.1" % v}]}
+        # collecte non privilégiée : exécutables des processus illisibles (exe vide)
+        sysd = fleet.doc("sd1.exemple.test", "APP", "prod", "10.0.0.1", "r1", "2026-11-12T08:00:00Z",
+                         runtimes={"list": [probe("13", "/usr/lib/postgresql/13/bin/postgres"), probe("15", "/usr/lib/postgresql/15/bin/postgres"),
+                                            probe("16", "/opt/pg16/bin/postgres")]},
+                         processes=[{"pid": 10, "ppid": 1, "comm": "postgres", "user": "postgres", "systemd_unit": "postgresql@15-main.service",
+                                     "cmdline": "/usr/lib/postgresql/15/bin/postgres -D /var/lib/postgresql/15/main"},
+                                    {"pid": 11, "ppid": 10, "comm": "postgres", "user": "postgres", "systemd_unit": "postgresql@15-main.service",
+                                     "cmdline": "postgres: 15/main: checkpointer"},
+                                    {"pid": 20, "ppid": 1, "comm": "postgres", "user": "pg16", "systemd_unit": "pg16.service",
+                                     "cmdline": "postgres: main"}],
+                         services={"units": [
+                             {"unit": "postgresql@15-main.service", "load": "loaded", "active": "active", "sub": "running", "description": "PostgreSQL 15"},
+                             {"unit": "pg16.service", "load": "loaded", "active": "active", "sub": "running", "description": "PG 16"},
+                             {"unit": "casse.service", "load": "loaded", "active": "failed", "sub": "failed", "description": "En panne"},
+                             {"unit": "arrete.service", "load": "loaded", "active": "inactive", "sub": "dead", "description": "Arrêté"},
+                             {"unit": "ponctuel.service", "load": "loaded", "active": "inactive", "sub": "dead", "description": "Oneshot"},
+                             {"unit": "inutile.service", "load": "loaded", "active": "inactive", "sub": "dead", "description": "Désactivé"}],
+                             "unit_files": [{"unit": "arrete.service", "state": "enabled"}, {"unit": "ponctuel.service", "state": "enabled"},
+                                            {"unit": "inutile.service", "state": "disabled"}],
+                             "service_details": [
+                                 {"Id": "postgresql@15-main.service", "MainPID": "10", "User": "postgres",
+                                  "ExecStart": "{ path=/usr/bin/pg_ctlcluster ; argv[]=/usr/bin/pg_ctlcluster --skip-systemctl-redirect 15-main start ; }"},
+                                 {"Id": "pg16.service", "MainPID": "20", "Type": "notify",
+                                  "ExecStart": "{ path=/opt/pg16/bin/postgres ; argv[]=/opt/pg16/bin/postgres -D /data/pg16 ; }"},
+                                 {"Id": "arrete.service", "MainPID": "0", "Type": "simple"},
+                                 {"Id": "ponctuel.service", "MainPID": "0", "Type": "oneshot"}]})
+        sysv = fleet.doc("sv1.exemple.test", "APP", "prod", "10.0.0.2", "r1", "2026-11-12T08:00:00Z",
+                         processes=[{"pid": 30, "ppid": 1, "comm": "httpd", "user": "root", "cmdline": "/usr/sbin/httpd"},
+                                    {"pid": 31, "ppid": 30, "comm": "httpd", "user": "apache", "cmdline": "/usr/sbin/httpd"},
+                                    {"pid": 40, "ppid": 1, "comm": "sshd", "user": "root", "cmdline": "/usr/sbin/sshd"}],
+                         services={"chkconfig": "httpd          0:off 1:off 2:on 3:on 4:on 5:on 6:off\n"
+                                                "crond          0:off 1:off 2:on 3:on 4:on 5:on 6:off\n"
+                                                "iptables       0:off 1:off 2:off 3:off 4:off 5:off 6:off\n",
+                                   "rc_links": {"/etc/rc.d/rc3.d": ["S55sshd", "K10netconsole"]},
+                                   "pid_files": {"/var/run/httpd/httpd.pid": 30, "/var/run/crond.pid": 999}})
+        aix = fleet.doc("ax1.exemple.test", "APP", "prod", "10.0.0.3", "r1", "2026-11-12T08:00:00Z",
+                        services={"lssrc": "Subsystem         Group            PID          Status\n"
+                                           " syslogd          ras              3932356      active\n"
+                                           " sendmail         mail                          inoperative\n"})
+        win = fleet.doc("wn1.exemple.test", "APP", "prod", "10.0.0.4", "r1", "2026-11-12T08:00:00Z",
+                        windows={"services": [
+                            {"name": "Spooler", "display_name": "Spouleur", "state": "Running", "start_mode": "Auto", "pid": 500,
+                             "path": "C:\\Windows\\System32\\spoolsv.exe", "account": "LocalSystem"},
+                            {"name": "wuauserv", "display_name": "Windows Update", "state": "Stopped", "start_mode": "Manual", "pid": 0,
+                             "path": "C:\\Windows\\system32\\svchost.exe -k netsvcs", "account": "LocalSystem"}]})
+        for name, d in (("sd1", sysd), ("sv1", sysv), ("ax1", aix), ("wn1", win)):
+            p = os.path.join(cls.dir, "store", "APP", "prod", name, "r1.json.gz")
+            os.makedirs(os.path.dirname(p))
+            with _gz.open(p, "wt") as f:
+                _json.dump(d, f)
+        out = os.path.join(cls.dir, "b")
+        _sp.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(cls.dir, "store"), "--out", out,
+                        "--no-dossiers"], stdout=_sp.DEVNULL)
+        cls.out = out
+        cls.db = _sq.connect(os.path.join(out, "cmdb.sqlite"))
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil as _sh
+        cls.db.close()
+        _sh.rmtree(cls.dir, True)
+
+    def svc(self, host):
+        return dict((r[0], r[1:]) for r in self.db.execute(
+            "SELECT unit, kind, active, sub, unit_file_state, main_pid, software, software_location FROM services WHERE host = ?",
+            (host + ".exemple.test",)))
+
+    def test_systemd_composant(self):
+        s = self.svc("sd1")
+        self.assertIn("15.1", s["postgresql@15-main.service"][5])
+        self.assertEqual(s["postgresql@15-main.service"][6], "/usr/lib/postgresql/15/bin/postgres")
+        self.assertEqual(s["pg16.service"][6], "/opt/pg16/bin/postgres")
+        self.assertEqual(s["arrete.service"][0], "systemd")
+        self.assertIsNone(s["casse.service"][5])
+
+    def test_service_marque_le_composant_en_cours(self):
+        # pg16 : exécutable illisible et ligne de commande sans chemin ; seul ExecStart le désigne
+        run = dict(self.db.execute("SELECT location, running FROM software WHERE host = 'sd1.exemple.test' AND category = 'runtime' "
+                                   "AND location LIKE '%postgres'"))
+        self.assertEqual(run["/opt/pg16/bin/postgres"], 1)
+        self.assertEqual(run["/usr/lib/postgresql/15/bin/postgres"], 1)
+        self.assertIsNone(run["/usr/lib/postgresql/13/bin/postgres"])
+
+    def test_sysv(self):
+        s = self.svc("sv1")
+        self.assertEqual(s["httpd"][:5], ("sysv", "active", "running", "enabled", 30))
+        self.assertEqual(s["crond"][1:3], ("inactive", "fichier PID périmé"))
+        self.assertEqual(s["iptables"][1:4], (None, None, "disabled"))
+        self.assertEqual(s["sshd"][1], "active")      # lien S55sshd, processus du même nom
+        self.assertNotIn("netconsole", s)
+
+    def test_aix_src(self):
+        s = self.svc("ax1")
+        self.assertEqual(s["syslogd"][:2], ("src", "active"))
+        self.assertEqual(s["syslogd"][4], 3932356)
+        self.assertEqual(s["sendmail"][1:3], ("inactive", "inoperative"))
+
+    def test_windows(self):
+        s = self.svc("wn1")
+        self.assertEqual(s["Spooler"][:5], ("windows", "active", "running", "enabled", 500))
+        self.assertEqual(s["wuauserv"][1:4], ("inactive", "stopped", "manual"))
+
+    def test_rapport(self):
+        import base64 as _b64
+        import gzip as _gz
+        import json as _json
+        import re as _re
+        with open(os.path.join(self.out, "cmdb_rapport.html"), encoding="utf-8") as f:
+            html = f.read()
+        m = _re.search(r'id="cmdb-data">([^<]+)<', html)
+        data = _json.loads(_gz.decompress(_b64.b64decode(m.group(1))))
+        cols = data["services"]["cols"]
+        units = [r[cols.index("unit")] for r in data["services"]["rows"]]
+        self.assertIn("software", cols)
+        self.assertIn("casse.service", units)
+        self.assertIn("arrete.service", units)
+        self.assertNotIn("inutile.service", units)   # arrêté et non activé : pas exporté
+
+
 class EnCoursDExecution(unittest.TestCase):
     """Plusieurs PostgreSQL installés, un seul lancé : software.running le distingue."""
 

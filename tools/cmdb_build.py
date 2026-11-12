@@ -606,7 +606,8 @@ CREATE TABLE listening (host TEXT, proto TEXT, address TEXT, port INTEGER, pid I
 CREATE TABLE connections (host TEXT, direction TEXT, local_port INTEGER, remote_addr TEXT, remote_port INTEGER,
   process TEXT, count INTEGER);
 CREATE TABLE services (host TEXT, unit TEXT, load TEXT, active TEXT, sub TEXT, unit_file_state TEXT,
-  main_pid INTEGER, exec_start TEXT, user TEXT, fragment_path TEXT, description TEXT);
+  main_pid INTEGER, exec_start TEXT, user TEXT, fragment_path TEXT, description TEXT,
+  kind TEXT, service_type TEXT, software TEXT, software_location TEXT);
 CREATE TABLE container_images (host TEXT, engine TEXT, image TEXT, image_id TEXT, containers TEXT, os_id TEXT, os_version TEXT,
   os_pretty TEXT, packages INTEGER, components INTEGER, truncated INTEGER, seconds REAL, note TEXT);
 CREATE TABLE container_packages (host TEXT, image_id TEXT, image TEXT, manager TEXT, name TEXT, epoch TEXT, version TEXT,
@@ -710,6 +711,19 @@ class JavaDb(object):
         return None
 
 
+def parse_lssrc(text):
+    """Sortie de lssrc -a (Subsystem Group PID Status) -> unités SRC."""
+    units = []
+    for line in (text or "").splitlines()[1:]:
+        p = line.split()
+        if len(p) >= 2:
+            pid = [x for x in p[1:-1] if x.isdigit()]
+            group = [x for x in p[1:-1] if not x.isdigit()]
+            units.append({"unit": p[0], "active": "active" if p[-1] == "active" else "inactive", "sub": p[-1],
+                          "main_pid": int(pid[0]) if pid else None, "description": "SRC" + (" groupe " + group[0] if group else "")})
+    return units
+
+
 class Builder(cmdb_extras.ExtrasMixin):
 
     def __init__(self, db, java_db=None):
@@ -748,7 +762,7 @@ class Builder(cmdb_extras.ExtrasMixin):
         sw = self.rows.get("software")
         if not sw:
             return
-        procs = [p for p in self.rows.get("processes") or [] if not p[13]]   # hors conteneurs
+        procs = [p for p in self.rows.get("processes") or [] if not p[12] and not p[13]]   # hors conteneurs
         exes, pkgs, blob, complete = set(), set(), [], bool(procs)
         for p in procs:
             exe, owner, cmd = self._norm_path(p[7]), p[8], p[9] or ""
@@ -791,8 +805,100 @@ class Builder(cmdb_extras.ExtrasMixin):
             out.append(tuple(r[:15]) + (run,))
         self.rows["software"] = out
 
+    INTERPRETERS = frozenset(["java", "python", "node", "nodejs", "dotnet", "perl", "php", "ruby"])
+
+    @classmethod
+    def _exec_path(cls, kind, text):
+        """Exécutable déclaré par le service : argv[0] de ExecStart (systemd), PathName (Windows)."""
+        text = (text or "").strip()
+        if kind == "systemd":
+            m = re.search(r"argv\[\]=(\S+)", text) or re.search(r"path=(\S+)", text)
+            return cls._norm_path(m.group(1)) if m else ""
+        if kind == "windows":
+            m = re.match(r'^"([^"]+)"', text) or re.match(r"^(.+?\.exe)\b", text, re.I) or re.match(r"^(\S+)", text)
+            return cls._norm_path(m.group(1)) if m else ""
+        return ""
+
+    def link_services(self):
+        """services.software : composant(s) exécuté(s) par chaque service, d'après les processus du service
+        (unité systemd du processus, PID principal et ses enfants) et l'exécutable déclaré. Un service en
+        marche marque aussi ses composants software.running = 1 (utile quand l'exécutable du processus
+        est illisible sans privilège mais que ExecStart ou la ligne de commande le désignent)."""
+        svcs, sw = self.rows.get("services"), self.rows.get("software")
+        if not svcs or not sw:
+            return
+        procs = [p for p in self.rows.get("processes") or [] if not p[12] and not p[13]]
+        by_host = {}
+        for i, r in enumerate(sw):
+            if r[3] in self.RUNNING_CATEGORIES:
+                by_host.setdefault(r[2], []).append(i)
+        sw = list(sw)
+        out = []
+        for sv in svcs:
+            host, unit, active, sub, pid, kind = sv[2], sv[3], sv[5], sv[6], sv[8], sv[13]
+            mine = [p for p in procs if p[2] == host and ((kind == "systemd" and p[14] == unit) or
+                                                         (pid and (p[3] == pid or p[4] == pid)))]
+            exes, pkgs, blob = set(), set(), []
+            ex = self._exec_path(kind, sv[9])
+            if ex:
+                exes.add(ex)
+            for p in mine:
+                if p[7]:
+                    exes.add(self._norm_path(p[7]))
+                if p[8]:
+                    pkgs.add(p[8])
+                cmd = self._norm_path(p[9] or "")
+                a0 = cmd.split(" ", 1)[0]
+                if a0.startswith("/") or re.match(r"^[a-z]:/", a0):
+                    exes.add(a0)
+                blob.append(cmd)
+            blob = "\n".join(blob)
+            dirs = set()
+            for e in exes:
+                parts = e.split("/")
+                for k in range(2, len(parts)):
+                    dirs.add("/".join(parts[:k]))
+            hits, fallback = [], []
+            for i in by_host.get(host, []):
+                r = sw[i]
+                if r[3] == "os-package":
+                    if r[6] in pkgs:
+                        fallback.append(i)
+                    continue
+                loc = self._norm_path(r[8]).rstrip("/")
+                if not (loc.startswith("/") or re.match(r"^[a-z]:/", loc)) or loc.count("/") < 2:
+                    continue
+                if loc in exes or loc in dirs or self._cited(blob, loc):
+                    hits.append(i)
+            hits = sorted(hits, key=lambda i: ((sw[i][5] or "").lower() in self.INTERPRETERS, -len(sw[i][8] or ""))) or fallback
+            names, seen = [], set()
+            for i in hits:
+                nv = ("%s %s" % (sw[i][6], sw[i][7] or "")).strip()
+                if nv not in seen:
+                    seen.add(nv)
+                    names.append(nv)
+            running = active == "active" and (sub in ("running", "active", None) or kind != "systemd") and (mine or kind == "windows")
+            if running:
+                for i in hits:
+                    if sw[i][15] != 1:
+                        sw[i] = sw[i][:15] + (1,)
+            out.append(tuple(sv[:15]) + ("; ".join(names[:3]) or None, sw[hits[0]][8] if hits else None))
+        self.rows["services"] = out
+        self.rows["software"] = sw
+
+    @staticmethod
+    def _cited(blob, loc):
+        start = blob.find(loc)
+        while start >= 0:
+            end = start + len(loc)
+            if (start == 0 or blob[start - 1] in " =:\n\"'") and (end == len(blob) or blob[end] in " /:\n\"'"):
+                return True
+            start = blob.find(loc, start + 1)
+        return False
+
     def flush(self):
         self.mark_running()
+        self.link_services()
         for table, rows in self.rows.items():
             if not rows:
                 continue
@@ -1041,18 +1147,100 @@ class Builder(cmdb_extras.ExtrasMixin):
             self.add("addresses", (host, a.get("ifname"), a.get("family"), a.get("cidr"), a.get("scope"), a.get("label"),
                                    1 if a.get("secondary") else 0, macs.get(a.get("ifname"))))
 
+    SYSV_IGNORE = frozenset(["README", "functions", "halt", "killall", "rc", "rcS", "rc.local", "reboot", "single",
+                             "skeleton", "sendsigs", "umountfs", "umountnfs.sh", "umountroot", "netconsole"])
+
     def services(self, host, doc):
+        """Une ligne par service : systemd, Windows, sous-systèmes SRC d'AIX, scripts SysV (si ni systemd ni
+        Windows). kind dit d'où vient la ligne ; software est rempli à flush() par link_services()."""
         s = doc.get("services") or {}
         files = dict((f["unit"], f.get("state")) for f in s.get("unit_files") or [])
         details = dict((d.get("Id"), d) for d in s.get("service_details") or [])
-        for u in s.get("units") or []:
-            if not u["unit"].endswith(".service"):
-                continue
+        units = s.get("units") or []
+        sysd = [u for u in units if u["unit"].endswith(".service") and u.get("load") not in ("sysv", "src")]
+        for u in sysd:
             d = details.get(u["unit"], {})
             mp = d.get("MainPID")
             self.add("services", (host, u["unit"], u.get("load"), u.get("active"), u.get("sub"),
-                                  files.get(u["unit"]) or d.get("UnitFileState"), int(mp) if mp and mp.isdigit() else None,
-                                  d.get("ExecStart"), d.get("User"), d.get("FragmentPath"), u.get("description")))
+                                  files.get(u["unit"]) or d.get("UnitFileState"), int(mp) if mp and mp.isdigit() and mp != "0" else None,
+                                  d.get("ExecStart"), d.get("User"), d.get("FragmentPath"), u.get("description"),
+                                  "systemd", d.get("Type"), None, None))
+        src = [u for u in units if u.get("load") == "src"] or parse_lssrc(s.get("lssrc"))
+        for u in src:
+            self.add("services", (host, u["unit"], "src", u.get("active"), u.get("sub"), None, u.get("main_pid"),
+                                  None, None, None, u.get("description"), "src", None, None, None))
+        win = (doc.get("windows") or {}).get("services") or []
+        start = {"auto": "enabled", "boot": "enabled", "system": "enabled", "manual": "manual", "disabled": "disabled"}
+        for w in win:
+            if not isinstance(w, dict) or not w.get("name"):
+                continue
+            state = (w.get("state") or "").lower()
+            self.add("services", (host, w["name"], "windows", "active" if state == "running" else ("inactive" if state == "stopped" else state or None),
+                                  state or None, start.get((w.get("start_mode") or "").lower(), (w.get("start_mode") or "").lower() or None),
+                                  w.get("pid") or None, w.get("path"), w.get("account"), None, w.get("display_name") or w.get("description"),
+                                  "windows", None, None, None))
+        if not sysd and not win:
+            self.sysv_services(host, s)
+
+    def sysv_services(self, host, s):
+        """Scripts SysV : activation d'après chkconfig ou les liens S/K des répertoires rcN.d, état d'après les
+        fichiers PID (processus vivant ou non) ; sans fichier PID, un processus du même nom. Sinon état inconnu."""
+        levels = {}   # nom -> {niveau: True (S) / False (K)}
+        for line in (s.get("chkconfig") or "").splitlines():
+            p = line.split()
+            if len(p) >= 8 and re.match(r"^\d:(on|off)$", p[1]):
+                levels[p[0]] = dict((x.split(":")[0], x.endswith(":on")) for x in p[1:8])
+        links = dict(s.get("rc_links") or {})
+        cur = None
+        for line in (s.get("rc_dirs") or "").splitlines():
+            m = re.match(r"^(\S*rc(\w)\.d):$", line.strip())
+            if m:
+                cur = m.group(1)
+                continue
+            m = re.search(r"\s([SK]\d\d[^\s/]+)(?:\s+->.*)?$", line)
+            if cur and m:
+                links.setdefault(cur, []).append(m.group(1))
+        from_links = {}
+        for d, names in links.items():
+            m = re.search(r"rc(\w)\.d$", d)
+            for n in names or []:
+                mm = re.match(r"^([SK])\d\d(.+)$", n)
+                if m and mm:
+                    from_links.setdefault(mm.group(2), {})[m.group(1)] = mm.group(1) == "S"
+        for n, lv in from_links.items():
+            if n not in levels:
+                levels[n] = lv
+        procs = [p for p in self.rows.get("processes") or [] if p[2] == host and not p[12] and not p[13]]
+        alive = dict((p[3], p) for p in procs)
+        pidf = s.get("pid_files") or {}
+        for name in sorted(levels):
+            if name in self.SYSV_IGNORE or name.endswith((".dpkg-old", ".dpkg-dist", ".rpmsave", ".rpmnew", "~")):
+                continue
+            lv = levels[name]
+            on = sorted(k for k, v in lv.items() if v and k not in ("0", "1", "6"))
+            enabled = "enabled" if on else "disabled"
+            bare = name[:-3] if name.endswith(".sh") else name
+            cands = set([bare, bare + "d", bare[:-1] if bare.endswith("d") else bare])
+            pid, stale = None, None
+            for f, v in sorted(pidf.items()):
+                base, parent = os.path.basename(f)[:-4], os.path.basename(os.path.dirname(f))
+                if base in cands or parent in cands:
+                    if v in alive:
+                        pid = v
+                        break
+                    stale = f
+            if pid is None:
+                same = sorted(p[3] for p in procs if p[6] in cands and (p[4] not in alive or alive[p[4]][6] != p[6]))
+                pid = same[0] if same else None
+            if pid is not None:
+                active, sub = "active", "running"
+            elif stale:
+                active, sub = "inactive", "fichier PID périmé"
+            else:
+                active, sub = None, None
+            p = alive.get(pid)
+            self.add("services", (host, name, "sysv", active, sub, enabled, pid, None, p[5] if p else None,
+                                  None, "niveaux " + ",".join(on) if on else None, "sysv", None, None, None))
 
     def containers(self, host, doc):
         c = doc.get("containers") or {}

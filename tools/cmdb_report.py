@@ -107,8 +107,12 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "memory": table(db, "SELECT * FROM memory_modules ORDER BY %s, locator" % K),
         "listening": table(db, "SELECT %s, proto, address, port, process, user, exe, exe_managed FROM v_listening_detail "
                                "ORDER BY %s, port" % (K, K)),
-        "services": table(db, "SELECT %s, unit, active, sub, unit_file_state, user, description FROM services "
-                              "WHERE active = 'active' ORDER BY %s, unit" % (K, K)),
+        # services en marche, en échec, activés au démarrage ou d'état inconnu (SysV) : pas les unités arrêtées et
+        # non activées, nombreuses et sans intérêt
+        "services": table(db, "SELECT %s, unit, kind, active, sub, unit_file_state, service_type, main_pid, user, description, "
+                              "software, software_location FROM services "
+                              "WHERE active IS NULL OR active NOT IN ('inactive') "
+                              "OR unit_file_state IN ('enabled', 'enabled-runtime') ORDER BY %s, unit" % (K, K)),
         "containers": table(db, "SELECT %s, engine, kind, name, image, digest, status FROM containers ORDER BY %s" % (K, K)),
         "container_images": table(db, "SELECT * FROM container_images ORDER BY %s, image" % K),
         "cpu_vulns": table(db, "SELECT %s, name, status FROM cpu_vulnerabilities ORDER BY %s, name" % (K, K)),

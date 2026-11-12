@@ -777,9 +777,15 @@ def build_aix(d):
     for line in (d.cmd("lssrc", True) or "").splitlines()[1:]:
         p = line.split()
         if len(p) >= 2:
-            units.append({"unit": p[0], "load": "src", "active": "active" if p[-1] == "active" else "inactive",
-                          "sub": p[-1], "description": "SRC" + (" groupe " + p[1] if len(p) >= 3 and not p[1].isdigit() else "")})
-    sv = {"units": units, "inittab": d.file("/etc/inittab"), "rc_dirs": d.cmd("rc_dirs", True)}
+            pid = [x for x in p[1:-1] if x.isdigit()]
+            group = [x for x in p[1:-1] if not x.isdigit()]
+            u = {"unit": p[0], "load": "src", "active": "active" if p[-1] == "active" else "inactive",
+                 "sub": p[-1], "description": "SRC" + (" groupe " + group[0] if group else "")}
+            if pid:
+                u["main_pid"] = int(pid[0])
+            units.append(u)
+    sv = {"units": units, "inittab": d.file("/etc/inittab"), "rc_dirs": d.cmd("rc_dirs", True),
+          "pid_files": pid_files(d.cmd("pid_files", True))}
     return o, h, pk, n, sv
 
 
@@ -908,6 +914,16 @@ def build_network(d, inode_pid, names):
     return n
 
 
+def pid_files(text):
+    """Sortie « chemin pid » de la capture pid_files -> {chemin: pid}."""
+    out = {}
+    for line in (text or "").splitlines():
+        p = line.split()
+        if len(p) >= 2 and p[0].startswith("/") and p[1].isdigit():
+            out[p[0]] = int(p[1])
+    return out
+
+
 def build_services(d):
     s = {}
     units = []
@@ -921,6 +937,7 @@ def build_services(d):
     s["initctl"] = d.cmd("initctl", True)
     s["rc_dirs"] = d.cmd("rc_dirs", True)
     s["inittab"] = d.file("/etc/inittab")
+    s["pid_files"] = pid_files(d.cmd("pid_files", True))
     # Services SysV actifs vus par chkconfig, présentés comme des unités pour la base
     if not units and s["chkconfig"]:
         for line in s["chkconfig"].splitlines():

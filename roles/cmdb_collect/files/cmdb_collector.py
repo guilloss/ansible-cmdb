@@ -161,6 +161,28 @@ def kv_text(text, sep="="):
     return d
 
 
+def pid_files():
+    """{chemin: pid} des fichiers PID lisibles (/run, /var/run, /etc) : état des services SysV sans privilège."""
+    import glob
+    out, seen = {}, set()
+    for g in ("/run/*.pid", "/run/*/*.pid", "/var/run/*.pid", "/var/run/*/*.pid", "/etc/*.pid"):
+        for f in sorted(glob.glob(g)):
+            if len(out) >= 1000:
+                return out
+            try:
+                real = os.path.realpath(f)
+                if real in seen:
+                    continue
+                seen.add(real)
+                with open(f, "rb") as fh:
+                    m = re.match(br"\s*(\d+)", fh.read(64))
+            except (OSError, IOError):
+                continue
+            if m:
+                out[f] = int(m.group(1))
+    return out
+
+
 def which(name):
     for d in SEARCH_PATH:
         p = os.path.join(d, name)
@@ -2709,7 +2731,7 @@ class Collector(object):
             services = sorted(set([x["unit"] for x in units if x["unit"].endswith(".service")] +
                                   [x["unit"] for x in files if x["unit"].endswith(".service") and "@" not in x["unit"]]))
             shows = []
-            props = "Id,MainPID,ExecStart,FragmentPath,User,Group,ActiveState,SubState,UnitFileState,Description,Environment,EnvironmentFiles,WorkingDirectory"
+            props = "Id,MainPID,ExecStart,FragmentPath,User,Group,ActiveState,SubState,UnitFileState,Description,Environment,EnvironmentFiles,WorkingDirectory,Type"
             for i in range(0, len(services), 100):
                 out = run_out(["systemctl", "show", "--no-pager", "-p", props] + services[i:i + 100], 60) or ""
                 for block in out.split("\n\n"):
@@ -2725,6 +2747,17 @@ class Collector(object):
             d["failed"] = run_out(["systemctl", "--failed", "--no-legend", "--no-pager", "--plain"], 30)
         d["chkconfig"] = run_out(["chkconfig", "--list"], 30)
         d["initd_scripts"] = listdir("/etc/init.d")
+        # SysV : liens de démarrage par niveau ; AIX : sous-systèmes SRC (lisibles sans privilège)
+        links = {}
+        for base in ("/etc/rc.d", "/etc"):
+            for lvl in "0123456S":
+                names = listdir("%s/rc%s.d" % (base, lvl))
+                if names:
+                    links["%s/rc%s.d" % (base, lvl)] = names
+        d["rc_links"] = links
+        if which("lssrc"):
+            d["lssrc"] = run_out(["lssrc", "-a"], 30)
+        d["pid_files"] = pid_files()
         return d
 
     def collect_scheduled(self):

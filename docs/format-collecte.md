@@ -51,6 +51,10 @@ Un objet JSON. Clés de premier niveau : `schema` (`"cmdb-collector/1"`), `meta`
 `containers`, `oracle`, `software_dirs`, `filesystem`, `process_artifacts`, `runtimes`, `go_binaries`.
 Ajouts depuis le gel (facultatifs à la lecture) : `container_content` (10/11/2026, contenu des
 conteneurs en marche : `engines`, `images[]` avec `os_release`, `packages.managers`, `filesystem`, `stats`).
+Le 12/11/2026, dans `services` : `pid_files` (`{chemin: pid}` des fichiers PID lisibles sous `/run`,
+`/var/run` et `/etc`), `rc_links` (`{répertoire rcN.d: [noms des liens]}`), `lssrc` (sortie brute de
+`lssrc -a` sur AIX) et la propriété `Type` dans `service_details` ; le collecteur shell capture
+`pid_files` (lignes « chemin pid ») et garde le PID des sous-systèmes SRC (`units[].main_pid`).
 Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, `filesystem` et `windows`.
 
 - `meta` : `collector_version`, `started_at`, `finished_at`, `host_label`, `run_id`, `tags` (dont
