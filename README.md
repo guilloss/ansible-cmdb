@@ -556,6 +556,8 @@ SELECT host, json_extract(document, '$.security.crypto_policy') FROM raw_documen
 
 `build/cmdb_rapport.html` est régénéré à chaque consolidation. C'est un fichier unique, sans aucune ressource externe : il s'ouvre par un double clic, y compris sur un poste sans accès Internet, et se transmet comme une pièce jointe. Les données y sont embarquées compressées. Il faut un navigateur récent (Firefox 113 et plus, Chrome ou Edge 80 et plus, Safari 16.4 et plus).
 
+`python3 tools/cmdb_report.py build/cmdb.sqlite rapport.html` refait le rapport seul. Il accepte une base produite par une version précédente : ce qui y manque (colonnes, tables apparues depuis) est lu comme vide, et un message le liste. La base n'est pas modifiée ; relancer la consolidation remplit ces informations.
+
 - **Périmètre** : deux listes dans le bandeau de gauche restreignent tout le rapport à une application et/ou une plate-forme. Le périmètre est conservé dans l'adresse de la page, qu'on peut donc mettre en favori ou transmettre.
 - **Accueil** : la recherche, les chiffres du parc, la synthèse par application et plate-forme (serveurs, composants hors paquet, ports exposés, alertes, serveurs non collectés), ce qui est à traiter, la répartition des systèmes et des versions.
 - **Logiciels** : recherche dans tout l'inventaire (paquets, runtimes, jars, pip, npm, composer, applications web…), avec filtres par nature et par gestion (paquet de distribution ou non), vue « une ligne par installation » ou « regrouper par version », export CSV.

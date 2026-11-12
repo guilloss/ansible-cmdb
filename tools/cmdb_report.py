@@ -89,8 +89,38 @@ def software_tables(db, exclude_categories=()):
             "excluded": list(exclude_categories)}
 
 
+def compat_old_base(db):
+    """Base produite par une version précédente de cmdb_build.py : chaque colonne, table ou vue apparue depuis
+    est simulée (colonne vide, table vide) par des vues temporaires, prioritaires sur la base dans SQLite.
+    Le fichier n'est pas modifié. Renvoie la liste de ce qui a été simulé."""
+    import cmdb_build
+    ref = sqlite3.connect(":memory:")
+    ref.executescript(cmdb_build.SCHEMA)
+    have = dict((n, [r[1] for r in db.execute('PRAGMA main.table_info("%s")' % n)])
+                for (n,) in db.execute("SELECT name FROM main.sqlite_master WHERE type IN ('table', 'view')"))
+    done = []
+    for (name,) in ref.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name"):
+        cols = [r[1] for r in ref.execute('PRAGMA table_info("%s")' % name)]
+        if name not in have:
+            db.execute('CREATE TEMP VIEW "%s" AS SELECT %s WHERE 0' % (name, ", ".join('NULL AS "%s"' % c for c in cols)))
+            done.append(name)
+            continue
+        missing = [c for c in cols if c not in have[name]]
+        if missing:
+            db.execute('CREATE TEMP VIEW "%s" AS SELECT *, %s FROM main."%s"'
+                       % (name, ", ".join('NULL AS "%s"' % c for c in missing), name))
+            done += ["%s.%s" % (name, c) for c in missing]
+    ref.close()
+    return done
+
+
 def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_version="", dossiers=None):
     db = sqlite3.connect(dbpath)
+    old = compat_old_base(db)
+    if old:
+        print("Base d'une version précédente : %d élément(s) absent(s) lu(s) comme vides (%s%s). "
+              "Relancer cmdb_build.py pour les remplir." % (len(old), ", ".join(old[:8]), "…" if len(old) > 8 else ""),
+              file=sys.stderr)
     K = "app, platform, host"   # clé de chaque serveur : un même hôte peut servir plusieurs applications
     data = {
         "generated": dt.datetime.now().strftime("%d/%m/%Y %H:%M"),

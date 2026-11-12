@@ -368,3 +368,42 @@ class EnCoursDExecution(unittest.TestCase):
                                 "exec:", None, 0, None, None, None)]}
         b.mark_running()
         self.assertIsNone(b.rows["software"][0][15])
+
+
+class BaseAncienne(unittest.TestCase):
+    """Nouveau rapport sur une base d'une version précédente : colonnes, tables et vues absentes lues comme vides."""
+
+    def test_rapport_sur_base_ancienne(self):
+        import hashlib
+        import shutil as _sh
+        import sqlite3 as _sq
+        import subprocess as _sp
+        import tempfile as _tf
+        from tests import fleet
+        from tests.common import TOOLS
+        d = _tf.mkdtemp(prefix="cmdbold")
+        self.addCleanup(_sh.rmtree, d, True)
+        store, out = os.path.join(d, "store"), os.path.join(d, "b")
+        fleet.write_store(store, [fleet.pg_host(), fleet.app_host()])
+        _sp.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", store, "--out", out,
+                        "--no-report", "--no-dossiers"], stdout=_sp.DEVNULL)
+        dbp = os.path.join(out, "cmdb.sqlite")
+        db = _sq.connect(dbp)
+        db.executescript("""
+            DROP VIEW v_unmanaged_software;
+            CREATE TABLE services_old AS SELECT app, platform, host, unit, load, active, sub, unit_file_state, main_pid,
+              exec_start, user, fragment_path, description FROM services;
+            DROP TABLE services; ALTER TABLE services_old RENAME TO services;
+            DROP TABLE container_images;""")
+        db.commit()
+        db.close()
+        with open(dbp, "rb") as f:
+            before = hashlib.sha1(f.read()).hexdigest()
+        r = _sp.run([sys.executable, os.path.join(TOOLS, "cmdb_report.py"), dbp, os.path.join(d, "r.html")],
+                    stdout=_sp.PIPE, stderr=_sp.PIPE, universal_newlines=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("services.kind", r.stderr)
+        self.assertIn("container_images", r.stderr)
+        self.assertTrue(os.path.getsize(os.path.join(d, "r.html")) > 10000)
+        with open(dbp, "rb") as f:
+            self.assertEqual(hashlib.sha1(f.read()).hexdigest(), before)
