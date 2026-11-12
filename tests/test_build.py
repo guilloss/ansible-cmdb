@@ -179,3 +179,56 @@ class Unitaires(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnCoursDExecution(unittest.TestCase):
+    """Plusieurs PostgreSQL installés, un seul lancé : software.running le distingue."""
+
+    def test_postgresql_lance(self):
+        import gzip as _gz
+        import json as _json
+        import sqlite3 as _sq
+        import subprocess as _sp
+        import shutil as _sh
+        import tempfile as _tf
+        from tests import fleet
+        from tests.common import TOOLS
+        d = _tf.mkdtemp(prefix="cmdbrun")
+        self.addCleanup(_sh.rmtree, d, True)
+
+        def probe(v, path, tool="postgres"):
+            return {"probe": "postgresql", "realpath": path, "paths": [path], "owner_pkg": "postgresql-%s" % v,
+                    "outputs": [{"args": [path, "--version"], "rc": 0, "output": "%s (PostgreSQL) %s.1" % (tool, v)}]}
+        runtimes = {"list": [probe(v, "/usr/lib/postgresql/%s/bin/postgres" % v) for v in ("9.6", "12", "15")]}
+        procs = [{"pid": 10, "ppid": 1, "comm": "postgres", "user": "postgres", "exe": "/usr/lib/postgresql/15/bin/postgres",
+                  "exe_owner_pkg": "postgresql-15",
+                  "cmdline": "/usr/lib/postgresql/15/bin/postgres -D /var/lib/postgresql/15/main"},
+                 {"pid": 11, "ppid": 1, "comm": "sshd", "user": "root", "exe": "/usr/sbin/sshd", "cmdline": "sshd: /usr/sbin/sshd -D"}]
+        doc = fleet.doc("db9.exemple.test", "APP", "prod", "10.0.0.9", "r1", "2026-11-12T08:00:00Z",
+                        runtimes=runtimes, processes=procs,
+                        packages={"managers": {"dpkg": [{"name": "postgresql-%s" % v, "version": "%s.1-1" % v, "arch": "amd64"}
+                                                        for v in ("9.6", "12", "15")]}})
+        p = os.path.join(d, "store", "APP", "prod", "db9", "r1.json.gz")
+        os.makedirs(os.path.dirname(p))
+        with _gz.open(p, "wt") as f:
+            _json.dump(doc, f)
+        out = os.path.join(d, "b")
+        _sp.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(d, "store"), "--out", out,
+                        "--no-report", "--no-dossiers"], stdout=_sp.DEVNULL)
+        db = _sq.connect(os.path.join(out, "cmdb.sqlite"))
+        got = dict(db.execute("SELECT location, running FROM software WHERE category = 'runtime' AND family = 'postgresql'"))
+        self.assertEqual(got, {"/usr/lib/postgresql/9.6/bin/postgres": 0, "/usr/lib/postgresql/12/bin/postgres": 0,
+                               "/usr/lib/postgresql/15/bin/postgres": 1})
+        pk = dict(db.execute("SELECT name, running FROM software WHERE category = 'os-package' AND name LIKE 'postgresql-%'"))
+        self.assertEqual(pk.get("postgresql-15"), 1)
+        self.assertIsNone(pk.get("postgresql-9.6"))
+        db.close()
+
+    def test_exe_illisible_reste_inconnu(self):
+        from cmdb_build import Builder
+        b = Builder(None)
+        b.rows = {"processes": [("A", "p", "h", 1, 0, "pg", "postgres", None, None, "postgres: checkpointer", None, None, None, 0)],
+                  "software": [("A", "p", "h", "runtime", "generic", "postgresql", "postgres", "12.1", "/usr/lib/postgresql/12/bin/postgres",
+                                "exec:", None, 0, None, None, None)]}
+        b.mark_running()
+        self.assertIsNone(b.rows["software"][0][15])

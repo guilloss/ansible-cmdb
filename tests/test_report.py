@@ -24,6 +24,8 @@ ROUTES += ["serveurs?" + TAG, "bases?onglet=liens&" + TAG, "logiciels?" + TAG, "
            "serveurs?app=APPDEMO&pf=prod&" + TAG, "serveurs?tag=" + quote("squad=inconnue", safe=""), "serveurs?q=S4"]
 ROUTES += ["logiciels?q=" + quote("webapps/gestion", safe=""), "logiciels?q=" + quote("chemin:webapps/gestion", safe=""), "logiciels?vue=versions",
            "logiciels?gestion=um", "logiciels?q=" + quote("serveur:app1", safe="")]
+ROUTES += ["serveurs?pf=prod,recette", "serveurs?pf=prod", "serveurs?tag=" + quote("squad=S3,squad=S4", safe=""),
+           "serveurs?tag=" + quote("squad=S4,site=Paris", safe=""), "serveurs?tag=" + quote("squad=S3,site=Paris", safe="")]
 ROUTES += ["cles?onglet=certs&etat=expires", "cles?onglet=certs&du=2026-11-18", "cles?onglet=certs&au=2026-11-16",
            "cles?onglet=certs&etat=30x"]
 HOST = "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")
@@ -88,8 +90,25 @@ class Rapport(unittest.TestCase):
     def test_etiquettes_selecteur(self):
         p = self.pages["__scope"]
         self.assertIn('id="s-tag"', p)
-        self.assertIn("squad=S3 (1)", p)
-        self.assertIn("site=Paris (1)", p)
+        self.assertIn('value="squad=S3"> squad=S3 <span class="cat">(1)</span>', p)
+        self.assertIn('value="site=Paris"> site=Paris <span class="cat">(1)</span>', p)
+        self.assertIn('data-all="1" checked', p)
+
+    def test_perimetre_multiple(self):
+        both = self.pages["serveurs?pf=prod,recette"]
+        self.assertIn("r1.exemple.test", both)
+        self.assertIn("t1.exemple.test", both)
+        self.assertNotIn("r1.exemple.test", self.pages["serveurs?pf=prod"])
+        # même nom d'étiquette : l'une ou l'autre
+        ou = self.pages["serveurs?tag=" + quote("squad=S3,squad=S4", safe="")]
+        self.assertIn("app1.exemple.test", ou)
+        self.assertIn("pg1.exemple.test", ou)
+        self.assertNotIn("t1.exemple.test", ou)
+        # noms différents : toutes
+        et = self.pages["serveurs?tag=" + quote("squad=S4,site=Paris", safe="")]
+        self.assertIn("pg1.exemple.test", et)
+        self.assertNotIn("app1.exemple.test", et)
+        self.assertIn("Aucun serveur", self.pages["serveurs?tag=" + quote("squad=S3,site=Paris", safe="")])
 
     def test_logiciels_sans_perte(self):
         """Les tables compactes redonnent exactement la table software."""
@@ -107,10 +126,11 @@ class Rapport(unittest.TestCase):
                    "location": b if d < 0 else strings[d] + "/" + b}
             for i, k in enumerate(cc):
                 row[k] = comps[c + i] if k == "managed" else strings[comps[c + i]]
-            got.append(tuple(row[k] for k in sw["cols"]))
+            n = o // 5
+            got.append(tuple(row[k] for k in sw["cols"]) + (1 if n in sw["running"] else (0 if n in sw["stopped"] else None),))
         db = sqlite3.connect(os.path.join(out, "cmdb.sqlite"))
-        want = [tuple((1 if v else 0) if k == "managed" else ("" if v is None else str(v)) for k, v in zip(sw["cols"], r))
-                for r in db.execute("SELECT %s FROM software" % ", ".join(sw["cols"]))]
+        want = [tuple((1 if v else 0) if k == "managed" else ("" if v is None else str(v)) for k, v in zip(sw["cols"], r[:-1])) + (r[-1],)
+                for r in db.execute("SELECT %s, running FROM software" % ", ".join(sw["cols"]))]
         db.close()
         self.assertTrue(want)
         self.assertEqual(got, want)

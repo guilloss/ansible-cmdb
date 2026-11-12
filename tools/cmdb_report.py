@@ -63,7 +63,13 @@ def software_tables(db, exclude_categories=()):
     where = ""
     if exclude_categories:
         where = " WHERE category NOT IN (%s)" % ",".join("?" * len(exclude_categories))
-    for r in db.execute("SELECT %s FROM software%s" % (", ".join(cols), where), tuple(exclude_categories)):
+    run_yes, run_no = [], []   # numéros de ligne en cours d'exécution / non lancées (inconnu : ni l'un ni l'autre)
+    for r in db.execute("SELECT %s, running FROM software%s" % (", ".join(cols), where), tuple(exclude_categories)):
+        if r[-1] == 1:
+            run_yes.append(len(rows) // 5)
+        elif r[-1] == 0:
+            run_no.append(len(rows) // 5)
+        r = r[:-1]
         comp = tuple((1 if v else 0) if k == "managed" else si(v) for k, v in zip(SW_COMP, r[4:]))
         c = comp_index.get(comp)
         if c is None:
@@ -79,6 +85,7 @@ def software_tables(db, exclude_categories=()):
     return {"cols": ["app", "platform", "host", "category", "ecosystem", "family", "name", "version", "location", "evidence",
                      "managed", "owner_pkg", "purl", "cpe"],
             "comp_cols": SW_COMP, "strings": strings, "comps": comps, "locs": locs, "rows": rows,
+            "running": run_yes, "stopped": run_no,
             "excluded": list(exclude_categories)}
 
 

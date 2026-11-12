@@ -597,7 +597,7 @@ CREATE TABLE memory_modules (host TEXT, locator TEXT, size TEXT, type TEXT, spee
 CREATE TABLE packages (host TEXT, manager TEXT, name TEXT, epoch TEXT, version TEXT, release TEXT, arch TEXT,
   vendor TEXT, source TEXT, source_version TEXT, installtime TEXT, summary TEXT, purl TEXT);
 CREATE TABLE software (host TEXT, category TEXT, ecosystem TEXT, family TEXT, name TEXT, version TEXT,
-  location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT);
+  location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT, running INTEGER);
 CREATE TABLE java_markers (host TEXT, archive TEXT, marker TEXT, shaded INTEGER);
 CREATE TABLE processes (host TEXT, pid INTEGER, ppid INTEGER, user TEXT, comm TEXT, exe TEXT, exe_owner_pkg TEXT,
   cmdline TEXT, start TEXT, rss_mb REAL, in_container INTEGER, container_id TEXT, systemd_unit TEXT,
@@ -732,7 +732,67 @@ class Builder(cmdb_extras.ExtrasMixin):
         self.add("software", (host, category, ecosystem, family, name, version, location, evidence, owner_pkg,
                               managed, purl_, cpe, json.dumps(extra, ensure_ascii=False) if extra else None))
 
+    # Composants dont on peut dire s'ils tournent : binaires, environnements, paquets. Pas les bibliothèques
+    # ni les webapps (chargées par un autre processus), ni les répertoires de données.
+    RUNNING_CATEGORIES = frozenset(["runtime", "go-binary", "node-app", "python-venv", "os-package"])
+
+    @staticmethod
+    def _norm_path(p):
+        p = (p or "").replace("\\", "/")
+        return p.lower() if re.match(r"^[A-Za-z]:/", p) else p
+
+    def mark_running(self):
+        """software.running : 1 si un processus du serveur l'exécute (exécutable, premier argument, répertoire
+        parent de l'exécutable, chemin cité dans une ligne de commande, paquet propriétaire de l'exécutable),
+        0 si aucun ne l'exécute alors que tous les exécutables étaient lisibles, sinon NULL (inconnu)."""
+        sw = self.rows.get("software")
+        if not sw:
+            return
+        procs = [p for p in self.rows.get("processes") or [] if not p[13]]   # hors conteneurs
+        exes, pkgs, blob, complete = set(), set(), [], bool(procs)
+        for p in procs:
+            exe, owner, cmd = self._norm_path(p[7]), p[8], p[9] or ""
+            if exe:
+                exes.add(exe)
+            else:
+                complete = False
+            if owner:
+                pkgs.add(owner)
+            argv0 = self._norm_path(cmd.split(" ", 1)[0]) if cmd else ""
+            if argv0.startswith("/") or re.match(r"^[a-z]:/", argv0):
+                exes.add(argv0)
+            blob.append(self._norm_path(cmd))
+        blob = "\n".join(blob)
+        dirs = set()
+        for e in exes:
+            parts = e.split("/")
+            for i in range(2, len(parts)):
+                dirs.add("/".join(parts[:i]))
+
+        def cited(loc):
+            start = blob.find(loc)
+            while start >= 0:
+                end = start + len(loc)
+                if (start == 0 or blob[start - 1] in " =:\n\"'") and (end == len(blob) or blob[end] in " /:\n\"'"):
+                    return True
+                start = blob.find(loc, start + 1)
+            return False
+
+        out = []
+        for r in sw:
+            run = None
+            if procs and r[3] in self.RUNNING_CATEGORIES:
+                if r[3] == "os-package":
+                    run = 1 if r[6] in pkgs else None
+                else:
+                    loc = self._norm_path(r[8]).rstrip("/")
+                    if loc.startswith("/") or re.match(r"^[a-z]:/", loc):
+                        run = 1 if (loc in exes or loc in dirs or cited(loc)) else (0 if complete else None)
+            out.append(tuple(r[:15]) + (run,))
+        self.rows["software"] = out
+
     def flush(self):
+        self.mark_running()
         for table, rows in self.rows.items():
             if not rows:
                 continue

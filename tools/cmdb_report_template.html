@@ -52,6 +52,18 @@ code, .mono { font-family: var(--f-mono); font-size: 12.5px; }
 .scope select { background: rgba(255,255,255,.06); color: #F1F5F7; border-color: rgba(255,255,255,.22); padding: 5px 8px; width: 100%; }
 .scope select option { color: var(--ink); background: var(--surface); }
 .scope .reset { font-size: 12px; color: #C9D5DC; }
+.ms { position: relative; }
+.ms > summary { list-style: none; cursor: pointer; background: rgba(255,255,255,.06); color: #F1F5F7; border: 1px solid rgba(255,255,255,.22);
+  border-radius: 4px; padding: 5px 24px 5px 8px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+.ms > summary::-webkit-details-marker { display: none; }
+.ms > summary::after { content: "▾"; position: absolute; right: 8px; top: 5px; }
+.ms[open] > summary::after { content: "▴"; }
+.ms .ms-list { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 2px); max-height: 320px; overflow: auto; background: var(--surface);
+  color: var(--ink); border: 1px solid rgba(127,127,127,.35); border-radius: 4px; padding: 4px 0; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.ms .ms-list label { display: flex; gap: 6px; align-items: center; padding: 3px 10px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.ms .ms-list label:hover { background: rgba(127,127,127,.12); }
+.ms .ms-list .ms-all { border-bottom: 1px solid rgba(127,127,127,.25); margin-bottom: 2px; }
+.ms .ms-list input { width: auto; margin: 0; }
 .nav { list-style: none; margin: 14px 0; padding: 0; }
 .nav a { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 20px; color: #C9D5DC;
   border-left: 3px solid transparent; }
@@ -65,7 +77,7 @@ code, .mono { font-family: var(--f-mono); font-size: 12.5px; }
 main { min-width: 0; }
 .topbar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 14px 28px 10px; border-bottom: 1px solid var(--line); }
 .topbar form { display: flex; gap: 8px; max-width: 900px; }
-.content { padding: 22px 28px 60px; max-width: 1500px; }
+.content { padding: 22px 28px 60px; }
 h2 { font: 600 26px/1.2 var(--f-display); margin: 4px 0 6px; }
 h3 { font: 600 17px/1.3 var(--f-display); margin: 30px 0 10px; }
 .lede { color: var(--ink-2); margin: 0 0 18px; max-width: 75ch; }
@@ -128,14 +140,19 @@ input[type="search"] { flex: 1; min-width: 0; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
 th { position: sticky; top: 0; background: var(--surface-2); font-weight: 600; font-size: 12.5px; color: var(--ink-2);
-  white-space: nowrap; z-index: 1; border-bottom: 1px solid var(--line); }
+  z-index: 1; border-bottom: 1px solid var(--line); hyphens: auto; }
+/* Tableaux à la largeur de l'écran : le texte passe à la ligne entre les mots, les chemins et DN (td.path) n'importe
+   où ; le tableau ne défile horizontalement que si ses mots les plus longs ne tiennent pas dans l'écran. */
+td { overflow-wrap: break-word; }
+td.num, td .badge { overflow-wrap: normal; white-space: nowrap; }
+td .cat { white-space: normal; }
 th.sortable { cursor: pointer; }
 th.sortable:hover { color: var(--ink); }
 th .dir { color: var(--accent); }
 tbody tr:hover td { background: var(--surface-2); }
 td.num { text-align: right; }
 td.wrap { word-break: break-all; }
-td.path { font-family: var(--f-mono); font-size: 12px; word-break: break-all; color: var(--ink-2); min-width: 220px; }
+td.path { font-family: var(--f-mono); font-size: 12px; word-break: break-all; color: var(--ink-2); min-width: 16ch; }
 .more { margin: 10px 0; display: flex; gap: 10px; align-items: center; }
 
 /* --- étiquettes --- */
@@ -223,6 +240,7 @@ a:hover .v { border-color: var(--accent); }
   .rail-foot { display: none; }
   .scope { grid-template-columns: 1fr 1fr; padding-top: 10px; }
   .topbar, .content { padding-left: 16px; padding-right: 16px; }
+  th, td { padding: 5px 6px; font-size: 13px; }
   .hero h2 { font-size: 26px; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
@@ -307,7 +325,7 @@ function link(route, params) {
 }
 function hostLabel(app, pf, host, terms) {
   return `<a href="${link("serveur/" + encodeURIComponent(hkey(app, pf, host)))}">${hl(host, terms)}</a>`
-    + (MULTI && !(SCOPE.app && SCOPE.pf) ? `<br><span class="cat">${hl(app, terms)} / ${hl(pf, terms)}</span>` : "");
+    + (MULTI && !(one(SCOPE.app) && one(SCOPE.pf)) ? `<br><span class="cat">${hl(app, terms)} / ${hl(pf, terms)}</span>` : "");
 }
 const hostCell = (o, terms) => hostLabel(o.app, o.platform, o.host, terms);
 const gb = v => v == null ? "" : (v >= 1000 ? fmt(Math.round(v)) : Number(v).toLocaleString("fr-FR", {maximumFractionDigits: v < 10 ? 2 : 1})) + " Go";
@@ -419,12 +437,24 @@ function hostTags(h) {
 const tagPairs = h => Object.entries(hostTags(h)).map(([k, v]) => k + "=" + v);
 const tagKeys = hs => [...new Set(hs.flatMap(h => Object.keys(hostTags(h))))].sort((a, b) => a.localeCompare(b, "fr"));
 const tagLink = (k, v) => `<a href="${link("serveurs", {tag: k + "=" + v})}" title="Filtrer sur cette étiquette">${esc(v)}</a>`;
+// Périmètre à choix multiples : valeurs séparées par des virgules dans l'adresse (app=A,B&pf=prod,rec&tag=site=Paris,squad=S3).
+// Plusieurs applications ou plates-formes : l'une ou l'autre. Étiquettes : l'une ou l'autre pour un même nom
+// (site=Paris, site=Lyon), toutes pour des noms différents (site=Paris et squad=S3).
+const multi = v => v ? String(v).split(",").filter(Boolean) : [];
+const one = v => multi(v).length === 1 ? multi(v)[0] : "";
+function tagMatcher(sel) {
+  const want = {};
+  multi(sel).forEach(t => { const k = t.split("=")[0]; (want[k] = want[k] || []).push(t); });
+  const keys = Object.keys(want);
+  return keys.length ? h => { const p = tagPairs(h); return keys.every(k => want[k].some(t => p.includes(t))); } : null;
+}
 function applyScope() {
   const on = SCOPE.app || SCOPE.pf || SCOPE.tag;
+  const A = new Set(multi(SCOPE.app)), P = new Set(multi(SCOPE.pf)), tm = tagMatcher(SCOPE.tag);
   // Le filtre par étiquette s'applique serveur par serveur ; T = serveurs retenus, TP = leurs plates-formes
-  const tagged = SCOPE.tag ? rowsOf(D0.hosts).filter(h => tagPairs(h).includes(SCOPE.tag)) : null;
+  const tagged = tm ? rowsOf(D0.hosts).filter(tm) : null;
   const T = tagged && new Set(tagged.map(h => h.hk)), TP = tagged && new Set(tagged.map(h => h.app + "|" + h.platform));
-  const keep = (a, p, h) => (!SCOPE.app || a === SCOPE.app) && (!SCOPE.pf || p === SCOPE.pf)
+  const keep = (a, p, h) => (!A.size || A.has(a)) && (!P.size || P.has(p))
     && (!T || (h == null ? TP.has(a + "|" + p) : T.has(hkey(a, p, h))));
   D = Object.assign({}, D0);
   for (const k of SCOPED) {
@@ -451,40 +481,57 @@ function applyScope() {
 }
 function renderScope() {
   const H0 = rowsOf(D0.hosts);
-  const apps = [...new Set(H0.map(h => h.app))].sort((a, b) => a.localeCompare(b, "fr"));
-  const pfs = [...new Set(H0.filter(h => !SCOPE.app || h.app === SCOPE.app).map(h => h.platform))].sort((a, b) => a.localeCompare(b, "fr"));
-  const n = f => H0.filter(f).length;
-  const inPf = H0.filter(h => (!SCOPE.app || h.app === SCOPE.app) && (!SCOPE.pf || h.platform === SCOPE.pf));
+  const A = multi(SCOPE.app), P = multi(SCOPE.pf), TG = multi(SCOPE.tag);
+  const inA = h => !A.length || A.includes(h.app), inP = h => !P.length || P.includes(h.platform);
+  const sortFr = xs => [...new Set(xs)].sort((a, b) => a.localeCompare(b, "fr"));
+  const apps = sortFr(H0.map(h => h.app));
+  const pfs = sortFr(H0.filter(inA).map(h => h.platform).concat(P));
   const pairs = {};
-  inPf.forEach(h => tagPairs(h).forEach(t => { pairs[t] = (pairs[t] || 0) + 1; }));
-  if (SCOPE.tag && !pairs[SCOPE.tag]) pairs[SCOPE.tag] = 0;
+  H0.filter(h => inA(h) && inP(h)).forEach(h => tagPairs(h).forEach(t => { pairs[t] = (pairs[t] || 0) + 1; }));
+  TG.forEach(t => { if (!pairs[t]) pairs[t] = 0; });
   const tags = Object.keys(pairs).sort((a, b) => a.localeCompare(b, "fr"));
-  const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
-  $("#scope").innerHTML = `<label>Application<select id="s-app">${opt("", "Toutes (" + apps.length + ")", SCOPE.app)}
-      ${apps.map(a => opt(a, a + " (" + n(h => h.app === a) + ")", SCOPE.app)).join("")}</select></label>
-    <label>Plate-forme<select id="s-pf">${opt("", "Toutes (" + pfs.length + ")", SCOPE.pf)}
-      ${pfs.map(p => opt(p, p + " (" + n(h => h.platform === p && (!SCOPE.app || h.app === SCOPE.app)) + ")", SCOPE.pf)).join("")}</select></label>
-    ${tags.length ? `<label>Étiquette<select id="s-tag">${opt("", "Toutes (" + tags.length + ")", SCOPE.tag)}
-      ${tags.map(t => opt(t, t + " (" + pairs[t] + ")", SCOPE.tag)).join("")}</select></label>` : ""}
+  const n = f => H0.filter(f).length;
+  const box = (id, label, all, values, cur, count) => {
+    const summary = !cur.length ? `${all} (${values.length})` : (cur.length <= 2 ? cur.join(", ") : `${cur.length} sur ${values.length}`);
+    return `<label>${label}</label><details class="ms" id="${id}"><summary title="${esc(cur.join(", ") || all)}">${esc(summary)}</summary><div class="ms-list">
+      <label class="ms-all"><input type="checkbox" data-all="1"${cur.length ? "" : " checked"}> ${esc(all)}</label>
+      ${values.map(v => `<label><input type="checkbox" value="${esc(v)}"${cur.includes(v) ? " checked" : ""}> ${esc(v)} <span class="cat">(${fmt(count(v))})</span></label>`).join("")}</div></details>`;
+  };
+  const opened = document.querySelectorAll ? [...document.querySelectorAll(".ms[open]")].map(d => d.id) : [];
+  $("#scope").innerHTML = `<div>${box("s-app", "Application", "Toutes", apps, A, a => n(h => h.app === a))}</div>
+    <div>${box("s-pf", "Plate-forme", "Toutes", pfs, P, p => n(h => h.platform === p && inA(h)))}</div>
+    ${tags.length ? `<div>${box("s-tag", "Étiquette", "Toutes", tags, TG, t => pairs[t])}</div>` : ""}
     ${SCOPE.app || SCOPE.pf || SCOPE.tag ? `<a class="reset" href="${link("accueil", {app: "", pf: "", tag: ""})}">Tout l'inventaire</a>` : ""}`;
-  const change = (app, pf, tag) => {
+  opened.forEach(id => { const d = $("#" + id); if (d) d.open = true; });
+  const change = (apps, pfs, tags) => {
     const h = location.hash.replace(/^#\/?/, "").split("?"), r = (h[0] || "accueil").split("/")[0];
     const p = Object.fromEntries(new URLSearchParams(h[1] || ""));
-    p.app = app; p.pf = pf;
-    // une étiquette absente du nouveau périmètre est abandonnée, pour ne pas afficher un rapport vide
-    p.tag = tag !== undefined ? tag : (SCOPE.tag && H0.some(h => (!app || h.app === app) && (!pf || h.platform === pf) && tagPairs(h).includes(SCOPE.tag)) ? SCOPE.tag : "");
+    const inApps = x => !apps.length || apps.includes(x.app);
+    // plates-formes et étiquettes absentes du nouveau périmètre abandonnées, pour ne pas afficher un rapport vide
+    pfs = pfs.filter(pf => H0.some(x => inApps(x) && x.platform === pf));
+    tags = tags.filter(t => H0.some(x => inApps(x) && (!pfs.length || pfs.includes(x.platform)) && tagPairs(x).includes(t)));
+    p.app = apps.join(","); p.pf = pfs.join(","); p.tag = tags.join(",");
     go(r === "serveur" ? "serveurs" : r, p);
   };
-  $("#s-app").onchange = e => {
-    const a = e.target.value;
-    change(a, SCOPE.pf && H0.some(h => h.app === a && h.platform === SCOPE.pf) ? SCOPE.pf : "");
+  const bind = (id, apply) => {
+    const d = $("#" + id); if (!d || !d.querySelectorAll) return;
+    d.querySelectorAll("input").forEach(i => i.onchange = () => {
+      const vals = i.dataset.all ? [] : [...d.querySelectorAll("input[value]")].filter(x => x.checked).map(x => x.value);
+      apply(vals);
+    });
   };
-  $("#s-pf").onchange = e => change(SCOPE.app, e.target.value);
-  if (tags.length) $("#s-tag").onchange = e => change(SCOPE.app, SCOPE.pf, e.target.value);
+  bind("s-app", v => change(v, P, TG));
+  bind("s-pf", v => change(A, v, TG));
+  bind("s-tag", v => change(A, P, v));
 }
+document.addEventListener && document.addEventListener("click", e => {
+  // un clic hors d'une liste la referme
+  document.querySelectorAll(".ms[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; });
+});
 function scopeText() {
-  const base = SCOPE.app || SCOPE.pf ? [SCOPE.app || "toutes applications", SCOPE.pf || "toutes plates-formes"].join(" / ") : "";
-  return [base, SCOPE.tag].filter(Boolean).join(", ");
+  const j = v => multi(v).join(" + ");
+  const base = SCOPE.app || SCOPE.pf ? [j(SCOPE.app) || "toutes applications", j(SCOPE.pf) || "toutes plates-formes"].join(" / ") : "";
+  return [base, multi(SCOPE.tag).join(", ")].filter(Boolean).join(", ");
 }
 
 // ---------------------------------------------------------------- données dérivées
@@ -522,6 +569,7 @@ function swPack(s) {
   s.rows = Array.from({length: s.t.length / 5}, (_, i) => i);
   s.ci = Object.fromEntries(s.comp_cols.map((c, i) => [c, i]));
   s.cn = s.comp_cols.length;
+  s.run = new Set(s.running || []); s.stop = new Set(s.stopped || []);
   return s;
 }
 function swLoc(l) {
@@ -530,7 +578,12 @@ function swLoc(l) {
 }
 const swComp = (r, k) => SW.ct[SW.t[r * 5 + 3] * SW.cn + SW.ci[k]];
 const swMan = r => swComp(r, "managed");
+// En cours d'exécution : "oui", "non" (aucun processus ne l'exécute) ou "" (inconnu, ou sans objet)
+const swRun = r => SW.run.has(r) ? "oui" : (SW.stop.has(r) ? "non" : "");
+const runBadge = r => SW.run.has(r) ? ' <span class="badge ok" title="Un processus du serveur l\'exécute">en cours</span>'
+  : (SW.stop.has(r) ? ' <span class="badge muted" title="Aucun processus du serveur ne l\'exécute">non lancé</span>' : "");
 function swVal(r, k) {
+  if (k === "running") return swRun(r);
   if (k === "location") return swLoc(SW.t[r * 5 + 4]);
   return SW.strings[k in SW_ROW ? SW.t[r * 5 + SW_ROW[k]] : swComp(r, k)];
 }
@@ -657,7 +710,7 @@ function vAccueil() {
     .map(f => ({f, items: famVersions(f)})).filter(x => x.items.length).slice(0, 4);
   return `<section class="hero">
     <h2>Quel serveur fait tourner quoi, et dans quelle version&nbsp;?</h2>
-    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: "", tag: ""})}">Voir tout l'inventaire</a>${(D0.dossiers || {})[SCOPE.app + "|" + SCOPE.pf] ? ` · <a href="${esc(D0.dossiers[SCOPE.app + "|" + SCOPE.pf])}">Ouvrir le dossier d'application</a>` : ""}</p>` : ""}
+    ${scopeText() ? `<p class="lede">Périmètre : <b>${esc(scopeText())}</b>. <a href="${link("accueil", {app: "", pf: "", tag: ""})}">Voir tout l'inventaire</a>${(D0.dossiers || {})[one(SCOPE.app) + "|" + one(SCOPE.pf)] ? ` · <a href="${esc(D0.dossiers[one(SCOPE.app) + "|" + one(SCOPE.pf)])}">Ouvrir le dossier d'application</a>` : ""}</p>` : ""}
     <form id="herosearch" role="search">
       <input type="search" id="hq" aria-label="Rechercher" placeholder="log4j-core <2.17.1, php 5., openssl 1.0.2, 10.12.4.8…" autocomplete="off" autofocus>
       <button class="btn" type="submit">Rechercher</button>
@@ -856,7 +909,7 @@ function swTable(rs, terms) {
     {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !swMan(r)) : ""},
     {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
     {k: "managed", l: "Gestion", sortv: r => swMan(r), f: r => swMan(r) ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
-    {k: "location", l: "Emplacement", cls: "path", sortv: r => s(r, "location"), f: r => hl(s(r, "location"), terms) + (s(r, "evidence") ? `<br><span class="cat">${esc(s(r, "evidence"))}</span>` : "")},
+    {k: "location", l: "Emplacement", cls: "path", sortv: r => s(r, "location"), f: r => hl(s(r, "location"), terms) + runBadge(r) + (s(r, "evidence") ? `<br><span class="cat">${esc(s(r, "evidence"))}</span>` : "")},
   ], rs, {empty: "Aucun composant ne correspond à cette recherche."});
 }
 
@@ -1429,7 +1482,7 @@ function bindView(r, params) {
     ["#f-cat", "#f-gestion", "#f-vue"].forEach(s => $(s).onchange = upd);
     $("#swcsv").onclick = () => {
       const res = searchSoftware(params.get("q") || "", {cat: params.get("cat") || "", managed: params.get("gestion") || ""});
-      const cols = SW.cols;
+      const cols = SW.cols.concat(["running"]);
       csvDownload("cmdb_logiciels.csv", cols, res.rows.map(r => cols.map(c => c === "managed" ? (swMan(r) ? "distribution" : "hors paquet") : swVal(r, c))));
     };
   }
