@@ -128,6 +128,10 @@ python3 tools/cmdb_build.py --store store --lot '/depot/lots/*.tar.gz' --out bui
 python3 tools/cmdb_build.py --store store --app APPDEMO --platform 'prod*' --out build-appdemo
 ```
 
+**Saisies hétérogènes.** Avec `--upper-labels` (`-e cmdb_upper_labels=true` pour `consolidate.yml`), l'application, la plate-forme et les valeurs des étiquettes sont mises en majuscules : `prod`, `Prod` et `PROD` deviennent la même plate-forme, et les filtres `--app`/`--platform` ne tiennent plus compte de la casse. Les noms des étiquettes (`site`, `squad`) et les collectes elles-mêmes ne changent pas. L'option n'est pas active par défaut, car elle change les valeurs des tables, des CSV et des noms de fichiers produits.
+
+**Nom réel des serveurs.** Avec `--real-hostnames` (`-e cmdb_real_hostnames=true`), un serveur est nommé par son hostname réel, suivi de son nom d'inventaire Ansible entre parenthèses quand les deux diffèrent : `srv-web-01 (web01)`. Un FQDN et son nom court, ou une simple différence de casse, comptent comme le même nom : le nom d'inventaire est alors gardé seul. Le nom d'inventaire reste dans la colonne `inventory_name` de `hosts`, `--host` accepte l'un ou l'autre, et les manifestes des passages (`runs`) sont rattachés au bon serveur. Option non active par défaut, pour la même raison.
+
 Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaque passage lancé avec `-e cmdb_lot=true` produit une archive unique, que l'on transfère et que la consolidation lit sans l'extraire. Les anciennes collectes non étiquetées (`output/raw/<hôte>/`) restent lisibles : elles sont rangées sous l'application et la plate-forme `NA` (ou celles données par `--default-app` et `--default-platform`).
 
 **Données réelles.** `store/`, `build/`, `build-*/` et `inventory/local.yml` sont ignorés par git, pour qu'un clone utilisé sur de vrais serveurs ne les publie pas par erreur. `inventory/hosts.yml` reste un exemple suivi par git : gardez vos inventaires réels hors du dépôt, ou dans `inventory/local.yml`.
@@ -153,6 +157,8 @@ Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaq
    ```bash
    ansible-playbook consolidate.yml -e '{"cmdb_lots": ["/depot/lots/*.tar.gz"]}'
    ```
+
+**Refaire des lots après coup.** `tools/cmdb_store2lots.py store lots` transforme un magasin en lots, un par passage, nommés comme ceux du playbook ; il accepte aussi des collectes sans manifeste ni rangement `<app>/<pf>/<hôte>/`. Si les `.json.gz` ont disparu mais qu'une consolidation a été faite, `--from-sqlite build/cmdb.sqlite` refait les lots depuis la dernière collecte de chaque serveur gardée dans la base (sans l'historique). Le magasin et la base ne sont jamais modifiés.
 
 Un lot dont le passage figure déjà dans le magasin lu (`_runs/<run_id>/`) est ignoré, avec le message « Lot ignoré ». C'est le cas des lots de `store/_lots/`, déjà présents dans `store/` : inutile de les repasser à `cmdb_lots` sur le contrôleur qui a collecté.
 
@@ -366,6 +372,8 @@ Tout fichier repéré figure dans `crypto_files`, même illisible, hors magasins
 | GSKit `.kdb`, `.sth`, portefeuille Oracle `.sso` | Mentionnés. `.sth` et `.sso` signalés : ils donnent accès sans mot de passe |
 
 `cert_usage` relie chaque service (virtualhost Apache ou nginx, connecteur Tomcat, frontal HAProxy) à son certificat : état (`expiré`, `à renouveler` sous 30 jours, `valide`, `illisible`, `non inventorié`) et `name_match`, qui signale un certificat ne couvrant pas le nom du virtualhost. `v_certs_shared` liste les certificats présents sur plusieurs serveurs : leur clé y est donc aussi, et son renouvellement les concerne tous. Le rapprochement se fait par empreinte du certificat, jamais de la clé.
+
+Dans le rapport, les onglets Certificats, Services concernés et Partagés se filtrent par état (expirés, non expirés, à moins de 30, 90 ou 365 jours) et par période d'expiration (du… au…). Les autorités de certification sont masquées par défaut ; une case les réaffiche. Les filtres restent dans l'adresse de la page, qui peut donc être partagée.
 
 Le contenu d'une clé n'est jamais conservé ni transmis. Le collecteur shell n'en lit que l'en-tête et ne copie que les blocs `CERTIFICATE`. Alertes : `v_private_keys_exposed` (lisible par tous, ou PKCS#12 sans mot de passe), `v_certs_expiring` (moins de 90 jours). Une clé en clair lisible par son seul propriétaire n'est pas une alerte : c'est le cas normal d'un serveur web.
 

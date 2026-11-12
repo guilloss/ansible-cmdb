@@ -24,6 +24,8 @@ ROUTES += ["serveurs?" + TAG, "bases?onglet=liens&" + TAG, "logiciels?" + TAG, "
            "serveurs?app=APPDEMO&pf=prod&" + TAG, "serveurs?tag=" + quote("squad=inconnue", safe=""), "serveurs?q=S4"]
 ROUTES += ["logiciels?q=" + quote("webapps/gestion", safe=""), "logiciels?q=" + quote("chemin:webapps/gestion", safe=""), "logiciels?vue=versions",
            "logiciels?gestion=um", "logiciels?q=" + quote("serveur:app1", safe="")]
+ROUTES += ["cles?onglet=certs&etat=expires", "cles?onglet=certs&du=2026-11-18", "cles?onglet=certs&au=2026-11-16",
+           "cles?onglet=certs&etat=30x"]
 HOST = "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")
 ROUTES += [HOST + "?onglet=" + t for t in ("synthese", "bases", "web", "cles", "dependances", "durcissement", "evolutions", "alertes")]
 
@@ -143,6 +145,20 @@ class Rapport(unittest.TestCase):
         self.assertIn("en clair", p)
         self.assertIn("protégé par un mot de passe", p)
         self.assertIn("www.exemple.test", self.pages["cles?onglet=certs"])
+
+    def test_cles_filtres_certificats(self):
+        p = self.pages
+        self.assertNotIn("www.exemple.test</b>", p["cles?onglet=certs&etat=expires"])
+        self.assertIn("Effacer les filtres", p["cles?onglet=certs&etat=expires"])
+        self.assertIn("www.exemple.test</b>", p["cles?onglet=certs&du=2026-11-18"])
+        self.assertIn("Certificats (0)", p["cles?onglet=certs&au=2026-11-16"])
+        self.assertNotIn("www.exemple.test</b>", p["cles?onglet=certs&au=2026-11-16"])
+        self.assertIn("www.exemple.test</b>", p["cles?onglet=certs&etat=30x"])
+        # les onglets gardent les filtres, la page sans filtre n'a pas de bouton d'effacement
+        self.assertIn("etat=expires", p["cles?onglet=certs&etat=expires"].split('class="tabs"')[1].split("</div>")[0])
+        self.assertNotIn("Effacer les filtres", p["cles?onglet=certs"])
+        self.assertIn('id="c-etat"', p["cles?onglet=certs"])
+        self.assertNotIn('id="c-etat"', p["cles"])
 
     def test_accueil_a_traiter(self):
         self.assertIn("Clés privées exposées", self.pages["accueil"])

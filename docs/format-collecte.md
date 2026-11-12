@@ -34,7 +34,7 @@ Les fichiers de `tests/fixtures/format_v1/` sont des collectes produites par les
 | `cmdb_collector.py` | `--output/-o`, `--host-label`, `--tag`, `--run-id`, `--scan-root`, `--exclude`, `--extra-exclude`, `--scan-max-seconds`, `--no-scan-filesystem`, `--no-exec-probes`, `--no-hash-archives`, `--no-file-owners`, `--no-nice`, `--include-network-fs`, `--include-container-storage`, `--pending-updates`, et les autres options présentes (ajoutées depuis : `--no-container-content`, `--container-max-seconds`, `--container-max-images`) |
 | `cmdb_collector.sh` | `--host-label`, `--tag`, `--run-id`, `--scan-max-seconds`, `--exec-max-seconds`, `--exec-timeout`, `--no-scan-filesystem`, `--no-exec-probes`, `--no-hash-archives`, `--extra-exclude` |
 | `cmdb_collector.ps1` | `-App`, `-Platform`, `-HostLabel`, `-RunId`, `-Tag`, `-OutFile`, `-ScanMaxSeconds`, `-ArchiveMaxSeconds`, `-ScanPath`, `-ExcludePath`, `-NoScan`, `-NoHash` |
-| `cmdb_build.py` | toutes ses options au 10/11/2026 (`--store`, `--lot`, `--out`, `--java-db`, `--platform-order`…) |
+| `cmdb_build.py` | toutes ses options au 10/11/2026 (`--store`, `--lot`, `--out`, `--java-db`, `--platform-order`…) ; ajoutées depuis : `--trivy-db`, `--cve-unfixed`, `--upper-labels`, `--real-hostnames` (désactivées par défaut : sans elles, noms et valeurs restent ceux de la v1) |
 
 ### Transport
 

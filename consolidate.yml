@@ -29,6 +29,8 @@
     cmdb_trivy_db: ""                                 # base trivy.db locale : croisement avec les CVE (table vulnerabilities)
     cmdb_cve_unfixed: high                            # CVE sans correctif gardées : all, high (hautes et critiques), none
     cmdb_report_exclude: ""                           # ex. "go-module,npm-package" pour alléger le rapport
+    cmdb_real_hostnames: false                        # true : serveurs nommés « hostname réel (nom d'inventaire) »
+    cmdb_upper_labels: false                          # true : application, plate-forme et étiquettes en majuscules
     cmdb_platform_order: []                           # ordre de promotion, ex. [dev, rec, preprod, prod] ; vide = noms courants
   tasks:
     - name: Construire la base SQLite, les exports, les SBOM et le rapport HTML
@@ -42,7 +44,9 @@
              + (['--java-db', cmdb_java_db] if cmdb_java_db else [])
              + (['--trivy-db', cmdb_trivy_db, '--cve-unfixed', cmdb_cve_unfixed] if cmdb_trivy_db else [])
              + (['--report-exclude-categories', cmdb_report_exclude] if cmdb_report_exclude else [])
-             + (['--platform-order', cmdb_platform_order | join(',')] if cmdb_platform_order else []) }}
+             + (['--platform-order', cmdb_platform_order | join(',')] if cmdb_platform_order else [])
+             + (['--upper-labels'] if cmdb_upper_labels | bool else [])
+             + (['--real-hostnames'] if cmdb_real_hostnames | bool else []) }}
       register: cmdb_build_result
       changed_when: true
       when: cmdb_build | default(cmdb_build_default | default(true)) | bool

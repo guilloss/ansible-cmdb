@@ -646,7 +646,7 @@ function vAccueil() {
     ["restart", a.restart, "warn", "Processus à redémarrer", "Bibliothèques remplacées sur disque, ancienne version encore chargée", "alertes"],
     ["reboot", a.reboot, "warn", "Serveurs à redémarrer", "Noyau ou bibliothèques système mis à jour", "alertes"],
     ["keys", a.keys, "risk", "Clés privées exposées", "Lisibles par tous les comptes, ou PKCS#12 sans mot de passe", "cles"],
-    ["certs", a.certs, "warn", "Certificats expirés ou à moins de 30 jours", "Certificats hors autorités", "cles?onglet=certs"],
+    ["certs", a.certs, "warn", "Certificats expirés ou à moins de 30 jours", "Certificats hors autorités", "cles?onglet=certs&etat=30x"],
     ["oracle", a.oracle, "warn", "ORACLE_HOME en retard de correctifs", "Plus de 200 jours, ou plus ancien que le reste du parc", "bases?onglet=homes"],
     ["eol", a.eol, "warn", "Fins de support dépassées", "Systèmes et composants hors paquet", "support"],
     ["fsfull", a.fsfull, "warn", "Systèmes de fichiers presque pleins", "Occupation ou inodes à 90 % ou plus", "alertes"],
@@ -980,14 +980,16 @@ function vMateriel(params) {
 
 
 // ---------------------------------------------------------------- pages à onglets
-function tabbed(route, title, lede, tabs, params, placeholder) {
+function tabbed(route, title, lede, tabs, params, placeholder, opts) {
+  opts = opts || {};
   const tab = params.get("onglet") || tabs[0][0];
+  const keep = {}; (opts.keep || []).forEach(k => { if (params.get(k)) keep[k] = params.get(k); });
   const f = (params.get("q") || "").toLowerCase();
   const m = rows => f ? rows.filter(o => Object.values(o).join(" ").toLowerCase().includes(f)) : rows;
   const cur = tabs.find(t => t[0] === tab) || tabs[0];
   return `<h2>${esc(title)}</h2><p class="lede">${lede}</p>
-    <div class="tabs">${tabs.map(([k, l]) => `<a href="${link(route, {onglet: k})}"${k === cur[0] ? ' aria-current="page"' : ""}>${esc(l)}</a>`).join("")}</div>
-    <div class="toolbar"><input type="text" id="pgfilter" value="${esc(f)}" placeholder="${esc(placeholder)}" aria-label="Filtrer"></div>
+    <div class="tabs">${tabs.map(([k, l]) => `<a href="${link(route, Object.assign({onglet: k}, keep))}"${k === cur[0] ? ' aria-current="page"' : ""}>${esc(l)}</a>`).join("")}</div>
+    <div class="toolbar"><input type="text" id="pgfilter" value="${esc(f)}" placeholder="${esc(placeholder)}" aria-label="Filtrer">${opts.toolbar || ""}</div>
     ${cur[2](m)}`;
 }
 const hcolOf = host => host ? [] : [{k: "host", l: "Serveur", f: o => hostCell(o)}];
@@ -1086,18 +1088,55 @@ function certUsageTable(rows, host) {
     {k: "not_after", l: "Expiration", f: u => day(u.not_after)}, {k: "days_left", l: "Jours restants", cls: "num"},
     {k: "state", l: "État", f: u => `<span class="badge ${st[u.state] || "muted"}">${esc(u.state)}</span>`}, {k: "cert_path", l: "Fichier", cls: "path"}]), rows, {sort: "days_left", empty: "Aucun service ne déclare de certificat."});
 }
+// Filtres des certificats (page Clés et certificats) : état, période d'expiration, autorités
+const CERT_STATES = [["", "Tous les états"], ["expires", "Expirés"], ["30x", "Expirés ou à moins de 30 jours"],
+  ["30", "Non expirés, à moins de 30 jours"], ["90", "Non expirés, à moins de 90 jours"], ["365", "Non expirés, à moins d'un an"],
+  ["valides", "Non expirés"]];
+const CERT_KEYS = ["etat", "du", "au", "ca"];
+function certFilter(params) {
+  const etat = params.get("etat") || "", du = params.get("du") || "", au = params.get("au") || "", ca = params.get("ca") === "1";
+  return rows => rows.filter(c => {
+    if (!ca && c.is_ca) return false;
+    const d = c.days_left;
+    if (etat) {
+      if (d == null) return false;
+      if (etat === "expires" && d >= 0) return false;
+      if (etat === "valides" && d < 0) return false;
+      if (etat === "30x" && d > 30) return false;
+      if (/^\d+$/.test(etat) && (d < 0 || d > +etat)) return false;
+    }
+    const na = c.not_after ? String(c.not_after).slice(0, 10) : "";
+    if ((du || au) && !na) return false;
+    if (du && na < du) return false;
+    if (au && na > au) return false;
+    return true;
+  });
+}
+function certToolbar(params) {
+  const etat = params.get("etat") || "";
+  const active = CERT_KEYS.some(k => params.get(k));
+  return `<label>État<select id="c-etat">${CERT_STATES.map(([v, l]) => `<option value="${v}"${v === etat ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+    <label>Expire du<input type="date" id="c-du" value="${esc(params.get("du") || "")}"></label>
+    <label>au<input type="date" id="c-au" value="${esc(params.get("au") || "")}"></label>
+    <label><input type="checkbox" id="c-ca"${params.get("ca") === "1" ? " checked" : ""}> Inclure les autorités (CA)</label>
+    ${active ? `<a class="btn ghost" href="${link("cles", {onglet: params.get("onglet") || "", q: params.get("q") || ""})}">Effacer les filtres</a>` : ""}`;
+}
 function vCles(params) {
   const files = rowsOf(D.crypto_files);
   const keys = files.filter(f => f.has_private_key || ["gskit-kdb", "gskit-stash", "oracle-wallet", "pkcs12", "illisible"].includes(f.kind));
+  const cf = certFilter(params);
+  const certs = cf(rowsOf(D.crypto_certs)), usages = cf(rowsOf(D.cert_usage)), shared = cf(rowsOf(D0.certs_shared));
+  const tab = params.get("onglet") || "cles";
+  const certTab = ["certs", "usages", "partages"].includes(tab);
   return tabbed("cles", "Clés et certificats", "Tout fichier repéré est mentionné, même illisible. Le contenu d'une clé n'est jamais collecté. "
-    + "Seul le mot de passe vide est essayé sur les PKCS#12.", [
+    + "Seul le mot de passe vide est essayé sur les PKCS#12. Les autorités de certification (magasins de confiance) sont masquées par défaut.", [
     ["cles", `Clés et magasins (${fmt(keys.length)})`, m => keysTable(m(keys))],
-    ["certs", `Certificats (${fmt(rowsOf(D.crypto_certs).length)})`, m => certsTable(m(rowsOf(D.crypto_certs)))],
-    ["usages", `Services concernés (${fmt(rowsOf(D.cert_usage).length)})`, m => certUsageTable(m(rowsOf(D.cert_usage)))],
-    ["partages", `Partagés (${fmt(rowsOf(D0.certs_shared).length)})`, m => table([{k: "cn", l: "CN", f: c => `<b>${esc(c.cn || "")}</b>`}, {k: "hosts", l: "Serveurs", cls: "num"}, {k: "host_list", l: "Liste", cls: "path"},
-      {k: "not_after", l: "Expiration", f: c => day(c.not_after)}, {k: "days_left", l: "Jours restants", cls: "num"}], m(rowsOf(D0.certs_shared)), {empty: "Aucun certificat présent sur plusieurs serveurs."})],
+    ["certs", `Certificats (${fmt(certs.length)})`, m => certsTable(m(certs))],
+    ["usages", `Services concernés (${fmt(usages.length)})`, m => certUsageTable(m(usages))],
+    ["partages", `Partagés (${fmt(shared.length)})`, m => table([{k: "cn", l: "CN", f: c => `<b>${esc(c.cn || "")}</b>`}, {k: "hosts", l: "Serveurs", cls: "num"}, {k: "host_list", l: "Liste", cls: "path"},
+      {k: "not_after", l: "Expiration", f: c => day(c.not_after)}, {k: "days_left", l: "Jours restants", cls: "num"}], m(shared), {empty: "Aucun certificat présent sur plusieurs serveurs."})],
     ["tout", `Tous les fichiers (${fmt(files.length)})`, m => keysTable(m(files))],
-  ], params, "Filtrer (serveur, chemin, CN…)");
+  ], params, "Filtrer (serveur, chemin, CN…)", {keep: CERT_KEYS.concat(["q"]), toolbar: certTab ? certToolbar(params) : ""});
 }
 function vSupport(params) {
   const rows = rowsOf(D.eol);
@@ -1393,6 +1432,10 @@ function bindView(r, params) {
       const cols = SW.cols;
       csvDownload("cmdb_logiciels.csv", cols, res.rows.map(r => cols.map(c => c === "managed" ? (swMan(r) ? "distribution" : "hors paquet") : swVal(r, c))));
     };
+  }
+  if (r === "cles" && $("#c-etat")) {
+    const upd = () => { const p = Object.fromEntries(params); Object.assign(p, {etat: $("#c-etat").value, du: $("#c-du").value, au: $("#c-au").value, ca: $("#c-ca").checked ? "1" : ""}); go("cles", p); };
+    ["#c-etat", "#c-du", "#c-au", "#c-ca"].forEach(s => $(s).onchange = upd);
   }
   if (r === "serveurs") $("#hostcsv").onclick = () => csvDownload("cmdb_serveurs.csv", D.hosts.cols, D.hosts.rows);
   if (r === "versions") { const b = $("#mxcsv"); if (b) b.onclick = () => csvDownload("cmdb_versions.csv", D.matrix.cols, D.matrix.rows); }

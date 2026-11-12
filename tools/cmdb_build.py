@@ -356,16 +356,40 @@ class Store(object):
     les relire : chemin du fichier, ou contenu encore compressé pour un lot. Les documents
     sont relus un à un au moment de remplir la base (current(), previous_docs())."""
 
-    def __init__(self, default_app=NA, default_platform=NA, apps=None, platforms=None, hosts=None, history=True):
+    def __init__(self, default_app=NA, default_platform=NA, apps=None, platforms=None, hosts=None, history=True,
+                 upper=False, real_names=False):
         self.docs = {}       # clé -> (meta, réf. document, réf. faits Ansible, source)
         self.previous = {}   # clé -> (meta, réf. document, source) : avant-dernière collecte
         self.history = history
         self.runs = {}       # run_id -> manifeste
         self.dir_runs = set()   # passages présents dans les magasins lus (pour ignorer leurs lots)
-        self.default_app, self.default_platform = default_app, default_platform
-        self.filters = (apps or [], platforms or [], hosts or [])
+        # --upper-labels : application, plate-forme et valeurs des étiquettes en majuscules (« prod », « Prod »
+        # -> « PROD »), mêmes clés quelle que soit la saisie des équipes. Les collectes ne sont pas modifiées.
+        self.upper = upper
+        # --real-hostnames : nom affiché = hostname réel du serveur, suivi du nom d'inventaire Ansible entre
+        # parenthèses quand ils diffèrent (« srv-web-01 (web01) »). Sans l'option : nom d'inventaire seul.
+        self.real_names = real_names
+        self.aliases = {}    # (app, pf, nom d'inventaire) -> nom affiché, pour les manifestes des passages
+        self.default_app, self.default_platform = self.label(default_app), self.label(default_platform)
+        self.filters = ([self.label(x) for x in apps or []], [self.label(x) for x in platforms or []], hosts or [])
         self.read = self.skipped = 0
         self.unsupported = []   # (source, schema) : format plus récent que cette consolidation
+
+    def label(self, v):
+        return v.upper() if self.upper and isinstance(v, str) else v
+
+    def tags(self, meta):
+        """Étiquettes d'une collecte, valeurs normalisées (les noms d'étiquettes restent tels quels)."""
+        return dict((k, self.label(v)) for k, v in (meta.get("tags") or {}).items())
+
+    def display_host(self, alias, real):
+        """« vrai hostname (alias ansible) » si les deux diffèrent ; un FQDN et son nom court sont le même nom."""
+        real = (real or "").strip()
+        if not self.real_names or not real or not alias:
+            return alias or real or "inconnu"
+        if alias.split(".")[0].lower() == real.split(".")[0].lower():
+            return alias
+        return "%s (%s)" % (real, alias)
 
     @staticmethod
     def _match(v, pats):
@@ -398,10 +422,14 @@ class Store(object):
             self.unsupported.append((source, doc.get("schema")))
             return
         meta = doc.get("meta") or {}
-        tags = meta.get("tags") or {}
-        key = (tags.get("app") or self.default_app, tags.get("platform") or self.default_platform,
-               meta.get("host_label") or fallback_host or (doc.get("os") or {}).get("hostname") or "inconnu")
-        if not all(self._match(v, f) for v, f in zip(key, self.filters)):
+        tags = self.tags(meta)
+        alias = meta.get("host_label") or fallback_host
+        app, pf = tags.get("app") or self.default_app, tags.get("platform") or self.default_platform
+        key = (app, pf, self.display_host(alias, (doc.get("os") or {}).get("hostname")))
+        if alias:
+            self.aliases[(app, pf, alias)] = key[2]
+        if not (self._match(app, self.filters[0]) and self._match(pf, self.filters[1])
+                and (self._match(key[2], self.filters[2]) or (alias and self._match(alias, self.filters[2])))):
             self.skipped += 1
             return
         if counted:
@@ -456,7 +484,7 @@ class Store(object):
             return
         r = self.runs.setdefault(m["run_id"], {"run_id": m["run_id"], "hosts": {}})
         if m.get("host"):
-            r["hosts"][(m.get("app") or NA, m.get("platform") or NA, m["host"])] = m
+            r["hosts"][(self.label(m.get("app")) or NA, self.label(m.get("platform")) or NA, m["host"])] = m
         else:
             r.update((k, v) for k, v in m.items() if k != "hosts")
             r["_source"] = source
@@ -554,7 +582,7 @@ CREATE TABLE hosts (host TEXT, hostname TEXT, fqdn TEXT, machine_id TEXT, os_id 
   collect_errors INTEGER, source_file TEXT, privileged INTEGER, collect_user TEXT, processes_visible INTEGER,
   processes_exe_readable INTEGER, fs_unreadable_dirs INTEGER, board TEXT, bios_version TEXT, bios_date TEXT,
   chassis TEXT, cpu_sockets INTEGER, cpu_cores INTEGER, cpu_threads INTEGER, hypervisor TEXT, mac_addresses TEXT,
-  nic_count INTEGER, disk_total_gb REAL, run_id TEXT, tags TEXT, PRIMARY KEY (app, platform, host));
+  nic_count INTEGER, disk_total_gb REAL, run_id TEXT, tags TEXT, inventory_name TEXT, PRIMARY KEY (app, platform, host));
 CREATE TABLE interfaces (host TEXT, ifname TEXT, kind TEXT, mac TEXT, permanent_mac TEXT, mtu INTEGER, state TEXT,
   speed_mbps INTEGER, duplex TEXT, driver TEXT, driver_version TEXT, firmware TEXT, pci_slot TEXT, model TEXT,
   vendor TEXT, master TEXT, parent TEXT, vlan_id INTEGER, members TEXT, ipv4 TEXT, ipv6 TEXT);
@@ -690,6 +718,7 @@ class Builder(cmdb_extras.ExtrasMixin):
         self.rows = {}
         self.app = self.platform = NA
         self.flrtvc = []
+        self.tags = Store().tags   # remplacé par celui du magasin lu (même normalisation que les clés)
 
     def add(self, table, row):
         self.rows.setdefault(table, []).append((self.app, self.platform) + tuple(row))
@@ -745,7 +774,7 @@ class Builder(cmdb_extras.ExtrasMixin):
             1 if str(meta.get("uid")) == "0" else 0, meta.get("user") or str(meta.get("uid")),
             (meta.get("visibility") or {}).get("processes"), (meta.get("visibility") or {}).get("processes_exe_readable"),
             (meta.get("visibility") or {}).get("fs_unreadable_dirs")) + self.hardware(host, doc)
-            + (meta.get("run_id"), json.dumps(meta.get("tags"), ensure_ascii=False, sort_keys=True) if meta.get("tags") else None))
+            + (meta.get("run_id"), json.dumps(self.tags(meta), ensure_ascii=False, sort_keys=True) if meta.get("tags") else None, meta.get("host_label")))
         for e in meta.get("errors") or []:
             self.add("collect_errors", (host, e.get("section"), e.get("error")))
         self.add("raw_documents", (host, meta.get("started_at"), json.dumps(doc, ensure_ascii=False),
@@ -1451,9 +1480,10 @@ def write_runs(db, store):
     complétés par les collectes présentes sans manifeste."""
     seen = set()
     for rid, m in sorted(store.runs.items()):
-        for (app, pf, host), h in sorted(m["hosts"].items()):
+        for (app, pf, alias), h in sorted(m["hosts"].items()):
+            host = store.aliases.get((app, pf, alias), alias)   # manifeste : nom d'inventaire -> nom affiché
             if not store._match(app, store.filters[0]) or not store._match(pf, store.filters[1]) \
-                    or not store._match(host, store.filters[2]):
+                    or not (store._match(host, store.filters[2]) or store._match(alias, store.filters[2])):
                 continue
             db.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)", (
                 rid, app, pf, host, h.get("status"), h.get("collector"),
@@ -1507,6 +1537,10 @@ def main():
     ap.add_argument("--no-dossiers", action="store_true", help="Ne pas produire les dossiers d'application")
     ap.add_argument("--dossier-mention", default=cmdb_dossier.DEFAULT_MENTION,
                     help="Mention de diffusion portée sur chaque page des dossiers d'application")
+    ap.add_argument("--real-hostnames", action="store_true",
+                    help="Nommer les serveurs « hostname réel (nom d'inventaire Ansible) » quand les deux diffèrent")
+    ap.add_argument("--upper-labels", action="store_true",
+                    help="Application, plate-forme et valeurs des étiquettes en majuscules (prod, Prod -> PROD)")
     ap.add_argument("--platform-order", default="",
                     help="Ordre de promotion des plates-formes, de l'amont vers la production (ex. dev,rec,preprod,prod). "
                          "Défaut : noms courants reconnus (dev, int, rec/qualif, preprod, prod et variantes)")
@@ -1517,7 +1551,8 @@ def main():
         print("ERREUR base Trivy introuvable : %s (fichier trivy.db attendu)" % a.trivy_db, file=sys.stderr)
         return 1
 
-    store = Store(a.default_app, a.default_platform, a.app, a.platform, a.host, history=not a.no_history)
+    store = Store(a.default_app, a.default_platform, a.app, a.platform, a.host, history=not a.no_history,
+                  upper=a.upper_labels, real_names=a.real_hostnames)
     dirs = a.store + a.raw
     lots = sorted(set(p for pat in a.lot for p in (glob.glob(pat) or [pat])))
     if not dirs and not lots:
@@ -1563,6 +1598,7 @@ def main():
     db = sqlite3.connect(tmp)
     db.executescript(SCHEMA)
     b = Builder(db, java_db)
+    b.tags = store.tags
     for key, doc, facts, src in store.current():
         b.process_host(key, doc, None if a.no_raw_documents else facts, src)
         del doc, facts
