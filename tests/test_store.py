@@ -287,6 +287,32 @@ class Archivage(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(os.path.join(ext, "APP", "prod", "srv1"))), [
             "20261101T080000Z-aaaa.ansible_facts.json", "20261101T080000Z-aaaa.json.gz", "20261101T090000Z-eeee.error.json"])
 
+    def test_lots(self):
+        import io as _io
+        import tarfile as _tar
+        lots = os.path.join(self.d, "_lots")
+        os.makedirs(lots)
+        r0, r1, r2, r3 = ("202611%02dT080000Z-000%d" % (i + 1, i) for i in range(4))
+        # lot d'une version antérieure, sans application dans le nom : lue dans ses chemins
+        with _tar.open(os.path.join(lots, r0 + ".tar.gz"), "w:gz") as tf:
+            info = _tar.TarInfo("APP/prod/srv1/%s.json.gz" % r0)
+            info.size = 1
+            tf.addfile(info, _io.BytesIO(b"x"))
+        for rid in (r1, r2, r3):
+            for name in ("APP__prod__%s.tar.gz" % rid, rid + ".tar.gz"):
+                open(os.path.join(lots, name), "w").close()
+        open(os.path.join(lots, "APP__recette__%s.tar.gz" % r1), "w").close()
+        open(os.path.join(lots, "equipe-a.tar.gz"), "w").close()       # nom imposé : ne bouge pas
+        self.assertEqual(self.mod.main([self.d, "--keep", "0"]), 0)    # collectes intactes, lots archivés
+        self.assertEqual(sorted(os.listdir(lots)), sorted(["APP__prod__%s.tar.gz" % r2, r2 + ".tar.gz", "APP__prod__%s.tar.gz" % r3,
+                                                           r3 + ".tar.gz", "APP__recette__%s.tar.gz" % r1, "equipe-a.tar.gz"]))
+        self.assertEqual(sorted(os.listdir(os.path.join(self.d, "_archive", "_lots"))),
+                         sorted([r0 + ".tar.gz", "APP__prod__%s.tar.gz" % r1, r1 + ".tar.gz"]))
+        self.assertEqual(len(os.listdir(self.host)), 11)
+        # --keep-lots 0 : les lots ne bougent pas
+        self.assertEqual(self.mod.plan_lots(lots, 0), [])
+        self.assertEqual(len(self.mod.plan_lots(lots, 1)), 2)
+
     def test_consolidation_ignore_archive(self):
         d = tempfile.mkdtemp(prefix="cmdbarch")
         self.addCleanup(shutil.rmtree, d, True)

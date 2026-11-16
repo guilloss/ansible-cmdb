@@ -24,6 +24,7 @@ cmdb_lot_keep_run_id_name: true     # garder aussi <run_id>.tar.gz (lien dur, si
 # vers cmdb_archive_dir à la fin de chaque passage. 2 suffit à la consolidation (dernière + évolutions).
 # 0 : tout garder.
 cmdb_keep_runs: 2
+cmdb_keep_lots: "{{ cmdb_keep_runs }}"  # lots gardés dans _lots par application et plate-forme (0 : tout garder)
 cmdb_archive_dir: ""                # vide : <cmdb_store>/_archive (ignoré par la consolidation)
 
 # Interpréteur Python distant (2.7 ou >= 3.6). Par défaut celui découvert par Ansible.

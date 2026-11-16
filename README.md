@@ -86,6 +86,7 @@ Paramètres principaux (`roles/cmdb_collect/defaults/main.yml`) :
 | `cmdb_lot_name` | "" | Nom imposé du lot (sans `.tar.gz`) ; vide : `<app>__<pf>__<run_id>` |
 | `cmdb_lot_keep_run_id_name` | true | Garder aussi `<run_id>.tar.gz` (lien dur vers le même fichier, ou copie si le système de fichiers refuse les liens durs ; pour les procédures existantes) |
 | `cmdb_keep_runs` | 2 | Collectes gardées par serveur dans le magasin ; les plus anciennes sont déplacées (jamais supprimées) vers l'archive à la fin de chaque passage. `0` : tout garder |
+| `cmdb_keep_lots` | = `cmdb_keep_runs` | Lots gardés dans `_lots` par application et plate-forme ; les plus anciens vont dans `_archive/_lots`. `0` : tout garder |
 | `cmdb_archive_dir` | "" (= `store/_archive`) | Répertoire d'archive des collectes anciennes |
 | `cmdb_scan_max_seconds` | 900 | Budget du parcours disque ; au-delà, résultat partiel signalé (`fs_scan_truncated`) |
 | `cmdb_scan_roots` | `[]` (= `/`) | Limiter le parcours à certaines racines |
@@ -116,14 +117,15 @@ store/
 │                              /APPDEMO__prod__aixprd02.json  # …et statut de chaque hôte
 ├── _lots/APPDEMO__prod__20261105T090000Z-1a2b.tar.gz      # lot transférable (cmdb_lot=true)
 ├── _lots/20261105T090000Z-1a2b.tar.gz                    # le même lot sous son nom d'origine (lien dur ou copie)
-└── _archive/APPDEMO/prod/aixprd01/…                       # collectes plus anciennes (cmdb_keep_runs)
+├── _archive/APPDEMO/prod/aixprd01/…                       # collectes plus anciennes (cmdb_keep_runs)
+└── _archive/_lots/…                                      # lots plus anciens (cmdb_keep_lots)
 ```
 
-**Archivage.** Seules les 2 dernières collectes de chaque serveur restent dans le magasin (`cmdb_keep_runs`) : c'est tout ce que lit la consolidation (la dernière, et l'avant-dernière pour les évolutions). À la fin de chaque passage, les plus anciennes (`.json.gz`, faits Ansible, traces d'échec) sont **déplacées** sous `store/_archive/`, au même chemin relatif ; rien n'est supprimé. La consolidation ignore `_archive`. `latest.json.gz`, les manifestes `_runs` et les lots `_lots` ne bougent pas. Pour ranger un magasin existant sans lancer de collecte :
+**Archivage.** Seules les 2 dernières collectes de chaque serveur restent dans le magasin (`cmdb_keep_runs`) : c'est tout ce que lit la consolidation (la dernière, et l'avant-dernière pour les évolutions). À la fin de chaque passage, les plus anciennes (`.json.gz`, faits Ansible, traces d'échec) sont **déplacées** sous `store/_archive/`, au même chemin relatif ; rien n'est supprimé. La consolidation ignore `_archive`. `latest.json.gz` et les manifestes `_runs` ne bougent pas. Même règle pour les lots (`cmdb_keep_lots`) : les 2 derniers de chaque application et plate-forme restent dans `_lots`, avec leur nom d'origine `<run_id>.tar.gz` ; les plus anciens vont dans `_archive/_lots`. Un lot au nom imposé (`cmdb_lot_name`) ne bouge pas. Un lot transmis à une autre équipe reste donc disponible pendant deux passages. Pour ranger un magasin existant sans lancer de collecte :
 
 ```bash
 python3 roles/cmdb_collect/files/cmdb_archive.py store --dry-run   # ce qui serait déplacé
-python3 roles/cmdb_collect/files/cmdb_archive.py store             # --keep 3, --archive /autre/disque
+python3 roles/cmdb_collect/files/cmdb_archive.py store             # --keep 3, --keep-lots 5, --archive /autre/disque
 ```
 
 Le manifeste du passage enregistre le statut de **chaque hôte visé**, y compris ceux qui étaient injoignables ou en échec (`ok`, `failed`, `unreachable`). Le rapport signale ainsi un serveur non collecté au dernier passage, dont la fiche affichée est plus ancienne. Un hôte en échec reste en échec dans le récapitulatif d'Ansible, après l'écriture du manifeste.

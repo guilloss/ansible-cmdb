@@ -205,6 +205,22 @@ class Routing(unittest.TestCase):
                          ["20200101T000000Z-0001.ansible_facts.json", "20200101T000000Z-0001.json.gz"])
         self.assertIn("2 fichier(s) déplacé(s)", out)
 
+    def test_lots_anciens_archives(self):
+        lots = self.tmp + "/store/_lots/"
+        os.makedirs(lots)
+        for rid in ("20200101T000000Z-0001", "20200102T000000Z-0002"):
+            open(lots + "TEST__QUALIF__%s.tar.gz" % rid, "w").close()
+            open(lots + rid + ".tar.gz", "w").close()
+        py = shutil.which("python3")
+        out, doc, status = self.collect("a ansible_connection=local ansible_python_interpreter=%s\n" % py,
+                                        "-e", "cmdb_lot=true", "-e", "cmdb_scan_filesystem=false")
+        rid = doc["meta"]["run_id"]
+        self.assertEqual(sorted(os.listdir(lots)), sorted(["TEST__QUALIF__20200102T000000Z-0002.tar.gz", "20200102T000000Z-0002.tar.gz",
+                                                           "TEST__QUALIF__%s.tar.gz" % rid, rid + ".tar.gz"]), out)
+        self.assertEqual(sorted(os.listdir(self.tmp + "/store/_archive/_lots")),
+                         ["20200101T000000Z-0001.tar.gz", "TEST__QUALIF__20200101T000000Z-0001.tar.gz"])
+        self.assertIn("2 lot(s))", out)
+
     def test_lot_plusieurs_applications_nom_impose(self):
         py = shutil.which("python3")
         inv = os.path.join(self.tmp, "inv")

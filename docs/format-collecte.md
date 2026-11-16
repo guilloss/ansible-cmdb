@@ -85,8 +85,9 @@ La consolidation ne tire rien du nom d'un lot : tout nom est accepté, et un mê
 (ou deux copies identiques) n'est lu qu'une fois.
 
 Ajout depuis le gel (16/11/2026) : `<store>/_archive/<même chemin relatif>` reçoit les collectes d'un
-serveur au-delà des `cmdb_keep_runs` dernières (2 par défaut). Lecteurs : ignorer `_archive`, comme
-`_lots`.
+serveur au-delà des `cmdb_keep_runs` dernières (2 par défaut), et `<store>/_archive/_lots` les lots
+au-delà des `cmdb_keep_lots` derniers de chaque application et plate-forme. Lecteurs : ignorer
+`_archive`, comme `_lots`.
 
 L'hôte, l'application et la plate-forme se lisent dans le document (`meta.host_label`, `meta.tags`),
 pas dans le chemin : un fichier déplacé reste correctement rattaché.

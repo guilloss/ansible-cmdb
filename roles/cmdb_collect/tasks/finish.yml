@@ -6,7 +6,7 @@
 #   <cmdb_store>/_runs/<run_id>/<app>__<pf>__<hôte>.json   statut par hôte
 #   <cmdb_store>/_lots/<app>__<pf>__<run_id>.tar.gz        si cmdb_lot=true
 #   <cmdb_store>/_lots/<run_id>.tar.gz                     même lot, nom d'origine (lien dur, sinon copie)
-#   <cmdb_store>/_archive/...                              collectes au-delà des cmdb_keep_runs dernières
+#   <cmdb_store>/_archive/...                              collectes et lots au-delà des cmdb_keep_runs / cmdb_keep_lots derniers
 # ---------------------------------------------------------------------------
 
 - name: Créer le répertoire du manifeste
@@ -147,7 +147,7 @@
         msg: "Lot à transférer : {{ cmdb_lot_path }}"
 
 # Après le lot : les collectes du passage, les plus récentes, ne sont jamais déplacées
-- name: Archiver les collectes anciennes (garder les {{ cmdb_keep_runs }} dernières par serveur)
+- name: Archiver les collectes et les lots anciens (garder les {{ cmdb_keep_runs }} / {{ cmdb_keep_lots }} derniers)
   ansible.builtin.command:
     argv:
       - "{{ ansible_playbook_python }}"
@@ -155,11 +155,13 @@
       - "{{ cmdb_store_dir }}"
       - --keep
       - "{{ cmdb_keep_runs | int }}"
+      - --keep-lots
+      - "{{ cmdb_keep_lots | int }}"
       - --archive
       - "{{ cmdb_archive_dir if cmdb_archive_dir | length > 0 else cmdb_store_dir ~ '/_archive' }}"
   register: cmdb_archived
   changed_when: "'déplacé' in cmdb_archived.stdout"
-  when: cmdb_keep_runs | int > 0
+  when: cmdb_keep_runs | int > 0 or cmdb_keep_lots | int > 0
   run_once: true
   delegate_to: localhost
   become: false
