@@ -39,12 +39,12 @@ def part(values):
 
 def scan(store):
     """{run_id: [chemins relatifs des collectes]}, à toute profondeur ; latest.json.gz, traces d'échec,
-    _runs et _lots exclus. La consolidation lit une collecte d'un lot quel que soit son chemin."""
+    _runs, _lots et _archive exclus. La consolidation lit une collecte d'un lot quel que soit son chemin."""
     runs = {}
     for d, dirs, files in os.walk(store):
         rel = os.path.relpath(d, store)
         if rel == ".":
-            dirs[:] = [x for x in dirs if x not in ("_runs", "_lots")]
+            dirs[:] = [x for x in dirs if x not in ("_runs", "_lots", "_archive")]
         dirs.sort()
         parts = [] if rel == "." else rel.split(os.sep)
         for f in sorted(files):

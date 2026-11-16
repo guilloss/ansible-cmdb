@@ -167,6 +167,44 @@ class Routing(unittest.TestCase):
         self.assertTrue(os.path.samefile(lots + "TEST__QUALIF__%s.tar.gz" % rid, lots + rid + ".tar.gz"))
         self.assertIn("Lot à transférer : %s/store/_lots/TEST__QUALIF__%s.tar.gz" % (self.tmp, rid), out)
 
+    def test_lot_sans_liens_durs(self):
+        """Partage Windows ou VirtualBox : liens durs refusés (EPERM), le nom d'origine devient une copie."""
+        site = os.path.join(self.tmp, "site")
+        os.makedirs(site)
+        with open(os.path.join(site, "sitecustomize.py"), "w") as handle:
+            handle.write("import errno, os\n"
+                         "def _refus(*a, **k):\n"
+                         "    raise OSError(errno.EPERM, 'Operation not permitted')\n"
+                         "os.link = _refus\n")
+        self.env["PYTHONPATH"] = site
+        py = shutil.which("python3")
+        out, doc, status = self.collect("a ansible_connection=local ansible_python_interpreter=%s\n" % py,
+                                        "-e", "cmdb_lot=true", "-e", "cmdb_scan_filesystem=false")
+        rid = doc["meta"]["run_id"]
+        lots = self.tmp + "/store/_lots/"
+        self.assertEqual(sorted(os.listdir(lots)), sorted(["TEST__QUALIF__%s.tar.gz" % rid, "%s.tar.gz" % rid]), out)
+        self.assertFalse(os.path.samefile(lots + "TEST__QUALIF__%s.tar.gz" % rid, lots + rid + ".tar.gz"))
+        with open(lots + rid + ".tar.gz", "rb") as a, open(lots + "TEST__QUALIF__%s.tar.gz" % rid, "rb") as b:
+            self.assertEqual(a.read(), b.read())
+        self.assertIn("Lien dur impossible", out)
+        self.assertNotIn("fatal:", out)
+
+    def test_collectes_anciennes_archivees(self):
+        host = self.tmp + "/store/TEST/QUALIF/a/"
+        os.makedirs(host)
+        for rid in ("20200101T000000Z-0001", "20200102T000000Z-0002"):
+            open(host + rid + ".json.gz", "w").close()
+            open(host + rid + ".ansible_facts.json", "w").close()
+        py = shutil.which("python3")
+        out, doc, status = self.collect("a ansible_connection=local ansible_python_interpreter=%s\n" % py,
+                                        "-e", "cmdb_scan_filesystem=false")
+        rid = doc["meta"]["run_id"]
+        kept = sorted(f for f in os.listdir(host) if f.endswith(".json.gz"))
+        self.assertEqual(kept, sorted(["20200102T000000Z-0002.json.gz", rid + ".json.gz", "latest.json.gz"]), out)
+        self.assertEqual(sorted(os.listdir(self.tmp + "/store/_archive/TEST/QUALIF/a")),
+                         ["20200101T000000Z-0001.ansible_facts.json", "20200101T000000Z-0001.json.gz"])
+        self.assertIn("2 fichier(s) déplacé(s)", out)
+
     def test_lot_plusieurs_applications_nom_impose(self):
         py = shutil.which("python3")
         inv = os.path.join(self.tmp, "inv")

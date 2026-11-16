@@ -1,9 +1,17 @@
 # -*- coding: utf-8 -*-
 """Parc fictif : collectes construites à la main, dans le format réel des collecteurs."""
+import datetime
 import gzip
 import json
 import os
 
+# Échéances des certificats relatives au jour du test (écrits le 12/11/2026 : +8 et +3 jours)
+def in_days(n, fmt="%Y-%m-%d"):
+    return (datetime.date.today() + datetime.timedelta(days=n)).strftime(fmt)
+
+
+CERT_WWW = in_days(8) + "T00:00:00Z"
+CERT_SHARED = in_days(3) + "T00:00:00Z"
 ORA_HOME = "/u01/app/oracle/product/19.0.0/dbhome_1"
 ORA_OLD = "/u01/app/oracle/product/12.2.0/dbhome_1"
 
@@ -74,7 +82,7 @@ def app_host(run="r2", at="2026-11-02T08:00:00Z"):
                            "java_archives": [{"path": "/opt/tomcat/webapps/gestion.war"}, {"path": "/opt/tomcat/webapps/ROOT.war"}],
                            "crypto_files": [{"path": "/etc/pki/tls/private/www.key", "kind": "pem", "has_private_key": True, "encrypted": False, "key_type": "RSA", "mode": "0644", "owner": "root", "cert_count": 0, "certs": []},
                                             {"path": "/etc/pki/tls/certs/www.crt", "kind": "pem", "has_private_key": False, "mode": "0644", "owner": "root", "cert_count": 1,
-                                             "certs": [{"subject": "CN=www.exemple.test", "cn": "www.exemple.test", "issuer": "CN=ca", "not_after": "2026-11-20T00:00:00Z", "is_ca": False, "sha256": "ab", "sans": ["www.exemple.test"]}]},
+                                             "certs": [{"subject": "CN=www.exemple.test", "cn": "www.exemple.test", "issuer": "CN=ca", "not_after": CERT_WWW, "is_ca": False, "sha256": "ab", "sans": ["www.exemple.test"]}]},
                                             {"path": "/opt/app/ks.p12", "kind": "pkcs12", "encrypted": True, "mode": "0600", "owner": "app", "cert_count": 0, "certs": [], "note": "protégé par un mot de passe : contenu non lu"}]},
                runtimes={"list": [{"probe": "php", "realpath": "/usr/bin/php", "outputs": [
                    {"args": ["-m"], "rc": 0, "output": "[PHP Modules]\nCore\nmbstring\n\n[Zend Modules]\nZend OPcache\n"},
@@ -125,7 +133,7 @@ def nas_client():
                                       {"product": "apache", "kind": "vhost", "port": 443, "server_name": "autre.exemple.test", "tls": True, "cert": "/etc/tls/site.crt", "path": "/etc/httpd/conf.d/s.conf"},
                                       {"product": "apache", "kind": "vhost", "port": 8443, "server_name": "perdu.exemple.test", "tls": True, "cert": "/etc/tls/absent.crt", "path": "/etc/httpd/conf.d/s.conf"}],
                         "crypto_files": [{"path": "/etc/tls/site.crt", "kind": "pem", "has_private_key": False, "mode": "0644", "owner": "root", "cert_count": 1,
-                                          "certs": [{"subject": "CN=*.exemple.test", "cn": "*.exemple.test", "issuer": "CN=ca", "not_after": "2026-11-15T00:00:00Z", "is_ca": False, "sha256": "partage", "sans": []}]}]})
+                                          "certs": [{"subject": "CN=*.exemple.test", "cn": "*.exemple.test", "issuer": "CN=ca", "not_after": CERT_SHARED, "is_ca": False, "sha256": "partage", "sans": []}]}]})
     d["hardware"]["mounts"] = [{"mountpoint": "/data", "device": "nas1.exemple.test:/export/data", "fstype": "nfs4"},
                                {"mountpoint": "/mnt/win", "device": "//10.0.0.11/partage", "fstype": "cifs"}, {"mountpoint": "/", "device": "/dev/sda1", "fstype": "xfs"}]
     d["hardware"]["disks"] = [{"name": "sdb", "wwn": "0x6005076801234567", "size_bytes": 1000000000}]
@@ -135,6 +143,6 @@ def nas_client():
 def lun_peer():
     d = doc("cl2.exemple.test", "APPDEMO", "prod", "10.0.3.2", "r2", "2026-11-02T08:00:00Z",
             filesystem={"crypto_files": [{"path": "/opt/copie.crt", "kind": "pem", "has_private_key": False, "mode": "0644", "owner": "root", "cert_count": 1,
-                                          "certs": [{"subject": "CN=*.exemple.test", "cn": "*.exemple.test", "issuer": "CN=ca", "not_after": "2026-11-15T00:00:00Z", "is_ca": False, "sha256": "partage", "sans": []}]}]})
+                                          "certs": [{"subject": "CN=*.exemple.test", "cn": "*.exemple.test", "issuer": "CN=ca", "not_after": CERT_SHARED, "is_ca": False, "sha256": "partage", "sans": []}]}]})
     d["hardware"]["disks"] = [{"name": "sdc", "wwn": "0x6005076801234567", "size_bytes": 1000000000}]
     return d

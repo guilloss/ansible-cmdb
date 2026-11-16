@@ -26,7 +26,7 @@ ROUTES += ["logiciels?q=" + quote("webapps/gestion", safe=""), "logiciels?q=" + 
            "logiciels?gestion=um", "logiciels?q=" + quote("serveur:app1", safe="")]
 ROUTES += ["serveurs?pf=prod,recette", "serveurs?pf=prod", "serveurs?tag=" + quote("squad=S3,squad=S4", safe=""),
            "serveurs?tag=" + quote("squad=S4,site=Paris", safe=""), "serveurs?tag=" + quote("squad=S3,site=Paris", safe="")]
-ROUTES += ["cles?onglet=certs&etat=expires", "cles?onglet=certs&du=2026-11-18", "cles?onglet=certs&au=2026-11-16",
+ROUTES += ["cles?onglet=certs&etat=expires", "cles?onglet=certs&du=" + fleet.in_days(6), "cles?onglet=certs&au=" + fleet.in_days(4),
            "cles?onglet=certs&etat=30x"]
 ROUTES += ["systeme", "systeme?onglet=tout", "systeme?onglet=echec", "systeme?onglet=arretes", "systeme?onglet=tout&q=pg1",
            "serveur/" + quote("APPDEMO|prod|pg1.exemple.test", safe="") + "?onglet=exposition"]
@@ -192,9 +192,9 @@ class Rapport(unittest.TestCase):
         p = self.pages
         self.assertNotIn("www.exemple.test</b>", p["cles?onglet=certs&etat=expires"])
         self.assertIn("Effacer les filtres", p["cles?onglet=certs&etat=expires"])
-        self.assertIn("www.exemple.test</b>", p["cles?onglet=certs&du=2026-11-18"])
-        self.assertIn("Certificats (0)", p["cles?onglet=certs&au=2026-11-16"])
-        self.assertNotIn("www.exemple.test</b>", p["cles?onglet=certs&au=2026-11-16"])
+        self.assertIn("www.exemple.test</b>", p["cles?onglet=certs&du=" + fleet.in_days(6)])
+        self.assertIn("Certificats (0)", p["cles?onglet=certs&au=" + fleet.in_days(4)])
+        self.assertNotIn("www.exemple.test</b>", p["cles?onglet=certs&au=" + fleet.in_days(4)])
         self.assertIn("www.exemple.test</b>", p["cles?onglet=certs&etat=30x"])
         # les onglets gardent les filtres, la page sans filtre n'a pas de bouton d'effacement
         self.assertIn("etat=expires", p["cles?onglet=certs&etat=expires"].split('class="tabs"')[1].split("</div>")[0])

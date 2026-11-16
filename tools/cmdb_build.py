@@ -492,7 +492,7 @@ class Store(object):
     def add_dir(self, root):
         for d, dirs, files in os.walk(root):
             dirs.sort()
-            if os.path.basename(d) == "_lots":
+            if os.path.basename(d) in ("_lots", "_archive"):
                 dirs[:] = []
                 continue
             rel = os.path.relpath(d, root).split(os.sep)
@@ -1760,6 +1760,19 @@ def write_flrtvc(rows, outdir):
     return len(rows)
 
 
+_SHA1 = {}
+
+
+def file_sha1(path):
+    if path not in _SHA1:
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        _SHA1[path] = h.hexdigest()
+    return _SHA1[path]
+
+
 def main():
     ap = argparse.ArgumentParser(description="Consolidation CMDB : SQLite + CSV + SBOM CycloneDX + rapport HTML")
     ap.add_argument("--store", action="append", default=[],
@@ -1810,16 +1823,27 @@ def main():
             print("Magasin introuvable : %s" % d, file=sys.stderr)
             return 2
         store.add_dir(d)
-    seen_lots = {}
+    seen_lots, by_size = {}, {}
     for lot in lots:
-        # Un lot et son nom d'origine (<run_id>.tar.gz, lien dur) sont le même fichier : lu une fois
+        # Un lot et son nom d'origine (<run_id>.tar.gz) sont le même fichier (lien dur) ou deux copies
+        # identiques (système de fichiers sans liens durs) : lu une fois
         try:
             st = os.stat(lot)
             ident = (st.st_dev, st.st_ino)
         except OSError:
-            ident = lot
+            st, ident = None, lot
         if ident in seen_lots:
             print("Lot ignoré       : %s (même fichier que %s)" % (lot, seen_lots[ident]))
+            continue
+        twin = None
+        if st is not None:
+            for other in by_size.get(st.st_size, []):
+                if file_sha1(other) == file_sha1(lot):
+                    twin = other
+                    break
+            by_size.setdefault(st.st_size, []).append(lot)
+        if twin:
+            print("Lot ignoré       : %s (copie identique de %s)" % (lot, twin))
             continue
         seen_lots[ident] = lot
         rid = store.add_lot(lot)

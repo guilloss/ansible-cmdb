@@ -175,6 +175,20 @@ class Lots(unittest.TestCase):
         self.assertIn("même fichier que", log)
         self.assertEqual(log.count("Lot ignoré"), 1)
 
+    def test_copie_identique_lue_une_fois(self):
+        """Partage sans liens durs : le nom d'origine du lot est une copie, lue une seule fois."""
+        d = tempfile.mkdtemp(prefix="cmdbl")
+        self.addCleanup(shutil.rmtree, d, True)
+        shutil.copy(os.path.join(self.lots, "r2.tar.gz"), os.path.join(d, "APP__pf__r2.tar.gz"))
+        shutil.copy(os.path.join(self.lots, "r2.tar.gz"), os.path.join(d, "r2.tar.gz"))
+        shutil.copy(os.path.join(self.lots, "r1.tar.gz"), os.path.join(d, "r1.tar.gz"))
+        log, rows = build(d, "o", "--lot", os.path.join(d, "*.tar.gz"))
+        self.assertIn("copie identique de", log)
+        self.assertEqual(log.count("Lot ignoré"), 1)
+        ref_log, ref = build(d, "p", "--lot", os.path.join(d, "APP__pf__r2.tar.gz"), "--lot", os.path.join(d, "r1.tar.gz"))
+        for t in TABLES:
+            self.assertEqual(rows[t], ref[t], t)
+
     def test_lot_deja_dans_le_magasin_ignore(self):
         log, rows = build(self.d, "c", "--store", self.store, "--lot", self.lot_glob)
         self.assertEqual(log.count("Lot ignoré"), 2)
@@ -222,3 +236,64 @@ class Lots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Archivage(unittest.TestCase):
+    """cmdb_archive.py : les N dernières collectes de chaque serveur restent, les autres vont dans _archive."""
+
+    def setUp(self):
+        import importlib.util
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec = importlib.util.spec_from_file_location("cmdb_archive", os.path.join(here, "roles", "cmdb_collect", "files", "cmdb_archive.py"))
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+        self.d = tempfile.mkdtemp(prefix="cmdbarch")
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.host = os.path.join(self.d, "APP", "prod", "srv1")
+        os.makedirs(self.host)
+        for rid in ("20261101T080000Z-aaaa", "20261102T080000Z-bbbb", "20261103T080000Z-cccc", "20261104T080000Z-dddd"):
+            for suffix in (".json.gz", ".ansible_facts.json"):
+                open(os.path.join(self.host, rid + suffix), "w").close()
+        open(os.path.join(self.host, "20261101T090000Z-eeee.error.json"), "w").close()   # échec sans collecte, ancien
+        open(os.path.join(self.host, "20261105T080000Z-ffff.error.json"), "w").close()   # échec récent : reste
+        open(os.path.join(self.host, "latest.json.gz"), "w").close()
+        os.makedirs(os.path.join(self.d, "_runs", "20261101T080000Z-aaaa"))
+        other = os.path.join(self.d, "APP", "prod", "srv2")
+        os.makedirs(other)
+        open(os.path.join(other, "20261104T080000Z-dddd.json.gz"), "w").close()
+
+    def test_garde_les_deux_dernieres(self):
+        self.assertEqual(self.mod.main([self.d, "--keep", "2"]), 0)
+        self.assertEqual(sorted(os.listdir(self.host)), [
+            "20261103T080000Z-cccc.ansible_facts.json", "20261103T080000Z-cccc.json.gz",
+            "20261104T080000Z-dddd.ansible_facts.json", "20261104T080000Z-dddd.json.gz",
+            "20261105T080000Z-ffff.error.json", "latest.json.gz"])
+        arch = os.path.join(self.d, "_archive", "APP", "prod", "srv1")
+        self.assertEqual(sorted(os.listdir(arch)), [
+            "20261101T080000Z-aaaa.ansible_facts.json", "20261101T080000Z-aaaa.json.gz", "20261101T090000Z-eeee.error.json",
+            "20261102T080000Z-bbbb.ansible_facts.json", "20261102T080000Z-bbbb.json.gz"])
+        self.assertTrue(os.path.isdir(os.path.join(self.d, "_runs", "20261101T080000Z-aaaa")))
+        self.assertEqual(os.listdir(os.path.join(self.d, "APP", "prod", "srv2")), ["20261104T080000Z-dddd.json.gz"])
+        # relancé : rien de plus, et l'archive n'est pas elle-même archivée
+        self.assertEqual(self.mod.plan(self.d, 2, os.path.join(self.d, "_archive")), [])
+        self.assertEqual(self.mod.plan(self.d, 1, os.path.join(self.d, "_archive"))[0][1],
+                         os.path.join("APP", "prod", "srv1", "20261103T080000Z-cccc.ansible_facts.json"))
+
+    def test_simulation_et_archive_externe(self):
+        ext = os.path.join(self.d, "ailleurs")
+        self.mod.main([self.d, "--keep", "3", "--dry-run", "--archive", ext])
+        self.assertEqual(len(os.listdir(self.host)), 11)
+        self.mod.main([self.d, "--keep", "3", "--archive", ext])
+        self.assertEqual(sorted(os.listdir(os.path.join(ext, "APP", "prod", "srv1"))), [
+            "20261101T080000Z-aaaa.ansible_facts.json", "20261101T080000Z-aaaa.json.gz", "20261101T090000Z-eeee.error.json"])
+
+    def test_consolidation_ignore_archive(self):
+        d = tempfile.mkdtemp(prefix="cmdbarch")
+        self.addCleanup(shutil.rmtree, d, True)
+        from tests import fleet
+        fleet.write_store(os.path.join(d, "s"), [fleet.pg_host()])
+        old = fleet.app_host()
+        fleet.write_store(os.path.join(d, "s", "_archive"), [old])
+        log, rows = build(d, "o", "--store", os.path.join(d, "s"))
+        self.assertEqual([r[2] for r in rows["hosts"]], ["pg1.exemple.test"])
+

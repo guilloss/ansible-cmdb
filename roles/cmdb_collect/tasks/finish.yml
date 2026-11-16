@@ -5,7 +5,8 @@
 #   <cmdb_store>/_runs/<run_id>/_run.json                  en-tête du passage
 #   <cmdb_store>/_runs/<run_id>/<app>__<pf>__<hôte>.json   statut par hôte
 #   <cmdb_store>/_lots/<app>__<pf>__<run_id>.tar.gz        si cmdb_lot=true
-#   <cmdb_store>/_lots/<run_id>.tar.gz                     même lot, nom d'origine (lien dur)
+#   <cmdb_store>/_lots/<run_id>.tar.gz                     même lot, nom d'origine (lien dur, sinon copie)
+#   <cmdb_store>/_archive/...                              collectes au-delà des cmdb_keep_runs dernières
 # ---------------------------------------------------------------------------
 
 - name: Créer le répertoire du manifeste
@@ -107,20 +108,67 @@
              + (ansible_play_hosts | map('extract', hostvars, 'cmdb_lot_files') | flatten | list) }}
       changed_when: true
 
-    # Nom d'origine conservé (même fichier, sans place en plus) pour les procédures déjà écrites
-    - name: Garder aussi le nom d'origine du lot
+    # Nom d'origine conservé pour les procédures déjà écrites : lien dur (même fichier, sans place en
+    # plus) ; copie si le système de fichiers refuse les liens durs (partage Windows ou VirtualBox monté
+    # dans une VM, SMB/CIFS, vfat...). Un refus n'est pas une erreur.
+    - name: Garder aussi le nom d'origine du lot (lien dur)
       ansible.builtin.file:
         src: "{{ cmdb_lot_path }}"
         dest: "{{ cmdb_store_dir }}/_lots/{{ cmdb_run_id }}.tar.gz"
         state: hard
         force: true
+      register: cmdb_lot_link
+      failed_when: false
       when:
         - cmdb_lot_keep_run_id_name | bool
         - cmdb_lot_path != cmdb_store_dir ~ '/_lots/' ~ cmdb_run_id ~ '.tar.gz'
 
+    - name: Garder aussi le nom d'origine du lot (copie, liens durs refusés ici)
+      ansible.builtin.copy:
+        src: "{{ cmdb_lot_path }}"
+        dest: "{{ cmdb_store_dir }}/_lots/{{ cmdb_run_id }}.tar.gz"
+        remote_src: true
+        mode: "0640"
+      when:
+        - cmdb_lot_link is not skipped
+        - cmdb_lot_link.state | default('') != 'hard'
+
+    - name: Signaler la copie du lot
+      ansible.builtin.debug:
+        msg: >-
+          Lien dur impossible ({{ cmdb_lot_link.msg | default('?') }}) : {{ cmdb_run_id }}.tar.gz est une copie
+          du lot. Mettre cmdb_lot_keep_run_id_name: false pour ne garder qu'un nom.
+      when:
+        - cmdb_lot_link is not skipped
+        - cmdb_lot_link.state | default('') != 'hard'
+
     - name: Lot prêt
       ansible.builtin.debug:
         msg: "Lot à transférer : {{ cmdb_lot_path }}"
+
+# Après le lot : les collectes du passage, les plus récentes, ne sont jamais déplacées
+- name: Archiver les collectes anciennes (garder les {{ cmdb_keep_runs }} dernières par serveur)
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/files/cmdb_archive.py"
+      - "{{ cmdb_store_dir }}"
+      - --keep
+      - "{{ cmdb_keep_runs | int }}"
+      - --archive
+      - "{{ cmdb_archive_dir if cmdb_archive_dir | length > 0 else cmdb_store_dir ~ '/_archive' }}"
+  register: cmdb_archived
+  changed_when: "'déplacé' in cmdb_archived.stdout"
+  when: cmdb_keep_runs | int > 0
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Collectes archivées
+  ansible.builtin.debug:
+    msg: "{{ cmdb_archived.stdout }}"
+  when: cmdb_archived is changed
+  run_once: true
 
 - name: Signaler les collectes en échec
   ansible.builtin.fail:

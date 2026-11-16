@@ -79,9 +79,14 @@ Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, 
 
 Ajout depuis le gel (12/11/2026) : le lot porte aussi le nom `<app>__<pf>__<run_id>.tar.gz` (plusieurs
 valeurs jointes par `+`, au-delà de trois `multi` ; `cmdb_lot_name` impose un nom). `<run_id>.tar.gz`
-reste produit, en lien dur vers le même fichier (`cmdb_lot_keep_run_id_name: false` pour s'en passer).
+reste produit, en lien dur vers le même fichier, ou en copie si le système de fichiers refuse les liens durs
+(`cmdb_lot_keep_run_id_name: false` pour s'en passer).
 La consolidation ne tire rien du nom d'un lot : tout nom est accepté, et un même fichier sous deux noms
-n'est lu qu'une fois.
+(ou deux copies identiques) n'est lu qu'une fois.
+
+Ajout depuis le gel (16/11/2026) : `<store>/_archive/<même chemin relatif>` reçoit les collectes d'un
+serveur au-delà des `cmdb_keep_runs` dernières (2 par défaut). Lecteurs : ignorer `_archive`, comme
+`_lots`.
 
 L'hôte, l'application et la plate-forme se lisent dans le document (`meta.host_label`, `meta.tags`),
 pas dans le chemin : un fichier déplacé reste correctement rattaché.

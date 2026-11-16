@@ -84,7 +84,9 @@ Paramètres principaux (`roles/cmdb_collect/defaults/main.yml`) :
 | `cmdb_store` | `store/` | Magasin des collectes sur le contrôleur |
 | `cmdb_lot` | false | Produire un lot transférable du passage (`store/_lots/<app>__<pf>__<run_id>.tar.gz`) |
 | `cmdb_lot_name` | "" | Nom imposé du lot (sans `.tar.gz`) ; vide : `<app>__<pf>__<run_id>` |
-| `cmdb_lot_keep_run_id_name` | true | Garder aussi `<run_id>.tar.gz` (lien dur vers le même fichier, pour les procédures existantes) |
+| `cmdb_lot_keep_run_id_name` | true | Garder aussi `<run_id>.tar.gz` (lien dur vers le même fichier, ou copie si le système de fichiers refuse les liens durs ; pour les procédures existantes) |
+| `cmdb_keep_runs` | 2 | Collectes gardées par serveur dans le magasin ; les plus anciennes sont déplacées (jamais supprimées) vers l'archive à la fin de chaque passage. `0` : tout garder |
+| `cmdb_archive_dir` | "" (= `store/_archive`) | Répertoire d'archive des collectes anciennes |
 | `cmdb_scan_max_seconds` | 900 | Budget du parcours disque ; au-delà, résultat partiel signalé (`fs_scan_truncated`) |
 | `cmdb_scan_roots` | `[]` (= `/`) | Limiter le parcours à certaines racines |
 | `cmdb_scan_extra_excludes` | `[]` | Exclusions supplémentaires (gros volumes de données, maildirs…) |
@@ -106,14 +108,22 @@ Les étiquettes sont **écrites dans chaque collecte** (`meta.tags`, avec l'iden
 
 ```
 store/
-├── APPDEMO/prod/aixprd01/20261105T090000Z-1a2b.json.gz   # une collecte par passage (historique)
+├── APPDEMO/prod/aixprd01/20261105T090000Z-1a2b.json.gz   # une collecte par passage (les 2 dernières)
 │                        /latest.json.gz                  # la plus récente
 │                        /20261105T090000Z-1a2b.ansible_facts.json
 ├── APPDEMO/prod/aixprd01/…error.json                     # trace d'échec, le cas échéant
 ├── _runs/20261105T090000Z-1a2b/_run.json                 # manifeste du passage : en-tête…
 │                              /APPDEMO__prod__aixprd02.json  # …et statut de chaque hôte
 ├── _lots/APPDEMO__prod__20261105T090000Z-1a2b.tar.gz      # lot transférable (cmdb_lot=true)
-└── _lots/20261105T090000Z-1a2b.tar.gz                    # le même lot sous son nom d'origine (lien dur)
+├── _lots/20261105T090000Z-1a2b.tar.gz                    # le même lot sous son nom d'origine (lien dur ou copie)
+└── _archive/APPDEMO/prod/aixprd01/…                       # collectes plus anciennes (cmdb_keep_runs)
+```
+
+**Archivage.** Seules les 2 dernières collectes de chaque serveur restent dans le magasin (`cmdb_keep_runs`) : c'est tout ce que lit la consolidation (la dernière, et l'avant-dernière pour les évolutions). À la fin de chaque passage, les plus anciennes (`.json.gz`, faits Ansible, traces d'échec) sont **déplacées** sous `store/_archive/`, au même chemin relatif ; rien n'est supprimé. La consolidation ignore `_archive`. `latest.json.gz`, les manifestes `_runs` et les lots `_lots` ne bougent pas. Pour ranger un magasin existant sans lancer de collecte :
+
+```bash
+python3 roles/cmdb_collect/files/cmdb_archive.py store --dry-run   # ce qui serait déplacé
+python3 roles/cmdb_collect/files/cmdb_archive.py store             # --keep 3, --archive /autre/disque
 ```
 
 Le manifeste du passage enregistre le statut de **chaque hôte visé**, y compris ceux qui étaient injoignables ou en échec (`ok`, `failed`, `unreachable`). Le rapport signale ainsi un serveur non collecté au dernier passage, dont la fiche affichée est plus ancienne. Un hôte en échec reste en échec dans le récapitulatif d'Ansible, après l'écriture du manifeste.
@@ -138,7 +148,7 @@ Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaq
 
 **Travailler à plusieurs équipes : le dépôt de lots.** Il n'y a pas d'étape de fusion : chaque équipe collecte de son côté, et c'est la consolidation qui met tout en commun. Elle ne modifie pas les collectes et se relance autant de fois que nécessaire, à mesure que les lots arrivent.
 
-1. Chaque équipe collecte avec `-e cmdb_lot=true`, ce qui produit une archive unique par passage, `store/_lots/<app>__<pf>__<run_id>.tar.gz` (collectes et manifeste), par exemple `APP1__prod__20261105T090000Z-1a2b.tar.gz`. Si le passage couvre plusieurs applications ou plates-formes, leurs noms sont joints par `+` (`APP1+APP2__prod__…`), et au-delà de trois remplacés par `multi`. Le même lot reste aussi disponible sous son nom d'origine `<run_id>.tar.gz` (lien dur, sans place en plus), pour les procédures déjà écrites :
+1. Chaque équipe collecte avec `-e cmdb_lot=true`, ce qui produit une archive unique par passage, `store/_lots/<app>__<pf>__<run_id>.tar.gz` (collectes et manifeste), par exemple `APP1__prod__20261105T090000Z-1a2b.tar.gz`. Si le passage couvre plusieurs applications ou plates-formes, leurs noms sont joints par `+` (`APP1+APP2__prod__…`), et au-delà de trois remplacés par `multi`. Le même lot reste aussi disponible sous son nom d'origine `<run_id>.tar.gz` (lien dur, sans place en plus), pour les procédures déjà écrites. Sur un partage qui refuse les liens durs (dossier Windows ou VirtualBox monté dans une VM, SMB/CIFS), c'est une copie, signalée par un message, et la consolidation ne lit qu'une fois deux lots identiques ; `-e cmdb_lot_keep_run_id_name=false` évite cette copie :
 
    ```bash
    ansible-playbook -i inventory/equipe1.yml collect.yml -e cmdb_app=APP1 -e cmdb_platform=prod -e cmdb_lot=true
