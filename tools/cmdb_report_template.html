@@ -64,8 +64,16 @@ code, .mono { font-family: var(--f-mono); font-size: 12.5px; }
 .ms .ms-list label:hover { background: rgba(127,127,127,.12); }
 .ms .ms-list .ms-all { border-bottom: 1px solid rgba(127,127,127,.25); margin-bottom: 2px; }
 .ms .ms-list input { width: auto; margin: 0; }
-.nav { list-style: none; margin: 14px 0; padding: 0; }
-.nav a { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 20px; color: #C9D5DC;
+.nav { list-style: none; margin: 10px 0; padding: 0; overflow-y: auto; min-height: 0; flex: 1 1 auto; scrollbar-width: thin; }
+.nav ul { list-style: none; margin: 0 0 6px; padding: 0; }
+.nav .grp.folded ul { display: none; }
+.nav .grp-h { display: flex; justify-content: space-between; align-items: baseline; width: 100%; background: none; border: 0; cursor: pointer;
+  padding: 8px 20px 3px; color: #8FA2AD; font: 600 11px/1.3 var(--f-body, inherit); letter-spacing: .6px; text-transform: uppercase; text-align: left; }
+.nav .grp-h::before { content: "▾"; display: inline-block; width: 12px; margin-left: -14px; color: #6F838F; }
+.nav .grp.folded .grp-h::before { content: "▸"; }
+.nav .grp-h > span:first-child { flex: 1; }
+.nav .grp-h:hover { color: #DDE6EB; }
+.nav a { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 20px 4px 26px; color: #C9D5DC;
   border-left: 3px solid transparent; }
 .nav a:hover { background: rgba(255,255,255,.06); text-decoration: none; color: #fff; }
 .nav a[aria-current="page"] { color: #fff; border-left-color: var(--tag); background: rgba(255,255,255,.08); }
@@ -232,7 +240,9 @@ a:hover .v { border-color: var(--accent); }
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }
   .rail { position: static; height: auto; padding: 12px 0; }
-  .nav { display: flex; flex-wrap: wrap; margin: 8px 0 0; }
+  .nav { display: flex; flex-wrap: wrap; margin: 8px 0 0; overflow: visible; }
+  .nav .grp, .nav ul, .nav .grp.folded ul { display: contents; }
+  .nav .grp-h { display: none; }
   .nav a { padding: 6px 12px; border-left: 0; border-bottom: 3px solid transparent; gap: 6px; }
   .facts { display: grid; grid-template-columns: 1fr 1fr; }
   .fact { border-right: 0; margin-right: 0; padding-right: 10px; border-bottom: 1px solid var(--line-2); }
@@ -659,12 +669,16 @@ function searchHosts(q) {
 }
 
 // ---------------------------------------------------------------- vues
-const ROUTES = [
-  ["accueil", "Accueil"], ["serveurs", "Serveurs"], ["logiciels", "Logiciels"], ["versions", "Versions"],
-  ["bases", "Bases de données"], ["carte", "Carte des flux"], ["services", "Services réseau"], ["systeme", "Services système"], ["exposition", "Exposition"], ["cles", "Clés et certificats"],
-  ["materiel", "Matériel"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"], ["vulnerabilites", "Vulnérabilités"], ["support", "Fins de support"],
-  ["evolutions", "Évolutions"], ["alertes", "Alertes"],
+// menu en rubriques repliables : tient sur un écran bas (1200 px à 125 %, portable 768 px)
+const NAV_GROUPS = [
+  ["Vue d'ensemble", [["accueil", "Accueil"], ["alertes", "Alertes"], ["evolutions", "Évolutions"]]],
+  ["Inventaire", [["serveurs", "Serveurs"], ["materiel", "Matériel"], ["logiciels", "Logiciels"], ["versions", "Versions"], ["bases", "Bases de données"]]],
+  ["Réseau et services", [["carte", "Carte des flux"], ["services", "Services réseau"], ["systeme", "Services système"], ["exposition", "Exposition"]]],
+  ["Sécurité et conformité", [["vulnerabilites", "Vulnérabilités"], ["support", "Fins de support"], ["cles", "Clés et certificats"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"]]],
 ];
+const ROUTES = NAV_GROUPS.flatMap(g => g[1]);
+const NAV_KEY = "cmdb-nav-repliees";
+const navFolded = () => { try { return JSON.parse(localStorage.getItem(NAV_KEY) || "[]"); } catch (e) { return []; } };
 function navCounts() {
   const a = D.alerts;
   return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
@@ -672,13 +686,33 @@ function navCounts() {
     alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol + a.svcfail};
 }
 function renderNav(route) {
-  const c = navCounts();
-  $("#nav").innerHTML = ROUTES.map(([k, l]) => {
-    const cur = route === k || (route === "serveur" && k === "serveurs");
-    const n = c[k] != null ? `<span class="count${k === "alertes" && c[k] ? " alert" : ""}">${fmt(c[k])}</span>` : "";
-    return `<li><a href="${link(k)}"${cur ? ' aria-current="page"' : ""}><span>${l}</span>${n}</a></li>`;
+  const c = navCounts(), folded = navFolded();
+  $("#nav").innerHTML = NAV_GROUPS.map(([g, items]) => {
+    let alert = 0;
+    const lis = items.map(([k, l]) => {
+      const cur = route === k || (route === "serveur" && k === "serveurs");
+      const isAlert = (k === "alertes" || k === "vulnerabilites") && c[k];
+      if (isAlert) alert += c[k];
+      const n = c[k] != null ? `<span class="count${isAlert && k === "alertes" ? " alert" : ""}">${fmt(c[k])}</span>` : "";
+      return `<li><a href="${link(k)}"${cur ? ' aria-current="page"' : ""}><span>${l}</span>${n}</a></li>`;
+    }).join("");
+    // la rubrique de la page affichée reste ouverte
+    const open = !folded.includes(g) || items.some(([k]) => route === k || (route === "serveur" && k === "serveurs"));
+    const badge = !open && alert ? `<span class="count alert">${fmt(alert)}</span>` : "";
+    return `<li class="grp${open ? "" : " folded"}"><button type="button" class="grp-h" data-grp="${esc(g)}" aria-expanded="${open}">` +
+      `<span>${esc(g)}</span>${badge}</button><ul>${lis}</ul></li>`;
   }).join("");
 }
+$("#nav").addEventListener("click", e => {
+  const b = e.target.closest(".grp-h");
+  if (!b) return;
+  const g = b.dataset.grp, li = b.parentElement, fold = !li.classList.contains("folded");
+  li.classList.toggle("folded", fold);
+  b.setAttribute("aria-expanded", String(!fold));
+  const f = navFolded().filter(x => x !== g);
+  if (fold) f.push(g);
+  try { localStorage.setItem(NAV_KEY, JSON.stringify(f)); } catch (err) {}
+});
 
 function vAccueil() {
   const a = D.alerts, H = D.H;
