@@ -31,6 +31,7 @@ ROUTES += ["cles?onglet=certs&etat=expires", "cles?onglet=certs&du=" + fleet.in_
 ROUTES += ["systeme", "systeme?onglet=tout", "systeme?onglet=echec", "systeme?onglet=arretes", "systeme?onglet=tout&q=pg1",
            "serveur/" + quote("APPDEMO|prod|pg1.exemple.test", safe="") + "?onglet=exposition"]
 HOST = "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")
+ROUTES += ["logiciels?q=php&vue=versions", "logiciels?q=php", "logiciels?q=php&app=APPDEMO&pf=prod&vue=versions"]
 ROUTES += [HOST + "?onglet=" + t for t in ("synthese", "bases", "web", "cles", "dependances", "durcissement", "evolutions", "alertes")]
 
 
@@ -75,6 +76,17 @@ class Rapport(unittest.TestCase):
         self.assertIn("postgres 14.9", h)
         self.assertIn("en échec", h)
         self.assertIn("Services en échec", self.pages["accueil"])
+
+    def test_logiciels_par_application(self):
+        p = self.pages["logiciels?q=php&vue=versions"]
+        self.assertIn("Applications et plates-formes concernées", p)
+        self.assertIn("Applications / plates-formes", p)
+        self.assertIn("APPDEMO / recette", p)
+        self.assertIn("Applications et plates-formes concernées", self.pages["logiciels?q=php"])
+        # une seule application et plate-forme : rien à répartir
+        one = self.pages["logiciels?q=php&app=APPDEMO&pf=prod&vue=versions"]
+        self.assertNotIn("Applications et plates-formes concernées", one)
+        self.assertNotIn("Applications / plates-formes", one)
 
     def test_aucune_erreur(self):
         for r in ROUTES:

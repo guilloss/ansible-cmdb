@@ -235,6 +235,8 @@ a:hover .v { border-color: var(--accent); }
 .matrix td:first-child, .matrix th:first-child { position: sticky; left: 0; background: var(--surface); z-index: 2; font-weight: 600; }
 .matrix th:first-child { z-index: 3; background: var(--surface-2); }
 .matrix td { white-space: nowrap; }
+.repart { margin: 0 0 14px; }
+.repart > summary { cursor: pointer; color: var(--ink-2); margin-bottom: 6px; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; color: var(--ink-2); font-size: 13px; margin: 0 0 12px; }
 
 @media (max-width: 900px) {
@@ -967,6 +969,33 @@ function vLogiciels(params) {
   const cats = [...new Set(SW.rows.map(r => swVal(r, "category")))].sort();
   const res = searchSoftware(q, {cat, managed: gestion});
   const hosts = q ? searchHosts(q) : [];
+  // applications et plates-formes concernées, dès que la recherche en touche plusieurs
+  const apf = r => swVal(r, "app") + " / " + swVal(r, "platform");
+  const pairs = new Map();
+  for (const r of res.rows) {
+    const k = apf(r);
+    let e = pairs.get(k);
+    if (!e) { e = {app: swVal(r, "app"), pf: swVal(r, "platform"), hosts: new Set(), n: 0, um: 0, vers: new Set()}; pairs.set(k, e); }
+    e.hosts.add(swHk(r)); e.n++; if (!swMan(r)) e.um++; if (swVal(r, "version")) e.vers.add(swVal(r, "version"));
+  }
+  const multiApf = pairs.size > 1;
+  const apfLink = (app, pf, label, extra) => `<a href="${link("logiciels", Object.assign({q, cat, gestion, vue, app, pf}, extra || {}))}">${esc(label)}</a>`;
+  let repart = "";
+  if (multiApf) {
+    const rows = [...pairs.values()].map(e => ({...e, nh: e.hosts.size, nv: e.vers.size,
+      vl: [...e.vers].sort(cmpVer)}));
+    const nApps = new Set(rows.map(e => e.app)).size, nPfs = new Set(rows.map(e => e.pf)).size;
+    repart = `<details class="repart"${pairs.size <= 12 ? " open" : ""}><summary>Applications et plates-formes concernées :
+        ${fmt(nApps)} application${nApps > 1 ? "s" : ""}, ${fmt(nPfs)} plate${nPfs > 1 ? "s" : ""}-forme${nPfs > 1 ? "s" : ""}</summary>` +
+      table([
+        {k: "app", l: "Application", f: e => apfLink(e.app, "", e.app)},
+        {k: "pf", l: "Plate-forme", f: e => apfLink(e.app, e.pf, e.pf)},
+        {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
+        {k: "n", l: "Occurrences", cls: "num", f: e => fmt(e.n)},
+        {k: "um", l: "Dont hors paquet", cls: "num", f: e => e.um ? `<span class="badge warn">${fmt(e.um)}</span>` : ""},
+        {k: "nv", l: "Versions", f: e => e.vl.slice(0, 6).map(v => esc(v)).join(", ") + (e.nv > 6 ? ` … (${fmt(e.nv)})` : "")},
+      ], rows, {sort: "nh", dir: -1}) + `</details>`;
+  }
   let body;
   if (vue === "versions") {
     const g = new Map();
@@ -974,18 +1003,24 @@ function vLogiciels(params) {
       const name = swVal(r, "family") || swVal(r, "name"), ver = swVal(r, "version");
       const key = name + "\u0000" + ver;
       let e = g.get(key);
-      if (!e) { e = {name, version: ver, hosts: new Set(), n: 0, um: 0}; g.set(key, e); }
+      if (!e) { e = {name, version: ver, hosts: new Set(), n: 0, um: 0, apf: new Map()}; g.set(key, e); }
       e.hosts.add(swHk(r)); e.n++; if (!swMan(r)) e.um++;
+      const k = apf(r), a = e.apf.get(k) || {app: swVal(r, "app"), pf: swVal(r, "platform"), hosts: new Set()};
+      a.hosts.add(swHk(r)); e.apf.set(k, a);
     }
-    const rows = [...g.values()].map(e => ({...e, nh: e.hosts.size}));
-    body = table([
+    const rows = [...g.values()].map(e => ({...e, nh: e.hosts.size, na: e.apf.size}));
+    const cols = [
       {k: "name", l: "Composant", f: e => hl(e.name, res.terms)},
       {k: "version", l: "Version", sortv: e => e.version, f: e => e.version ? verTag(e.version, e.um > 0) : ""},
       {k: "nh", l: "Serveurs", cls: "num", f: e => `<a href="${link("logiciels", {q: (q + " =" + e.version).trim(), cat, gestion})}">${fmt(e.nh)}</a>`},
       {k: "n", l: "Occurrences", cls: "num", f: e => fmt(e.n)},
       {k: "um", l: "Dont hors paquet", cls: "num", f: e => e.um ? `<span class="badge warn">${fmt(e.um)}</span>` : ""},
-      {k: "hl", l: "Exemples de serveurs", f: e => [...e.hosts].slice(0, 5).map(hkLink).join(", ") + (e.nh > 5 ? "…" : "")},
-    ], rows, {sort: "nh", dir: -1, empty: "Aucun composant ne correspond à cette recherche."});
+    ];
+    if (multiApf) cols.push({k: "na", l: "Applications / plates-formes", f: e => [...e.apf.values()]
+      .sort((x, y) => y.hosts.size - x.hosts.size || (x.app + x.pf).localeCompare(y.app + y.pf))
+      .map(a => apfLink(a.app, a.pf, `${a.app} / ${a.pf}`, {q: (q + " =" + e.version).trim(), vue: "detail"}) + ` <span class="cat">(${fmt(a.hosts.size)})</span>`).join("<br>")});
+    cols.push({k: "hl", l: "Exemples de serveurs", f: e => [...e.hosts].slice(0, 5).map(hkLink).join(", ") + (e.nh > 5 ? "…" : "")});
+    body = table(cols, rows, {sort: "nh", dir: -1, empty: "Aucun composant ne correspond à cette recherche."});
   } else {
     body = swTable(res.rows, res.terms);
   }
@@ -997,6 +1032,7 @@ function vLogiciels(params) {
       <code>serveur:</code>, <code>app:</code>, <code>pf:</code>, <code>famille:</code>, <code>cat:</code>, <code>chemin:</code>, <code>paquet:</code> restreignent un champ.
       ${SW.excluded && SW.excluded.length ? `Catégories exclues du rapport : ${esc(SW.excluded.join(", "))}.` : ""}</p>
     ${hosts.length ? `<p>Serveurs correspondants : ${hosts.slice(0, 20).map(h => hkLink(h.hk)).join(", ")}</p>` : ""}
+    ${q ? repart : ""}
     <div class="toolbar">
       <select id="f-cat" aria-label="Nature">${opt("", "Toutes natures", cat)}${cats.map(c => opt(c, c, cat)).join("")}</select>
       <select id="f-gestion" aria-label="Gestion">${opt("", "Gérés ou non", gestion)}${opt("um", "Hors paquet seulement", gestion)}${opt("m", "Paquets de distribution seulement", gestion)}</select>
