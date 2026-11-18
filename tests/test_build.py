@@ -186,17 +186,24 @@ class DistributionJava(unittest.TestCase):
 
     def test_classement(self):
         import cmdb_build as B
-        d = B.java_distribution
+        d = lambda *a, **k: B.java_distribution(*a, **k)[0]
         self.assertEqual(d({"implementor": "Eclipse Adoptium", "implementor_version": "Temurin-21.0.2+13"}), "Eclipse Temurin")
         self.assertEqual(d({"implementor": "Azul Systems, Inc."}), "Azul Zulu")
         self.assertEqual(d({"implementor": "Amazon.com Inc."}), "Amazon Corretto")
-        self.assertEqual(d({"implementor": "Oracle Corporation", "build_type": "commercial"}), "Oracle JDK")
-        self.assertEqual(d({"implementor": "Oracle Corporation", "build_type": "release"}), "Oracle OpenJDK")
-        self.assertEqual(d({"vendor": "Oracle Corporation", "vm": "Java HotSpot(TM) 64-Bit Server VM"}), "Oracle JDK")
-        self.assertEqual(d({"vendor": "Oracle Corporation", "vm": "OpenJDK 64-Bit Server VM"}), "Oracle OpenJDK")
         self.assertEqual(d({"vendor": "IBM Corporation", "vm": "IBM J9 VM"}), "IBM Semeru / J9")
         self.assertEqual(d({"vendor": "Red Hat, Inc.", "vm": "OpenJDK 64-Bit Server VM"}), "OpenJDK Red Hat")
+        # Oracle JDK : seulement sur preuve du JDK commercial
+        self.assertEqual(d({"implementor": "Oracle Corporation", "build_type": "commercial"}), "Oracle JDK")
+        self.assertEqual(d({"vendor": "Oracle Corporation", "vm": "Java HotSpot(TM) 64-Bit Server VM"}), "Oracle JDK")
+        self.assertEqual(d({"runtime_name": "Java(TM) SE Runtime Environment"}), "Oracle JDK")
         self.assertEqual(d({}, "jdk-17", "Oracle Corporation", "rhel"), "Oracle JDK")
+        self.assertEqual(d({}, "jdk1.8", None, "rhel"), "Oracle JDK")
+        # « Oracle Corporation » seul, ou build OpenJDK : pas Oracle JDK
+        self.assertEqual(d({"implementor": "Oracle Corporation"}), "Oracle (JDK ou OpenJDK ?)")
+        self.assertEqual(d({"implementor": "Oracle Corporation"}, "java-17-openjdk-headless", "Oracle America", "ol"), "OpenJDK Oracle Linux")
+        self.assertEqual(d({"implementor": "Oracle Corporation"}, "java-1.8.0-openjdk-headless", None, "centos"), "OpenJDK CentOS")
+        self.assertEqual(d({"vendor": "Oracle Corporation", "vm": "OpenJDK 64-Bit Server VM"}), "Oracle OpenJDK")
+        self.assertEqual(d({"implementor": "Oracle Corporation", "build_type": "release"}), "Oracle OpenJDK")
         self.assertEqual(d({}, "java-17-openjdk-headless", None, "rocky"), "OpenJDK Rocky")
         self.assertEqual(d({}, "openjdk-17-jre-headless", None, "debian"), "OpenJDK Debian")
         self.assertEqual(d({}, "temurin-17-jdk"), "Eclipse Temurin")
@@ -204,6 +211,10 @@ class DistributionJava(unittest.TestCase):
         self.assertEqual(d({}, location="/opt/zulu17"), "Azul Zulu")
         self.assertEqual(d({"vendor": "Private Build", "vm": "OpenJDK 64-Bit Server VM"}), "OpenJDK (éditeur inconnu)")
         self.assertEqual(d({}, location="/opt/jdk1.8.0_401"), "Inconnue")
+        # la preuve est gardée
+        self.assertEqual(B.java_distribution({"implementor": "Oracle Corporation", "build_type": "commercial"})[1],
+                         "release : IMPLEMENTOR=Oracle Corporation, BUILD_TYPE=commercial")
+        self.assertEqual(B.java_distribution({}, "jdk-17", "Oracle Corporation")[1], "paquet jdk-17 (éditeur Oracle Corporation)")
 
     def test_base(self):
         d = tempfile.mkdtemp(prefix="cmdbj")
@@ -219,9 +230,11 @@ class DistributionJava(unittest.TestCase):
                               stdout=subprocess.DEVNULL)
         db = sqlite3.connect(os.path.join(d, "b", "cmdb.sqlite"))
         got = dict(db.execute("SELECT name, distribution FROM software WHERE name IN ('java-17-openjdk-headless', 'jdk-17', 'jdk-home', 'bash', 'php')"))
+        proof = db.execute("SELECT distribution_evidence FROM software WHERE name = 'jdk-17'").fetchone()[0]
         db.close()
         self.assertEqual(got, {"java-17-openjdk-headless": "OpenJDK Red Hat", "jdk-17": "Oracle JDK", "jdk-home": "Eclipse Temurin",
                                "bash": None, "php": None})
+        self.assertEqual(proof, "paquet jdk-17 (éditeur Oracle Corporation)")
 
 
 class Processeurs(unittest.TestCase):

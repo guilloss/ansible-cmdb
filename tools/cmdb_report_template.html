@@ -693,7 +693,7 @@ function searchHosts(q) {
 // menu en rubriques repliables : tient sur un écran bas (1200 px à 125 %, portable 768 px)
 const NAV_GROUPS = [
   ["Vue d'ensemble", [["accueil", "Accueil"], ["alertes", "Alertes"], ["evolutions", "Évolutions"]]],
-  ["Inventaire", [["serveurs", "Serveurs"], ["materiel", "Matériel"], ["logiciels", "Logiciels"], ["versions", "Versions"], ["bases", "Bases de données"]]],
+  ["Inventaire", [["serveurs", "Serveurs"], ["materiel", "Matériel"], ["logiciels", "Logiciels"], ["versions", "Versions"], ["socle", "Socle logiciel"], ["bases", "Bases de données"]]],
   ["Réseau et services", [["carte", "Carte des flux"], ["services", "Services réseau"], ["systeme", "Services système"], ["exposition", "Exposition"]]],
   ["Sécurité et conformité", [["vulnerabilites", "Vulnérabilités"], ["support", "Fins de support"], ["cles", "Clés et certificats"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"]]],
 ];
@@ -961,12 +961,13 @@ function vServeur(key, params) {
 }
 
 const swDist = r => SW.ci.distribution != null ? swVal(r, "distribution") : "";
-const distTag = d => `<span class="badge${/^Oracle (JDK|GraalVM)$/.test(d) ? " warn" : (d === "Inconnue" ? " muted" : "")}" title="Distribution Java">${esc(d)}</span>`;
+const distTag = (d, proof) => `<span class="badge${/^Oracle (JDK|GraalVM)$/.test(d) ? " warn" : (/^Inconnue|\?/.test(d) ? " muted" : "")}" title="${esc(proof ? "Preuve : " + proof : "Distribution Java")}">${esc(d)}</span>`;
+const swProof = r => SW.ci.distribution_evidence != null ? swVal(r, "distribution_evidence") : "";
 function swTable(rs, terms) {
   const s = swVal;
   return table([
     {k: "host", l: "Serveur", sortv: r => s(r, "host"), f: r => hostLabel(s(r, "app"), s(r, "platform"), s(r, "host"), terms)},
-    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}${swDist(r) ? `<br>${distTag(swDist(r))}` : ""}`},
+    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}${swDist(r) ? `<br>${distTag(swDist(r), swProof(r))}` : ""}`},
     {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !swMan(r)) : ""},
     {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
     {k: "managed", l: "Gestion", sortv: r => swMan(r), f: r => swMan(r) ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
@@ -1008,27 +1009,6 @@ function vLogiciels(params) {
         {k: "nv", l: "Versions", f: e => e.vl.slice(0, 6).map(v => esc(v)).join(", ") + (e.nv > 6 ? ` … (${fmt(e.nv)})` : "")},
       ].concat(rows.some(e => e.dists.size) ? [{k: "nd", l: "Distributions Java", sortv: e => e.dists.size, f: e => [...e.dists].sort().map(distTag).join(" ")}] : []),
       rows, {sort: "nh", dir: -1}) + `</details>`;
-  }
-  // Java par distribution (page sans recherche) : où sont les Oracle JDK, souvent sous licence payante
-  let javaDist = "";
-  if (!q && SW.ci.distribution != null) {
-    const m = new Map();
-    for (const r of res.rows) {
-      const d = swDist(r);
-      if (!d) continue;
-      let e = m.get(d);
-      if (!e) { e = {dist: d, hosts: new Set(), n: 0, vers: new Set(), apps: new Set()}; m.set(d, e); }
-      e.hosts.add(swHk(r)); e.n++; e.apps.add(swVal(r, "app")); if (swVal(r, "version")) e.vers.add(swVal(r, "version"));
-    }
-    if (m.size) javaDist = `<h3>Java par distribution</h3>
-      <p class="hint">Oracle JDK et Oracle GraalVM peuvent relever d'une licence payante selon la version et la date du correctif.</p>` +
-      table([
-        {k: "dist", l: "Distribution", f: e => `<a href="${link("logiciels", {q: "famille:java distrib:" + e.dist.replace(/\s+/g, "-"), cat, gestion, vue: "versions"})}">${distTag(e.dist)}</a>`},
-        {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
-        {k: "n", l: "Installations", cls: "num", f: e => fmt(e.n)},
-        {k: "na", l: "Applications", cls: "num", f: e => fmt(e.na)},
-        {k: "vl", l: "Versions", f: e => e.vl.slice(0, 8).map(esc).join(", ") + (e.vl.length > 8 ? ` … (${fmt(e.vl.length)})` : "")},
-      ], [...m.values()].map(e => ({...e, nh: e.hosts.size, na: e.apps.size, vl: [...e.vers].sort(cmpVer)})), {sort: "nh", dir: -1});
   }
   let body;
   if (vue === "versions") {
@@ -1080,7 +1060,7 @@ function vLogiciels(params) {
       L'export CSV reprend la vue affichée.
       ${SW.excluded && SW.excluded.length ? `Catégories exclues du rapport : ${esc(SW.excluded.join(", "))}.` : ""}</p>
     ${hosts.length ? `<p>Serveurs correspondants : ${hosts.slice(0, 20).map(h => hkLink(h.hk)).join(", ")}</p>` : ""}
-    ${q ? repart : javaDist}
+    ${q ? repart : ""}
     <div class="toolbar">
       <select id="f-cat" aria-label="Nature">${opt("", "Toutes natures", cat)}${cats.map(c => opt(c, c, cat)).join("")}</select>
       <select id="f-gestion" aria-label="Gestion">${opt("", "Gérés ou non", gestion)}${opt("um", "Hors paquet seulement", gestion)}${opt("m", "Paquets de distribution seulement", gestion)}</select>
@@ -1177,6 +1157,84 @@ function cpuView(f, hcol) {
        f: o => (vul[hkey(o.app, o.platform, o.host)] || []).map(n => `<span class="badge warn">${esc(n)}</span>`).join(" ")},
     ], rows, {sort: "host", empty: "Aucun processeur ne correspond."});
 }
+// ---------------------------------------------------------------- socle logiciel
+// Grandes familles (middlewares, langages, bases) par version majeure, et Java par distribution
+const SOCLE = [["java", "Java"], ["php", "PHP"], ["python", "Python"], ["node", "Node.js"], ["postgresql", "PostgreSQL"], ["mysql", "MySQL"],
+  ["mariadb", "MariaDB"], ["httpd", "Apache httpd"], ["nginx", "Nginx"], ["tomcat", "Tomcat"], ["openssl", "OpenSSL"], ["perl", "Perl"], ["ruby", "Ruby"]];
+function majorOf(fam, v) {
+  const p = String(v || "").replace(/^\d+:/, "").split(/[.\-_+~ ]/).filter(Boolean);
+  if (!p.length || !/^\d/.test(p[0])) return v || "";
+  if (fam === "java") return p[0] === "1" && p[1] ? p[1] : parseInt(p[0], 10).toString();
+  if (fam === "node" || fam === "tomcat" || (fam === "postgresql" && parseInt(p[0], 10) >= 10)) return parseInt(p[0], 10).toString();
+  return p.slice(0, 2).map(x => parseInt(x, 10)).filter(x => !isNaN(x)).join(".");
+}
+function vSocle(params) {
+  const fams = new Map();
+  for (const r of SW.rows) {
+    const f = swVal(r, "family");
+    if (!SOCLE.some(([k]) => k === f) || !swVal(r, "version")) continue;
+    const c = swVal(r, "category");
+    if (c !== "runtime" && c !== "os-package") continue;
+    (fams.get(f) || fams.set(f, []).get(f)).push(r);
+  }
+  const present = SOCLE.filter(([k]) => fams.has(k)).concat([["systemes", "Systèmes"]]);
+  const fam = present.some(([k]) => k === params.get("famille")) ? params.get("famille") : present[0][0];
+  const tabs = `<div class="tabs">${present.map(([k, l]) => `<a href="${link("socle", {famille: k})}"${k === fam ? ' aria-current="page"' : ""}>${esc(l)}${k !== "systemes" ? ` <span class="cat">${fmt(new Set(fams.get(k).map(swHk)).size)}</span>` : ""}</a>`).join("")}</div>`;
+  const head = `<h2>Socle logiciel${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
+    <p class="lede">Grandes familles installées sur le parc, par version majeure. Les paquets et les installations hors paquet comptent ;
+      les bibliothèques et les applications web n'y sont pas (voir Logiciels). Un clic sur une ligne ouvre le détail dans Logiciels.</p>`;
+  if (fam === "systemes") {
+    const g = new Map();
+    for (const h of D.H) {
+      const k = h.os_pretty || [h.os_id, h.os_version].filter(Boolean).join(" ") || "inconnu";
+      const e = g.get(k) || g.set(k, {os: k, id: h.os_id, hosts: [], apps: new Set()}).get(k);
+      e.hosts.push(h); e.apps.add(h.app + " / " + h.platform);
+    }
+    return head + tabs + table([
+      {k: "os", l: "Système", f: e => `<a href="${link("serveurs", {q: e.os})}">${esc(e.os)}</a>`},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
+      {k: "na", l: "Applications / plates-formes", f: e => [...e.apps].sort().slice(0, 8).map(esc).join(", ") + (e.apps.size > 8 ? ` … (${fmt(e.apps.size)})` : "")},
+    ], [...g.values()].map(e => ({...e, nh: e.hosts.length, na: e.apps.size})), {sort: "nh", dir: -1});
+  }
+  const rows = fams.get(fam), label = present.find(([k]) => k === fam)[1];
+  const group = keyf => {
+    const g = new Map();
+    for (const r of rows) {
+      const k = keyf(r);
+      const e = g.get(k) || g.set(k, {k, hosts: new Set(), n: 0, um: 0, apps: new Set(), vers: new Set(), dists: new Map(), proofs: new Map()}).get(k);
+      e.hosts.add(swHk(r)); e.n++; if (!swMan(r)) e.um++;
+      e.apps.add(swVal(r, "app") + " / " + swVal(r, "platform")); e.vers.add(swVal(r, "version"));
+      const d = swDist(r);
+      if (d) { e.dists.set(d, (e.dists.get(d) || 0) + 1); const pr = swProof(r); if (pr) e.proofs.set(pr, (e.proofs.get(pr) || 0) + 1); }
+    }
+    return [...g.values()].map(e => ({...e, nh: e.hosts.size, na: e.apps.size}));
+  };
+  const apps = e => [...e.apps].sort().slice(0, 6).map(esc).join(", ") + (e.apps.size > 6 ? ` … (${fmt(e.apps.size)})` : "");
+  const anyDist = rows.some(r => swDist(r));
+  const byMajor = table([
+    {k: "k", l: "Version majeure", sortv: e => e.k, f: e => `<a href="${link("logiciels", {q: `famille:${fam} =${fam === "java" && parseInt(e.k, 10) < 9 ? "1." + e.k : e.k}`, vue: "versions"})}">${esc(label)} ${esc(e.k)}</a>`},
+    {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)}, {k: "n", l: "Installations", cls: "num", f: e => fmt(e.n)},
+    {k: "um", l: "Hors paquet", cls: "num", f: e => e.um ? `<span class="badge warn">${fmt(e.um)}</span>` : ""},
+    ...(anyDist ? [{k: "nd", l: "Distributions", sortv: e => e.dists.size, f: e => [...e.dists].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${distTag(d)} <span class="cat">${fmt(n)}</span>`).join(" ")}] : []),
+    {k: "na", l: "Applications / plates-formes", f: apps},
+    {k: "vl", l: "Versions exactes", f: e => [...e.vers].sort(cmpVer).slice(0, 6).map(esc).join(", ") + (e.vers.size > 6 ? ` … (${fmt(e.vers.size)})` : "")},
+  ], group(r => majorOf(fam, swVal(r, "version"))), {sort: "k", dir: -1});
+  let byDist = "";
+  if (anyDist) byDist = `<h3>Par distribution</h3>
+    <p class="hint">« Oracle JDK » n'est retenu que sur preuve du JDK commercial : JVM « Java(TM) » ou « HotSpot(TM) », <code>BUILD_TYPE="commercial"</code>
+      dans le fichier <code>release</code>, ou paquet <code>jdk-NN</code> publié par Oracle. « Oracle (JDK ou OpenJDK ?) » : seul l'éditeur
+      <code>Oracle Corporation</code> est connu, ce que portent aussi des builds OpenJDK ; à vérifier sur le serveur (<code>java -version</code>).
+      Oracle JDK et Oracle GraalVM peuvent relever d'une licence payante selon la version et la date du correctif. La preuve s'affiche au survol du badge dans Logiciels.</p>` +
+    table([
+      {k: "k", l: "Distribution", f: e => `<a href="${link("logiciels", {q: "famille:java distrib:" + e.k.replace(/\s+/g, "-"), vue: "versions"})}">${distTag(e.k)}</a>`},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)}, {k: "n", l: "Installations", cls: "num", f: e => fmt(e.n)},
+      {k: "vl", l: "Versions majeures", f: e => [...new Set([...e.vers].map(v => majorOf("java", v)))].sort(cmpVer).map(esc).join(", ")},
+      {k: "pr", l: "Preuves relevées", cls: "wrap", f: e => [...e.proofs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p, n]) => `${esc(p)} <span class="cat">(${fmt(n)})</span>`).join("<br>")},
+      {k: "na", l: "Applications / plates-formes", f: apps},
+    ], group(r => swDist(r) || "Inconnue"), {sort: "nh", dir: -1});
+  return head + tabs + `<h3>Par version majeure</h3>` + byMajor + byDist;
+}
+
 function vMateriel(params) {
   const tab = params.get("onglet") || "interfaces", f = (params.get("q") || "").toLowerCase();
   const filt = rs => f ? rs.filter(o => Object.values(o).join(" ").toLowerCase().includes(f)) : rs;
@@ -1695,7 +1753,7 @@ function route() {
   if (ns.app !== SCOPE.app || ns.pf !== SCOPE.pf || ns.tag !== SCOPE.tag || !D) { SCOPE = ns; applyScope(); renderScope(); updateGen(); }
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
-    else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, exposition: vExposition,
+    else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, socle: vSocle, exposition: vExposition,
       materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, systeme: vSysteme, cles: vCles, support: vSupport, vulnerabilites: vVulns, evolutions: vEvolutions}[r] || vAccueil)(params);
   } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
   renderNav(r);

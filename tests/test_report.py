@@ -294,7 +294,7 @@ class DistributionJavaRapport(unittest.TestCase):
     """Distribution Java dans la page Logiciels, filtre distrib: et export CSV de la vue affichée."""
     R = ["logiciels", "logiciels?q=distrib:oracle-jdk", "logiciels?q=" + quote("java distrib:temurin", safe=""),
          "logiciels?q=java&vue=versions", "materiel?onglet=cpu", "materiel?onglet=cpu&q=avx512", "materiel?onglet=cpu&q=" + quote("!avx512f", safe=""),
-         "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")]
+         "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe=""), "socle", "socle?famille=java", "socle?famille=systemes"]
 
     @classmethod
     def setUpClass(cls):
@@ -320,10 +320,15 @@ class DistributionJavaRapport(unittest.TestCase):
         shutil.rmtree(cls.d, ignore_errors=True)
 
     def test_page(self):
-        p = self.pages["logiciels"]
-        self.assertIn("Java par distribution", p)
-        for lab in ("OpenJDK Red Hat", "Oracle JDK", "Eclipse Temurin"):
+        self.assertNotIn("Par distribution", self.pages["logiciels"])
+        p = self.pages["socle?famille=java"]
+        self.assertIn("Par distribution", p)
+        self.assertIn("Par version majeure", p)
+        for lab in ("OpenJDK Red Hat", "Oracle JDK", "Eclipse Temurin", "paquet jdk-17 (éditeur Oracle Corporation)", "famille%3Ajava+%3D17"):
             self.assertIn(lab, p)
+        self.assertIn("Par version majeure", self.pages["socle"])
+        self.assertIn("RHEL 8.9", self.pages["socle?famille=systemes"])
+        self.assertIn("Preuve : paquet jdk-17", self.pages["logiciels?q=distrib:oracle-jdk"])
         self.assertIn("1 composants correspondent", self.pages[self.R[2]])
         self.assertIn("1 composants correspondent", self.pages[self.R[1]])
 

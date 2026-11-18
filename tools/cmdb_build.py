@@ -333,45 +333,62 @@ JAVA_DIST_OS = {"rhel": "OpenJDK Red Hat", "centos": "OpenJDK CentOS", "rocky": 
 JAVA_DIST_PATH = re.compile(r"(temurin|adoptium|zulu|corretto|liberica|sapmachine|semeru|openj9|graalvm|msopenjdk)", re.I)
 
 
+ORACLE_JDK_PKG = re.compile(r"^(jdk|jre)-?\d|^(jdk|jre)1\.\d", re.I)
+
+
 def java_distribution(extra, owner_pkg=None, pkg_vendor=None, os_id=None, location=None, name=None):
-    """Libellé de la distribution Java ; « Inconnue » si rien ne permet de le dire."""
+    """(distribution Java, preuve). « Oracle JDK » exige une preuve propre au JDK commercial d'Oracle :
+    JVM « Java(TM) » ou « HotSpot(TM) », BUILD_TYPE="commercial" dans le fichier release, ou paquet jdk-NN /
+    jdk1.8 publié par Oracle. « Oracle Corporation » seul ne suffit pas : beaucoup de builds OpenJDK
+    (jdk.java.net, Oracle Linux, anciens OpenJDK de distribution) portent ce nom d'éditeur."""
     e = extra or {}
     impl, impl_v = e.get("implementor") or "", e.get("implementor_version") or ""
-    vendor, vm = e.get("vendor") or "", e.get("vm") or ""
-    for text in (impl + " " + impl_v, vendor + " " + vm):
-        if not text.strip():
-            continue
-        for rx, lab in JAVA_DIST_TEXT:
-            if rx.search(text):
-                return lab
-        if "oracle" in text.lower():
-            # Oracle Corporation : JDK commercial (HotSpot(TM), BUILD_TYPE commercial) ou OpenJDK de jdk.java.net
-            if "(TM)" in vm or "commercial" in (e.get("build_type") or "").lower():
-                return "Oracle JDK"
-            if "openjdk" in (vm + " " + impl_v).lower() or (e.get("build_type") or "").lower() == "release":
-                return "Oracle OpenJDK"
-            return "Oracle JDK"
+    vendor, vm, rtn = e.get("vendor") or "", e.get("vm") or "", e.get("runtime_name") or ""
+    bt = (e.get("build_type") or "").strip().lower()
     pkg = owner_pkg or ""
+    rel_txt = ", ".join("%s=%s" % (k, v) for k, v in (("IMPLEMENTOR", impl), ("IMPLEMENTOR_VERSION", impl_v), ("BUILD_TYPE", e.get("build_type"))) if v)
+    jvm_txt = ", ".join("%s=%s" % (k, v) for k, v in (("java.vendor", vendor), ("java.vm.name", vm), ("java.runtime.name", rtn)) if v)
+    pkg_txt = "paquet %s%s" % (pkg, " (éditeur %s)" % pkg_vendor if pkg_vendor else "")
+    # 1. éditeur explicite autre qu'Oracle : release, puis JVM interrogée
+    for text, src in ((impl + " " + impl_v, "release : " + rel_txt), (vendor + " " + vm + " " + rtn, "JVM : " + jvm_txt)):
+        if text.strip():
+            for rx, lab in JAVA_DIST_TEXT:
+                if rx.search(text):
+                    return lab, src
+    # 2. preuves du JDK commercial d'Oracle
+    if "(TM)" in rtn or "(TM)" in vm:
+        return "Oracle JDK", "JVM : " + jvm_txt
+    if bt == "commercial":
+        return "Oracle JDK", "release : " + rel_txt
+    if pkg and ORACLE_JDK_PKG.search(pkg) and (not pkg_vendor or "oracle" in pkg_vendor.lower()):
+        return "Oracle JDK", pkg_txt
+    # 3. paquet de distribution ou d'éditeur
     if pkg:
         for rx, lab in JAVA_DIST_PKG:
-            if rx.search(pkg):
-                return lab
+            if lab != "Oracle JDK" and rx.search(pkg):
+                return lab, pkg_txt
         if pkg_vendor:
             for rx, lab in JAVA_DIST_TEXT:
                 if rx.search(pkg_vendor):
-                    return lab
-        if re.search(r"openjdk", pkg, re.I) and os_id in JAVA_DIST_OS:
-            return JAVA_DIST_OS[os_id]
+                    return lab, pkg_txt
         if re.search(r"openjdk", pkg, re.I):
-            return "OpenJDK (paquet de la distribution)"
+            return JAVA_DIST_OS.get(os_id, "OpenJDK (paquet de la distribution)"), pkg_txt + (", système %s" % os_id if os_id else "")
+    # 4. OpenJDK d'Oracle (jdk.java.net) : JVM OpenJDK publiée par Oracle, hors paquet
+    oracle = "oracle" in (impl + " " + vendor).lower()
+    if oracle and ("openjdk" in (vm + " " + rtn + " " + impl_v).lower() or bt == "release"):
+        return "Oracle OpenJDK", ("JVM : " + jvm_txt) if jvm_txt else ("release : " + rel_txt)
+    # 5. chemin
     m = JAVA_DIST_PATH.search(location or "") or JAVA_DIST_PATH.search(name or "")
     if m:
         for rx, lab in JAVA_DIST_TEXT + JAVA_DIST_PKG:
             if rx.search(m.group(1)):
-                return lab
-    if vm and "openjdk" in vm.lower():
-        return "OpenJDK (éditeur inconnu)"
-    return "Inconnue"
+                return lab, "chemin %s" % location
+    # 6. Oracle Corporation sans autre indice : JDK commercial ou build OpenJDK, à vérifier
+    if oracle:
+        return "Oracle (JDK ou OpenJDK ?)", (("release : " + rel_txt) if impl else ("JVM : " + jvm_txt)) + " ; sans preuve du JDK commercial"
+    if "openjdk" in (vm + " " + rtn).lower():
+        return "OpenJDK (éditeur inconnu)", "JVM : " + jvm_txt
+    return "Inconnue", None
 
 
 # Processeur : niveaux x86-64 (psABI) et extensions utiles pour juger d'une faille (avx512, sgx, tsx...).
@@ -701,7 +718,8 @@ CREATE TABLE memory_modules (host TEXT, locator TEXT, size TEXT, type TEXT, spee
 CREATE TABLE packages (host TEXT, manager TEXT, name TEXT, epoch TEXT, version TEXT, release TEXT, arch TEXT,
   vendor TEXT, source TEXT, source_version TEXT, installtime TEXT, summary TEXT, purl TEXT);
 CREATE TABLE software (host TEXT, category TEXT, ecosystem TEXT, family TEXT, name TEXT, version TEXT,
-  location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT, running INTEGER, distribution TEXT);
+  location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT, running INTEGER, distribution TEXT,
+  distribution_evidence TEXT);
 CREATE TABLE java_markers (host TEXT, archive TEXT, marker TEXT, shaded INTEGER);
 CREATE TABLE processes (host TEXT, pid INTEGER, ppid INTEGER, user TEXT, comm TEXT, exe TEXT, exe_owner_pkg TEXT,
   cmdline TEXT, start TEXT, rss_mb REAL, in_container INTEGER, container_id TEXT, systemd_unit TEXT,
@@ -920,15 +938,18 @@ class Builder(cmdb_extras.ExtrasMixin):
         vendors = {(p[2], p[4]): p[9] for p in self.rows.get("packages") or [] if p[9]}
         out = []
         for r in sw:
-            dist = None
             if r[5] == "java" and r[3] in ("runtime", "os-package"):
                 try:
                     extra = json.loads(r[14]) if r[14] else {}
                 except ValueError:
                     extra = {}
                 owner = r[10] or (r[6] if r[3] == "os-package" else None)
-                dist = java_distribution(extra, owner, vendors.get((r[2], owner)), self.os_ids.get(r[2]), r[8], r[6])
-            out.append(tuple(r[:16]) + (dist,))
+                dist, proof = java_distribution(extra, owner, vendors.get((r[2], owner)), self.os_ids.get(r[2]), r[8], r[6])
+                if dist != "Oracle JDK" and r[13] and ":oracle:jdk:" in r[13]:
+                    r = r[:13] + (r[13].replace(":oracle:jdk:", ":oracle:openjdk:"),) + r[14:]   # CPE : pas de preuve du JDK commercial
+                out.append(tuple(r[:16]) + (dist, proof))
+                continue
+            out.append(tuple(r[:16]) + (None, None))
         self.rows["software"] = out
 
     def cpus(self, host, doc):
@@ -1509,7 +1530,15 @@ class Builder(cmdb_extras.ExtrasMixin):
             if probe == "java":
                 props = dict(re.findall(r"^\s+([\w.]+) = (.*)$", first, re.M))
                 version = props.get("java.version") or first_match([r'version "([^"]+)"'], text)
-                extra = {"vendor": props.get("java.vendor"), "vm": props.get("java.vm.name"),
+                if not props.get("java.runtime.name"):
+                    # sortie de java -version seule : 2e ligne « Java(TM) SE Runtime Environment » ou « OpenJDK Runtime Environment »
+                    m = re.search(r"^((?:Java\(TM\) SE|OpenJDK) Runtime Environment[^\n(]*)", text, re.M)
+                    if m:
+                        props["java.runtime.name"] = m.group(1).strip()
+                    m = re.search(r"^((?:Java HotSpot\(TM\)|OpenJDK|Eclipse OpenJ9|IBM J9)[^\n(]*VM)", text, re.M)
+                    if m and not props.get("java.vm.name"):
+                        props["java.vm.name"] = m.group(1).strip()
+                extra = {"vendor": props.get("java.vendor"), "vm": props.get("java.vm.name"), "runtime_name": props.get("java.runtime.name"),
                          "runtime_version": props.get("java.runtime.version"),
                          "java.home": props.get("java.home"), "java.version": props.get("java.version")}
                 cpe = java_cpe(props.get("java.version") or version, (props.get("java.vendor") or "") + " " + (props.get("java.vm.name") or ""))
