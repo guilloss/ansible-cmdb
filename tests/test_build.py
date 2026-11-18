@@ -181,6 +181,83 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class DistributionJava(unittest.TestCase):
+    """software.distribution : éditeur des Java, d'après le fichier release, la JVM, le paquet ou le chemin."""
+
+    def test_classement(self):
+        import cmdb_build as B
+        d = B.java_distribution
+        self.assertEqual(d({"implementor": "Eclipse Adoptium", "implementor_version": "Temurin-21.0.2+13"}), "Eclipse Temurin")
+        self.assertEqual(d({"implementor": "Azul Systems, Inc."}), "Azul Zulu")
+        self.assertEqual(d({"implementor": "Amazon.com Inc."}), "Amazon Corretto")
+        self.assertEqual(d({"implementor": "Oracle Corporation", "build_type": "commercial"}), "Oracle JDK")
+        self.assertEqual(d({"implementor": "Oracle Corporation", "build_type": "release"}), "Oracle OpenJDK")
+        self.assertEqual(d({"vendor": "Oracle Corporation", "vm": "Java HotSpot(TM) 64-Bit Server VM"}), "Oracle JDK")
+        self.assertEqual(d({"vendor": "Oracle Corporation", "vm": "OpenJDK 64-Bit Server VM"}), "Oracle OpenJDK")
+        self.assertEqual(d({"vendor": "IBM Corporation", "vm": "IBM J9 VM"}), "IBM Semeru / J9")
+        self.assertEqual(d({"vendor": "Red Hat, Inc.", "vm": "OpenJDK 64-Bit Server VM"}), "OpenJDK Red Hat")
+        self.assertEqual(d({}, "jdk-17", "Oracle Corporation", "rhel"), "Oracle JDK")
+        self.assertEqual(d({}, "java-17-openjdk-headless", None, "rocky"), "OpenJDK Rocky")
+        self.assertEqual(d({}, "openjdk-17-jre-headless", None, "debian"), "OpenJDK Debian")
+        self.assertEqual(d({}, "temurin-17-jdk"), "Eclipse Temurin")
+        self.assertEqual(d({}, "Java8_64.sdk"), "IBM Semeru / J9")
+        self.assertEqual(d({}, location="/opt/zulu17"), "Azul Zulu")
+        self.assertEqual(d({"vendor": "Private Build", "vm": "OpenJDK 64-Bit Server VM"}), "OpenJDK (éditeur inconnu)")
+        self.assertEqual(d({}, location="/opt/jdk1.8.0_401"), "Inconnue")
+
+    def test_base(self):
+        d = tempfile.mkdtemp(prefix="cmdbj")
+        self.addCleanup(shutil.rmtree, d, True)
+        a = fleet.app_host()
+        a["packages"]["managers"]["rpm"] = [
+            {"name": "java-17-openjdk-headless", "epoch": "1", "version": "17.0.9.0.9", "release": "2.el8", "arch": "x86_64"},
+            {"name": "jdk-17", "version": "17.0.10", "release": "ga", "arch": "x86_64", "vendor": "Oracle Corporation"},
+            {"name": "bash", "version": "4.4", "release": "1.el8", "arch": "x86_64"}]
+        a["filesystem"]["jdk_homes"] = [{"path": "/opt/temurin-21", "release": {"JAVA_VERSION": "21.0.2", "IMPLEMENTOR": "Eclipse Adoptium"}}]
+        fleet.write_store(os.path.join(d, "store"), [a])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(d, "store"), "--out", os.path.join(d, "b")],
+                              stdout=subprocess.DEVNULL)
+        db = sqlite3.connect(os.path.join(d, "b", "cmdb.sqlite"))
+        got = dict(db.execute("SELECT name, distribution FROM software WHERE name IN ('java-17-openjdk-headless', 'jdk-17', 'jdk-home', 'bash', 'php')"))
+        db.close()
+        self.assertEqual(got, {"java-17-openjdk-headless": "OpenJDK Red Hat", "jdk-17": "Oracle JDK", "jdk-home": "Eclipse Temurin",
+                               "bash": None, "php": None})
+
+
+class Processeurs(unittest.TestCase):
+    """Table cpus : identifiants, niveau x86-64 et extensions notables."""
+    V4 = ("fpu sse2 lm cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx avx2 bmi1 bmi2 f16c fma abm movbe xsave "
+          "avx512f avx512bw avx512cd avx512dq avx512vl avx512_vnni aes hypervisor")
+
+    def test_resume(self):
+        import cmdb_build as B
+        lvl, nb = B.cpu_summary(self.V4.split())
+        self.assertEqual(lvl, "x86-64-v4")
+        self.assertIn("avx512 (f bw cd dq vl vnni)", nb)
+        self.assertEqual(B.cpu_summary("fpu sse2 lm sse4_2 avx avx2".split())[0], "x86-64")
+        self.assertEqual(B.cpu_summary("fp asimd aes sha2 atomics".split()), (None, "aes, sha2, atomics"))
+
+    def test_base(self):
+        d = tempfile.mkdtemp(prefix="cmdbc")
+        self.addCleanup(shutil.rmtree, d, True)
+        a = fleet.app_host()
+        a["hardware"]["cpu"] = {"count": 8, "model name": "Intel(R) Xeon(R) Gold 6248", "vendor_id": "GenuineIntel", "cpu family": "6",
+                                "model": "85", "stepping": "7", "microcode": "0x5003604", "flags": self.V4}
+        w = fleet.pg_host()
+        w["hardware"]["cpu"] = {"count": 4, "model name": "Intel(R) Xeon(R) Silver", "vendor_id": "GenuineIntel", "cpu family": "6",
+                                "model": "85", "stepping": "4", "flags": "sse3 ssse3 sse4_1 sse4_2 avx avx2 avx512f",
+                                "flags_source": "IsProcessorFeaturePresent (partiel)"}
+        fleet.write_store(os.path.join(d, "store"), [a, w, fleet.web_host()])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(d, "store"), "--out", os.path.join(d, "b")],
+                              stdout=subprocess.DEVNULL)
+        db = sqlite3.connect(os.path.join(d, "b", "cmdb.sqlite"))
+        got = {r[0]: r[1:] for r in db.execute("SELECT host, family, model, stepping, microcode, isa_level, flags_source FROM cpus")}
+        db.close()
+        self.assertEqual(got["app1.exemple.test"], ("6", "85", "7", "0x5003604", "x86-64-v4", "/proc/cpuinfo"))
+        self.assertIsNone(got["pg1.exemple.test"][4])   # liste partielle : pas de niveau
+        self.assertNotIn("web1.exemple.test", got)       # rien de collecté sur le processeur
+
+
 class ServicesSysteme(unittest.TestCase):
     """Services systemd, SysV, SRC et Windows ; lien service -> composant sans collecte privilégiée."""
 

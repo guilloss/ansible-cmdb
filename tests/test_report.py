@@ -290,5 +290,65 @@ class RechercheVersion(unittest.TestCase):
                 (self.assertIn if v in want else self.assertNotIn)(v + ".", p.split("<table")[-1], q)
 
 
+class DistributionJavaRapport(unittest.TestCase):
+    """Distribution Java dans la page Logiciels, filtre distrib: et export CSV de la vue affichée."""
+    R = ["logiciels", "logiciels?q=distrib:oracle-jdk", "logiciels?q=" + quote("java distrib:temurin", safe=""),
+         "logiciels?q=java&vue=versions", "materiel?onglet=cpu", "materiel?onglet=cpu&q=avx512", "materiel?onglet=cpu&q=" + quote("!avx512f", safe=""),
+         "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = tempfile.mkdtemp(prefix="cmdbj")
+        store, out = os.path.join(cls.d, "store"), os.path.join(cls.d, "build")
+        a = fleet.app_host()
+        a["packages"]["managers"]["rpm"] = [
+            {"name": "java-17-openjdk-headless", "epoch": "1", "version": "17.0.9.0.9", "release": "2.el8", "arch": "x86_64"},
+            {"name": "jdk-17", "version": "17.0.10", "release": "ga", "arch": "x86_64", "vendor": "Oracle Corporation"}]
+        a["filesystem"]["jdk_homes"] = [{"path": "/opt/temurin-21", "release": {"JAVA_VERSION": "21.0.2", "IMPLEMENTOR": "Eclipse Adoptium"}}]
+        a["hardware"]["cpu"] = {"count": 8, "model name": "Intel(R) Xeon(R) Gold 6248", "vendor_id": "GenuineIntel", "cpu family": "6",
+                                "model": "85", "stepping": "7", "flags": "sse2 lm sse4_2 avx avx2 avx512f avx512bw"}
+        a["hardware"]["cpu_vulnerabilities"] = {"gather_data_sampling": "Vulnerable: No microcode"}
+        t = fleet.twin("t1.exemple.test", "10.0.1.1", pf="recette")
+        t["packages"]["managers"]["rpm"] = [{"name": "java-17-openjdk-headless", "epoch": "1", "version": "17.0.9.0.9", "release": "2.el8", "arch": "x86_64"}]
+        fleet.write_store(store, [a, t])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", store, "--out", out], stdout=subprocess.DEVNULL)
+        res = subprocess.check_output(["node", os.path.join(ROOT, "tests", "report_harness.js"), os.path.join(out, "cmdb_rapport.html")] + cls.R)
+        cls.pages = json.loads(res.decode("utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, ignore_errors=True)
+
+    def test_page(self):
+        p = self.pages["logiciels"]
+        self.assertIn("Java par distribution", p)
+        for lab in ("OpenJDK Red Hat", "Oracle JDK", "Eclipse Temurin"):
+            self.assertIn(lab, p)
+        self.assertIn("1 composants correspondent", self.pages[self.R[2]])
+        self.assertIn("1 composants correspondent", self.pages[self.R[1]])
+
+    def test_processeurs(self):
+        p = self.pages["materiel?onglet=cpu"]
+        self.assertIn("dont 1 avec AVX-512", p)
+        self.assertIn("famille 6, modèle 85, stepping 7", p)
+        self.assertIn("gather_data_sampling", p)
+        self.assertIn("1 correspondent", self.pages["materiel?onglet=cpu&q=avx512"])
+        self.assertNotIn("Xeon(R) Gold", self.pages["materiel?onglet=cpu&q=" + quote("!avx512f", safe="")].split("Par modèle")[1])
+        self.assertIn("avx512 (f bw)", self.pages["serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="")])
+
+    def test_export_vue(self):
+        det = self.pages["__csv"][self.R[1]]
+        self.assertEqual(det["name"], "cmdb_logiciels.csv")
+        self.assertIn("distribution", det["header"])
+        self.assertEqual([r[det["header"].index("name")] for r in det["rows"]], ["jdk-17"])
+        grp = self.pages["__csv"]["logiciels?q=java&vue=versions"]
+        self.assertEqual(grp["name"], "cmdb_logiciels_par_version.csv")
+        self.assertEqual(grp["header"][:3], ["composant", "distribution", "version"])
+        rh = [r for r in grp["rows"] if r[1] == "OpenJDK Red Hat"]
+        self.assertEqual(len(rh), 1)
+        self.assertEqual(rh[0][3], 2)
+        self.assertIn("APPDEMO / recette (1)", rh[0][6])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,7 @@ const sandbox = {
 };
 sandbox.window = {addEventListener() {}, scrollTo() {}};
 const ctx = vm.createContext(sandbox);
-vm.runInContext('"use strict";' + code + ";globalThis.__route = route;", ctx);
+vm.runInContext('"use strict";' + code + ";globalThis.__route = route; globalThis.__swcsv = () => SW_CSV;", ctx);
 (async () => {
   for (let i = 0; i < 50 && !els.view?.innerHTML; i++) await new Promise(r => globalThis.setTimeout(r, 20));
   const out = {};
@@ -28,6 +28,7 @@ vm.runInContext('"use strict";' + code + ";globalThis.__route = route;", ctx);
     while (timers.length) timers.shift()();
     for (const [id, e] of Object.entries(els)) if (/^t[a-z0-9]{6}$|^t[a-z0-9]{5}$/.test(id) && e.innerHTML) { body += "\n" + e.innerHTML; e.innerHTML = ""; }
     out[r] = body;
+    if (r.startsWith("logiciels")) (out.__csv = out.__csv || {})[r] = sandbox.__swcsv();
   }
   sandbox.location.hash = "#/accueil";
   sandbox.__route();

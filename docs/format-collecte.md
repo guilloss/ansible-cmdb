@@ -55,6 +55,10 @@ Le 12/11/2026, dans `services` : `pid_files` (`{chemin: pid}` des fichiers PID l
 `/var/run` et `/etc`), `rc_links` (`{répertoire rcN.d: [noms des liens]}`), `lssrc` (sortie brute de
 `lssrc -a` sur AIX) et la propriété `Type` dans `service_details` ; le collecteur shell capture
 `pid_files` (lignes « chemin pid ») et garde le PID des sous-systèmes SRC (`units[].main_pid`).
+Le 18/11/2026, dans `hardware.cpu` : les clés ARM de `/proc/cpuinfo` (`Features`, `CPU implementer`,
+`CPU part`, `CPU variant`, `CPU revision`) ; côté Windows, `vendor_id`, `cpu family`, `model`, `stepping` (tirés de
+`Win32_Processor.Description`), `flags` (extensions de sse3 à avx512f, par `IsProcessorFeaturePresent`) et
+`flags_source`.
 Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, `filesystem` et `windows`.
 
 - `meta` : `collector_version`, `started_at`, `finished_at`, `host_label`, `run_id`, `tags` (dont

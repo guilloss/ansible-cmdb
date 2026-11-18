@@ -2076,7 +2076,8 @@ class Collector(object):
             if k == "processor":
                 cpu["count"] += 1
             elif k in ("model name", "vendor_id", "cpu family", "model", "stepping", "microcode", "bugs",
-                       "cpu cores", "siblings", "physical id", "flags") and k not in cpu:
+                       "cpu cores", "siblings", "physical id", "flags",
+                       "Features", "CPU implementer", "CPU part", "CPU variant", "CPU revision") and k not in cpu:
                 cpu[k] = v
         d["cpu"] = cpu
         d["lscpu"] = run_out(["lscpu"], 15)

@@ -105,7 +105,9 @@ GENERIC_VERSION_RX = r"(\d+\.\d+(?:\.\d+)*(?:[-+._]?[A-Za-z0-9]+)*)"
 
 # Paquets OS -> famille de composant (pour la matrice)
 PKG_FAMILIES = [
-    (r"^java-[\d.]+-openjdk(-headless)?$|^openjdk-\d+-(jre|jdk)(-headless)?$|^temurin-\d+-(jdk|jre)$|^jdk-?\d|^jre-?\d", "java"),
+    (r"^java-[\d.]+-openjdk(-headless)?$|^openjdk-\d+-(jre|jdk)(-headless)?$|^temurin-\d+-(jdk|jre)$|^jdk-?\d|^jre-?\d"
+     r"|^zulu-?\d+(-ca)?(-jdk|-jre)?(-headless)?$|^java-\d+-amazon-corretto(-headless|-devel)?$|^msopenjdk-\d+$|^sapmachine-\d+(-jdk|-jre)?$"
+     r"|^bellsoft-java\d+(-runtime|-lite|-full)?$|^ibm-semeru-(open|certified)-\d+-(jdk|jre)$", "java"),
     (r"^(rh-)?php\d*(-php)?-(cli|fpm)$|^php\d+\.\d+-(cli|fpm)$|^php\d+$", "php"),
     (r"^python(\d(\.\d+)?)?(-minimal)?$|^python3\d+$|^rh-python\d+-python$|^platform-python$", "python"),
     (r"^postgresql\d*-server$|^postgresql-\d+$", "postgresql"),
@@ -297,6 +299,108 @@ def java_cpe(version, vendor_text):
     if m:
         return "cpe:2.3:a:oracle:%s:1.%s.%s:update%s:*:*:*:*:*:*" % (product, m.group(1), m.group(2), m.group(3))
     return "cpe:2.3:a:oracle:%s:%s:*:*:*:*:*:*:*" % (product, cpe_escape(version.split("+")[0]))
+
+
+# Distribution Java : éditeur du JDK/JRE, d'après (dans l'ordre) le fichier release, les propriétés de la JVM,
+# le paquet propriétaire et le chemin. Libellés stables : ils servent au filtre distrib: du rapport.
+JAVA_DIST_TEXT = [
+    (r"graalvm.*community|community.*graalvm", "GraalVM CE"),
+    (r"graalvm", "Oracle GraalVM"),
+    (r"adoptium|temurin", "Eclipse Temurin"),
+    (r"adoptopenjdk", "AdoptOpenJDK"),
+    (r"azul|zulu", "Azul Zulu"),
+    (r"amazon|corretto", "Amazon Corretto"),
+    (r"bellsoft|liberica", "BellSoft Liberica"),
+    (r"microsoft", "Microsoft OpenJDK"),
+    (r"\bsap\b|sapmachine", "SapMachine"),
+    (r"semeru|openj9|\bj9\b|\bibm\b", "IBM Semeru / J9"),
+    (r"red ?hat", "OpenJDK Red Hat"),
+    (r"debian", "OpenJDK Debian"),
+    (r"ubuntu", "OpenJDK Ubuntu"),
+    (r"suse", "OpenJDK SUSE"),
+]
+JAVA_DIST_TEXT = [(re.compile(rx, re.I), lab) for rx, lab in JAVA_DIST_TEXT]
+JAVA_DIST_PKG = [
+    (r"^temurin-", "Eclipse Temurin"), (r"^zulu", "Azul Zulu"), (r"corretto", "Amazon Corretto"),
+    (r"^msopenjdk", "Microsoft OpenJDK"), (r"^sapmachine", "SapMachine"), (r"^bellsoft|liberica", "BellSoft Liberica"),
+    (r"^ibm-semeru|^ibm-java|^Java\d+(_64)?\.", "IBM Semeru / J9"), (r"graalvm", "Oracle GraalVM"),
+    (r"^(jdk|jre)-?\d|^(jdk|jre)1\.\d", "Oracle JDK"),
+]
+JAVA_DIST_PKG = [(re.compile(rx, re.I), lab) for rx, lab in JAVA_DIST_PKG]
+JAVA_DIST_OS = {"rhel": "OpenJDK Red Hat", "centos": "OpenJDK CentOS", "rocky": "OpenJDK Rocky", "almalinux": "OpenJDK AlmaLinux",
+                "ol": "OpenJDK Oracle Linux", "fedora": "OpenJDK Fedora", "debian": "OpenJDK Debian", "ubuntu": "OpenJDK Ubuntu",
+                "sles": "OpenJDK SUSE", "opensuse-leap": "OpenJDK SUSE", "amzn": "Amazon Corretto", "alpine": "OpenJDK Alpine"}
+JAVA_DIST_PATH = re.compile(r"(temurin|adoptium|zulu|corretto|liberica|sapmachine|semeru|openj9|graalvm|msopenjdk)", re.I)
+
+
+def java_distribution(extra, owner_pkg=None, pkg_vendor=None, os_id=None, location=None, name=None):
+    """Libellé de la distribution Java ; « Inconnue » si rien ne permet de le dire."""
+    e = extra or {}
+    impl, impl_v = e.get("implementor") or "", e.get("implementor_version") or ""
+    vendor, vm = e.get("vendor") or "", e.get("vm") or ""
+    for text in (impl + " " + impl_v, vendor + " " + vm):
+        if not text.strip():
+            continue
+        for rx, lab in JAVA_DIST_TEXT:
+            if rx.search(text):
+                return lab
+        if "oracle" in text.lower():
+            # Oracle Corporation : JDK commercial (HotSpot(TM), BUILD_TYPE commercial) ou OpenJDK de jdk.java.net
+            if "(TM)" in vm or "commercial" in (e.get("build_type") or "").lower():
+                return "Oracle JDK"
+            if "openjdk" in (vm + " " + impl_v).lower() or (e.get("build_type") or "").lower() == "release":
+                return "Oracle OpenJDK"
+            return "Oracle JDK"
+    pkg = owner_pkg or ""
+    if pkg:
+        for rx, lab in JAVA_DIST_PKG:
+            if rx.search(pkg):
+                return lab
+        if pkg_vendor:
+            for rx, lab in JAVA_DIST_TEXT:
+                if rx.search(pkg_vendor):
+                    return lab
+        if re.search(r"openjdk", pkg, re.I) and os_id in JAVA_DIST_OS:
+            return JAVA_DIST_OS[os_id]
+        if re.search(r"openjdk", pkg, re.I):
+            return "OpenJDK (paquet de la distribution)"
+    m = JAVA_DIST_PATH.search(location or "") or JAVA_DIST_PATH.search(name or "")
+    if m:
+        for rx, lab in JAVA_DIST_TEXT + JAVA_DIST_PKG:
+            if rx.search(m.group(1)):
+                return lab
+    if vm and "openjdk" in vm.lower():
+        return "OpenJDK (éditeur inconnu)"
+    return "Inconnue"
+
+
+# Processeur : niveaux x86-64 (psABI) et extensions utiles pour juger d'une faille (avx512, sgx, tsx...).
+X86_LEVELS = [
+    ("x86-64-v2", {"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"}),
+    ("x86-64-v3", {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"}),
+    ("x86-64-v4", {"avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"}),
+]
+CPU_NOTABLE = ["sse4_2", "avx", "avx2", "fma", "avx_vnni", "amx_tile", "amx_bf16", "amx_int8", "aes", "vaes", "vpclmulqdq",
+               "sha_ni", "gfni", "rdrand", "rdseed", "sgx", "rtm", "hle", "vmx", "svm", "smep", "smap", "pku", "la57",
+               "hypervisor", "sha1", "sha2", "sha3", "sve", "sve2", "atomics", "crc32", "pmull", "nx", "sse3", "ssse3"]
+
+
+def cpu_summary(flags):
+    """(niveau x86-64, extensions notables) à partir de la liste des flags du processeur."""
+    fl = set(flags)
+    level = None
+    if fl & {"sse2", "lm"} or fl & X86_LEVELS[0][1]:
+        level = "x86-64"
+        for name, need in X86_LEVELS:
+            if need <= fl:
+                level = name
+            else:
+                break
+    notable = [f for f in CPU_NOTABLE if f in fl]
+    avx512 = sorted((f[6:].lstrip("_") for f in fl if f.startswith("avx512")), key=lambda x: (x != "f", x))
+    if avx512:
+        notable.insert(notable.index("avx2") + 1 if "avx2" in notable else 0, "avx512 (%s)" % " ".join(avx512))
+    return level, ", ".join(notable)
 
 
 def purl(ptype, name, version, namespace=None, qualifiers=None):
@@ -597,7 +701,7 @@ CREATE TABLE memory_modules (host TEXT, locator TEXT, size TEXT, type TEXT, spee
 CREATE TABLE packages (host TEXT, manager TEXT, name TEXT, epoch TEXT, version TEXT, release TEXT, arch TEXT,
   vendor TEXT, source TEXT, source_version TEXT, installtime TEXT, summary TEXT, purl TEXT);
 CREATE TABLE software (host TEXT, category TEXT, ecosystem TEXT, family TEXT, name TEXT, version TEXT,
-  location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT, running INTEGER);
+  location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT, running INTEGER, distribution TEXT);
 CREATE TABLE java_markers (host TEXT, archive TEXT, marker TEXT, shaded INTEGER);
 CREATE TABLE processes (host TEXT, pid INTEGER, ppid INTEGER, user TEXT, comm TEXT, exe TEXT, exe_owner_pkg TEXT,
   cmdline TEXT, start TEXT, rss_mb REAL, in_container INTEGER, container_id TEXT, systemd_unit TEXT,
@@ -615,6 +719,8 @@ CREATE TABLE container_packages (host TEXT, image_id TEXT, image TEXT, manager T
 CREATE TABLE containers (host TEXT, engine TEXT, kind TEXT, id TEXT, name TEXT, image TEXT, digest TEXT,
   status TEXT, created TEXT);
 CREATE TABLE cpu_vulnerabilities (host TEXT, name TEXT, status TEXT);
+CREATE TABLE cpus (host TEXT, vendor TEXT, model_name TEXT, family TEXT, model TEXT, stepping TEXT, microcode TEXT,
+  isa_level TEXT, notable TEXT, flags TEXT, bugs TEXT, flags_source TEXT);
 CREATE TABLE kernel_modules (host TEXT, name TEXT);
 CREATE TABLE accounts (host TEXT, name TEXT, uid TEXT, gid TEXT, home TEXT, shell TEXT, gecos TEXT);
 CREATE TABLE addresses (host TEXT, ifname TEXT, family TEXT, cidr TEXT, scope TEXT, label TEXT, secondary INTEGER,
@@ -732,6 +838,7 @@ class Builder(cmdb_extras.ExtrasMixin):
         self.rows = {}
         self.app = self.platform = NA
         self.flrtvc = []
+        self.os_ids = {}
         self.tags = Store().tags   # remplacé par celui du magasin lu (même normalisation que les clés)
 
     def add(self, table, row):
@@ -804,6 +911,48 @@ class Builder(cmdb_extras.ExtrasMixin):
                         run = 1 if (loc in exes or loc in dirs or cited(loc)) else (0 if complete else None)
             out.append(tuple(r[:15]) + (run,))
         self.rows["software"] = out
+
+    def mark_distributions(self):
+        """software.distribution : éditeur des composants Java (famille java), NULL ailleurs."""
+        sw = self.rows.get("software")
+        if not sw:
+            return
+        vendors = {(p[2], p[4]): p[9] for p in self.rows.get("packages") or [] if p[9]}
+        out = []
+        for r in sw:
+            dist = None
+            if r[5] == "java" and r[3] in ("runtime", "os-package"):
+                try:
+                    extra = json.loads(r[14]) if r[14] else {}
+                except ValueError:
+                    extra = {}
+                owner = r[10] or (r[6] if r[3] == "os-package" else None)
+                dist = java_distribution(extra, owner, vendors.get((r[2], owner)), self.os_ids.get(r[2]), r[8], r[6])
+            out.append(tuple(r[:16]) + (dist,))
+        self.rows["software"] = out
+
+    def cpus(self, host, doc):
+        """Une ligne par serveur : modèle, identifiants (famille, modèle, stepping, microcode), extensions.
+        Linux : /proc/cpuinfo (flags, ou Features sur ARM) ; Windows : IsProcessorFeaturePresent (liste partielle) ;
+        AIX : prtconf (type et mode du processeur POWER, sans extensions)."""
+        hw = doc.get("hardware") or {}
+        cpu = hw.get("cpu") or {}
+        prt = (((doc.get("os") or {}).get("aix") or {}).get("prtconf") or {})
+        model_name = cpu.get("model name") or prt.get("Processor Type") or (hw.get("lscpu_kv") or {}).get("Model name")
+        if not model_name and not cpu.get("flags") and not cpu.get("Features"):
+            return
+        raw = cpu.get("flags") or cpu.get("Features") or ""
+        flags = sorted(set(raw.split()))
+        src = cpu.get("flags_source") or ("/proc/cpuinfo" if raw else None)
+        level, notable = cpu_summary(flags)
+        if src != "/proc/cpuinfo":
+            level = None   # liste partielle (Windows) : le niveau x86-64 n'est pas déductible
+        vendor = cpu.get("vendor_id") or cpu.get("CPU implementer") or ("IBM" if prt else None)
+        model = cpu.get("model") or cpu.get("CPU part") or prt.get("Processor Version")
+        if prt and prt.get("Processor Implementation Mode"):
+            notable = ("mode " + prt["Processor Implementation Mode"] + (" " + notable if notable else "")).strip()
+        self.add("cpus", (host, vendor, model_name, cpu.get("cpu family"), model, cpu.get("stepping"), cpu.get("microcode"),
+                          level, notable or None, " ".join(flags) or None, cpu.get("bugs"), src))
 
     INTERPRETERS = frozenset(["java", "python", "node", "nodejs", "dotnet", "perl", "php", "ruby"])
 
@@ -899,6 +1048,7 @@ class Builder(cmdb_extras.ExtrasMixin):
     def flush(self):
         self.mark_running()
         self.link_services()
+        self.mark_distributions()
         for table, rows in self.rows.items():
             if not rows:
                 continue
@@ -913,6 +1063,7 @@ class Builder(cmdb_extras.ExtrasMixin):
         osr = osd.get("os_release") or {}
         os_id = (osr.get("ID") or "").lower()
         os_ver = osr.get("VERSION_ID") or ""
+        self.os_ids[host] = os_id
         hw = doc.get("hardware") or {}
         dmi = hw.get("dmi") or {}
         cpu = hw.get("cpu") or {}
@@ -1322,6 +1473,7 @@ class Builder(cmdb_extras.ExtrasMixin):
     def misc(self, host, doc):
         for k, v in ((doc.get("hardware") or {}).get("cpu_vulnerabilities") or {}).items():
             self.add("cpu_vulnerabilities", (host, k, v))
+        self.cpus(host, doc)
         for m in ((doc.get("kernel") or {}).get("modules") or []):
             self.add("kernel_modules", (host, m.get("name")))
         for a in ((doc.get("accounts") or {}).get("passwd") or []):
@@ -1427,7 +1579,8 @@ class Builder(cmdb_extras.ExtrasMixin):
                       "processus:%s+release" % (h.get("via") or "libjvm.so"),
                       h.get("owner_pkg"), purl_=purl("generic", "java", v),
                       cpe=java_cpe(rel.get("JAVA_VERSION"), rel.get("IMPLEMENTOR")),
-                      extra={"implementor": rel.get("IMPLEMENTOR"), "pids": h.get("pids"),
+                      extra={"implementor": rel.get("IMPLEMENTOR"), "implementor_version": rel.get("IMPLEMENTOR_VERSION"),
+                             "build_type": rel.get("BUILD_TYPE"), "pids": h.get("pids"),
                              "container_id": h.get("container_id")})
         for a in pa.get("archives") or []:
             self._archive(host, a, a.get("owner_pkg"), top=a.get("path"), origin="processus")
@@ -1444,7 +1597,8 @@ class Builder(cmdb_extras.ExtrasMixin):
             self.soft(host, "runtime", "generic", "java", "jdk-home", v, j.get("path"), "release",
                       j.get("owner_pkg"), purl_=purl("generic", "java", v),
                       cpe=java_cpe(rel.get("JAVA_VERSION"), rel.get("IMPLEMENTOR")),
-                      extra={"implementor": rel.get("IMPLEMENTOR"), "java_version": rel.get("JAVA_VERSION"),
+                      extra={"implementor": rel.get("IMPLEMENTOR"), "implementor_version": rel.get("IMPLEMENTOR_VERSION"),
+                             "build_type": rel.get("BUILD_TYPE"), "java_version": rel.get("JAVA_VERSION"),
                              "runtime_version": rel.get("JAVA_RUNTIME_VERSION"), "image_type": rel.get("IMAGE_TYPE")})
         for a in fs.get("java_archives") or []:
             self._archive(host, a, a.get("owner_pkg"), top=a.get("path"),

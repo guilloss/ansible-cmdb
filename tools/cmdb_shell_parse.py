@@ -342,7 +342,8 @@ def build_hardware(d):
         k, v = [x.strip() for x in line.split(":", 1)]
         if k == "processor":
             cpu["count"] += 1
-        elif k in ("model name", "vendor_id", "cpu family", "model", "stepping", "microcode", "bugs", "flags") and k not in cpu:
+        elif k in ("model name", "vendor_id", "cpu family", "model", "stepping", "microcode", "bugs", "flags",
+                   "Features", "CPU implementer", "CPU part", "CPU variant", "CPU revision") and k not in cpu:
             cpu[k] = v
     h["cpu"] = cpu
     mem = {}

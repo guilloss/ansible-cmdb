@@ -292,6 +292,26 @@ Invoke-Section 'hardware' {
     $cores = 0; $logical = 0
     foreach ($p in $procs) { $cores += [int]$p.NumberOfCores; $logical += [int]$p.NumberOfLogicalProcessors }
     $Hw['cpu'] = [ordered]@{ 'model name' = ([string]$procs[0].Name).Trim(); count = $logical }
+    # Identifiants et extensions du processeur (ajout du 18/11/2026) : Description vaut
+    # « Intel64 Family 6 Model 85 Stepping 7 » ; IsProcessorFeaturePresent est appelée par un type
+    # dynamique en mémoire (rien n'est compilé ni écrit sur le disque). Liste partielle des extensions.
+    $Hw['cpu']['vendor_id'] = ([string]$procs[0].Manufacturer).Trim()
+    if ([string]$procs[0].Description -match 'Family (\d+) Model (\d+) Stepping (\d+)') {
+        $Hw['cpu']['cpu family'] = $Matches[1]; $Hw['cpu']['model'] = $Matches[2]; $Hw['cpu']['stepping'] = $Matches[3]
+    }
+    try {
+        $an = New-Object Reflection.AssemblyName 'CmdbCpu'
+        $ab = try { [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($an, [Reflection.Emit.AssemblyBuilderAccess]::Run) }
+              catch { [AppDomain]::CurrentDomain.DefineDynamicAssembly($an, [Reflection.Emit.AssemblyBuilderAccess]::Run) }
+        $tb = $ab.DefineDynamicModule('CmdbCpu').DefineType('CmdbCpu.K32', 'Public, Class')
+        [void]$tb.DefinePInvokeMethod('IsProcessorFeaturePresent', 'kernel32.dll', [Reflection.MethodAttributes]'Public, Static, PinvokeImpl',
+            [Reflection.CallingConventions]::Standard, [bool], [Type[]]@([uint32]),
+            [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)
+        $k32 = $tb.CreateType()
+        $pf = [ordered]@{ nx = 12; sse3 = 13; rdrand = 28; ssse3 = 36; sse4_1 = 37; sse4_2 = 38; avx = 39; avx2 = 40; avx512f = 41 }
+        $Hw['cpu']['flags'] = (@($pf.Keys | Where-Object { $k32::IsProcessorFeaturePresent([uint32]$pf[$_]) }) -join ' ')
+        $Hw['cpu']['flags_source'] = 'IsProcessorFeaturePresent (partiel)'
+    } catch { }
     $Hw['lscpu_kv'] = [ordered]@{
         'Socket(s)' = [string]$procs.Count
         'Core(s) per socket' = [string]([int]($cores / [Math]::Max(1, $procs.Count)))

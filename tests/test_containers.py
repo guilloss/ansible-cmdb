@@ -230,7 +230,7 @@ class Consolidation(unittest.TestCase):
         views = json.loads(subprocess.check_output(["node", os.path.join(ROOT, "tests", "report_harness.js"),
                                                     os.path.join(self.out, "cmdb_rapport.html"), host + "?onglet=exposition", "logiciels?q=docker%3A",
                                                     "vulnerabilites?onglet=conteneurs"]).decode())
-        page = " ".join(views.values())
+        page = " ".join(v for v in views.values() if isinstance(v, str))
         self.assertIn("Contenu des conteneurs en marche", page)
         self.assertIn("registry.exemple.test/app:1.0", page)
         self.assertIn("Debian GNU/Linux 12", page)

@@ -288,6 +288,7 @@ a:hover .v { border-color: var(--accent); }
 "use strict";
 let D0 = null;         // données complètes
 let D = null;          // données du périmètre courant (application / plate-forme)
+let SW_CSV = null;     // export de la page Logiciels : la vue affichée (détail ou regroupée)
 let SW = null;         // logiciels : tables compactes, une ligne = un entier, lue par swVal
 let SCOPE = {app: "", pf: "", tag: ""};
 let MULTI = false;     // plusieurs couples application / plate-forme dans l'inventaire
@@ -446,7 +447,7 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 
 // ---------------------------------------------------------------- périmètre
 const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers", "container_images",
-  "cpu_vulns", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
+  "cpu_vulns", "cpus", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
   "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage", "vulns"];
 // Étiquettes libres d'un serveur (cmdb_tags), sans app et platform qui ont leurs propres filtres
@@ -613,7 +614,10 @@ function swVal(r, k) {
 // Recherche : termes (ET), filtres champ:valeur, comparaisons de version (<, <=, >, >=, =)
 const FIELDS = {serveur: "host", host: "host", app: "app", appli: "app", application: "app", pf: "platform",
   plateforme: "platform", platform: "platform", famille: "family", fam: "family", cat: "category", categorie: "category",
-  version: "version", v: "version", chemin: "location", eco: "ecosystem", purl: "purl", paquet: "owner_pkg"};
+  version: "version", v: "version", chemin: "location", eco: "ecosystem", purl: "purl", paquet: "owner_pkg",
+  distrib: "distribution", distribution: "distribution"};
+// distrib:oracle-jdk, distrib:oraclejdk ou distrib:"oracle jdk" : espaces, tirets et guillemets ignorés
+const squash = v => String(v || "").toLowerCase().replace(/["'\s_-]+/g, "");
 // Une comparaison s'écrit collée (>17), espacée (> 17) ou accrochée au nom (java>17)
 function parseQuery(q) {
   const out = {terms: [], fields: [], vers: []};
@@ -631,7 +635,7 @@ function parseQuery(q) {
 }
 function searchSoftware(q, filt) {
   const P = parseQuery(q), L = lowerStrings();
-  const cc = ["category", "ecosystem", "family", "name", "version", "owner_pkg", "purl", "cpe"].map(k => SW.ci[k]);
+  const cc = ["category", "ecosystem", "family", "name", "version", "owner_pkg", "purl", "cpe", "distribution"].map(k => SW.ci[k]).filter(j => j != null);
   // Chaque terme est testé une fois par chaîne, composant et emplacement distincts, pas par ligne
   const tests = P.terms.map(t => {
     const f = new Uint8Array(L.length), nc = SW.ct.length / SW.cn, cf = new Uint8Array(nc), nl = SW.lt.length / 2, lf = new Uint8Array(nl);
@@ -656,7 +660,9 @@ function searchSoftware(q, filt) {
       if (!(x.cf[SW.t[o + 3]] || x.lf[SW.t[o + 4]] || x.f[SW.t[o]] || x.f[SW.t[o + 1]] || x.f[SW.t[o + 2]])) { ok = false; break; }
     }
     if (!ok) continue;
-    for (const f of P.fields) { if (!low(r, f.k).includes(f.v)) { ok = false; break; } }
+    for (const f of P.fields) {
+      if (!(f.k === "distribution" ? squash(low(r, f.k)).includes(squash(f.v)) : low(r, f.k).includes(f.v))) { ok = false; break; }
+    }
     if (!ok) continue;
     if (P.vers.length) {
       const v = swVal(r, "version");
@@ -862,6 +868,8 @@ function vServeur(key, params) {
       ["Matériel", esc([h.sys_vendor, h.product_name].filter(Boolean).join(" "))], ["Carte mère", esc(h.board)],
       ["Châssis", esc(h.chassis)], ["Numéro de série", esc(h.serial)], ["BIOS", esc([h.bios_version, h.bios_date].filter(Boolean).join(" du "))],
       ["Virtualisation", esc(h.hypervisor || h.virtualization)], ["Processeur", esc(h.cpu_model)],
+      ...hostRows("cpus").slice(0, 1).flatMap(c => [["Identifiant du processeur", esc([c.vendor, cpuIdent(c), c.microcode ? "microcode " + c.microcode : ""].filter(Boolean).join(", "))],
+        ["Extensions notables", esc([c.isa_level, c.notable].filter(Boolean).join(" ; "))]]),
       ["Sockets / cœurs / threads", [h.cpu_sockets, h.cpu_cores, h.cpu_threads].some(x => x) ? [h.cpu_sockets, h.cpu_cores, h.cpu_threads].map(x => x == null ? "?" : x).join(" / ") : ""],
       ["Mémoire", h.mem_total_mb ? fmt(Math.round(h.mem_total_mb / 1024)) + " Go" : ""], ["Disques", h.disk_total_gb ? fmt(h.disk_total_gb) + " Go" : ""],
       ["Adresses", esc((h.ip_addresses || "").split(" ").join(", "))], ["MAC (cartes physiques)", esc((h.mac_addresses || "").split(" ").join(", "))],
@@ -952,11 +960,13 @@ function vServeur(key, params) {
     ${body}`;
 }
 
+const swDist = r => SW.ci.distribution != null ? swVal(r, "distribution") : "";
+const distTag = d => `<span class="badge${/^Oracle (JDK|GraalVM)$/.test(d) ? " warn" : (d === "Inconnue" ? " muted" : "")}" title="Distribution Java">${esc(d)}</span>`;
 function swTable(rs, terms) {
   const s = swVal;
   return table([
     {k: "host", l: "Serveur", sortv: r => s(r, "host"), f: r => hostLabel(s(r, "app"), s(r, "platform"), s(r, "host"), terms)},
-    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}`},
+    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}${swDist(r) ? `<br>${distTag(swDist(r))}` : ""}`},
     {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !swMan(r)) : ""},
     {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
     {k: "managed", l: "Gestion", sortv: r => swMan(r), f: r => swMan(r) ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
@@ -975,10 +985,12 @@ function vLogiciels(params) {
   for (const r of res.rows) {
     const k = apf(r);
     let e = pairs.get(k);
-    if (!e) { e = {app: swVal(r, "app"), pf: swVal(r, "platform"), hosts: new Set(), n: 0, um: 0, vers: new Set()}; pairs.set(k, e); }
+    if (!e) { e = {app: swVal(r, "app"), pf: swVal(r, "platform"), hosts: new Set(), n: 0, um: 0, vers: new Set(), dists: new Set()}; pairs.set(k, e); }
     e.hosts.add(swHk(r)); e.n++; if (!swMan(r)) e.um++; if (swVal(r, "version")) e.vers.add(swVal(r, "version"));
+    if (swDist(r)) e.dists.add(swDist(r));
   }
   const multiApf = pairs.size > 1;
+  const verQ = e => [q, "=" + e.version, e.dist ? "distrib:" + e.dist.replace(/\s+/g, "-") : ""].filter(Boolean).join(" ").trim();
   const apfLink = (app, pf, label, extra) => `<a href="${link("logiciels", Object.assign({q, cat, gestion, vue, app, pf}, extra || {}))}">${esc(label)}</a>`;
   let repart = "";
   if (multiApf) {
@@ -994,45 +1006,81 @@ function vLogiciels(params) {
         {k: "n", l: "Occurrences", cls: "num", f: e => fmt(e.n)},
         {k: "um", l: "Dont hors paquet", cls: "num", f: e => e.um ? `<span class="badge warn">${fmt(e.um)}</span>` : ""},
         {k: "nv", l: "Versions", f: e => e.vl.slice(0, 6).map(v => esc(v)).join(", ") + (e.nv > 6 ? ` … (${fmt(e.nv)})` : "")},
-      ], rows, {sort: "nh", dir: -1}) + `</details>`;
+      ].concat(rows.some(e => e.dists.size) ? [{k: "nd", l: "Distributions Java", sortv: e => e.dists.size, f: e => [...e.dists].sort().map(distTag).join(" ")}] : []),
+      rows, {sort: "nh", dir: -1}) + `</details>`;
+  }
+  // Java par distribution (page sans recherche) : où sont les Oracle JDK, souvent sous licence payante
+  let javaDist = "";
+  if (!q && SW.ci.distribution != null) {
+    const m = new Map();
+    for (const r of res.rows) {
+      const d = swDist(r);
+      if (!d) continue;
+      let e = m.get(d);
+      if (!e) { e = {dist: d, hosts: new Set(), n: 0, vers: new Set(), apps: new Set()}; m.set(d, e); }
+      e.hosts.add(swHk(r)); e.n++; e.apps.add(swVal(r, "app")); if (swVal(r, "version")) e.vers.add(swVal(r, "version"));
+    }
+    if (m.size) javaDist = `<h3>Java par distribution</h3>
+      <p class="hint">Oracle JDK et Oracle GraalVM peuvent relever d'une licence payante selon la version et la date du correctif.</p>` +
+      table([
+        {k: "dist", l: "Distribution", f: e => `<a href="${link("logiciels", {q: "famille:java distrib:" + e.dist.replace(/\s+/g, "-"), cat, gestion, vue: "versions"})}">${distTag(e.dist)}</a>`},
+        {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
+        {k: "n", l: "Installations", cls: "num", f: e => fmt(e.n)},
+        {k: "na", l: "Applications", cls: "num", f: e => fmt(e.na)},
+        {k: "vl", l: "Versions", f: e => e.vl.slice(0, 8).map(esc).join(", ") + (e.vl.length > 8 ? ` … (${fmt(e.vl.length)})` : "")},
+      ], [...m.values()].map(e => ({...e, nh: e.hosts.size, na: e.apps.size, vl: [...e.vers].sort(cmpVer)})), {sort: "nh", dir: -1});
   }
   let body;
   if (vue === "versions") {
     const g = new Map();
     for (const r of res.rows) {
-      const name = swVal(r, "family") || swVal(r, "name"), ver = swVal(r, "version");
-      const key = name + "\u0000" + ver;
+      const name = swVal(r, "family") || swVal(r, "name"), ver = swVal(r, "version"), dist = swDist(r);
+      const key = name + "\u0000" + dist + "\u0000" + ver;
       let e = g.get(key);
-      if (!e) { e = {name, version: ver, hosts: new Set(), n: 0, um: 0, apf: new Map()}; g.set(key, e); }
+      if (!e) { e = {name, dist, version: ver, hosts: new Set(), n: 0, um: 0, apf: new Map()}; g.set(key, e); }
       e.hosts.add(swHk(r)); e.n++; if (!swMan(r)) e.um++;
       const k = apf(r), a = e.apf.get(k) || {app: swVal(r, "app"), pf: swVal(r, "platform"), hosts: new Set()};
       a.hosts.add(swHk(r)); e.apf.set(k, a);
     }
     const rows = [...g.values()].map(e => ({...e, nh: e.hosts.size, na: e.apf.size}));
+    const anyDist = rows.some(e => e.dist);
     const cols = [
       {k: "name", l: "Composant", f: e => hl(e.name, res.terms)},
+      ...(anyDist ? [{k: "dist", l: "Distribution", f: e => e.dist ? distTag(e.dist) : ""}] : []),
       {k: "version", l: "Version", sortv: e => e.version, f: e => e.version ? verTag(e.version, e.um > 0) : ""},
-      {k: "nh", l: "Serveurs", cls: "num", f: e => `<a href="${link("logiciels", {q: (q + " =" + e.version).trim(), cat, gestion})}">${fmt(e.nh)}</a>`},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => `<a href="${link("logiciels", {q: verQ(e), cat, gestion})}">${fmt(e.nh)}</a>`},
       {k: "n", l: "Occurrences", cls: "num", f: e => fmt(e.n)},
       {k: "um", l: "Dont hors paquet", cls: "num", f: e => e.um ? `<span class="badge warn">${fmt(e.um)}</span>` : ""},
     ];
     if (multiApf) cols.push({k: "na", l: "Applications / plates-formes", f: e => [...e.apf.values()]
       .sort((x, y) => y.hosts.size - x.hosts.size || (x.app + x.pf).localeCompare(y.app + y.pf))
-      .map(a => apfLink(a.app, a.pf, `${a.app} / ${a.pf}`, {q: (q + " =" + e.version).trim(), vue: "detail"}) + ` <span class="cat">(${fmt(a.hosts.size)})</span>`).join("<br>")});
+      .map(a => apfLink(a.app, a.pf, `${a.app} / ${a.pf}`, {q: verQ(e), vue: "detail"}) + ` <span class="cat">(${fmt(a.hosts.size)})</span>`).join("<br>")});
     cols.push({k: "hl", l: "Exemples de serveurs", f: e => [...e.hosts].slice(0, 5).map(hkLink).join(", ") + (e.nh > 5 ? "…" : "")});
     body = table(cols, rows, {sort: "nh", dir: -1, empty: "Aucun composant ne correspond à cette recherche."});
+    // export : la vue affichée, une ligne par composant, distribution et version
+    const ord = rows.slice().sort((x, y) => y.nh - x.nh || x.name.localeCompare(y.name) || cmpVer(x.version, y.version));
+    SW_CSV = {name: "cmdb_logiciels_par_version.csv",
+      header: ["composant"].concat(anyDist ? ["distribution"] : [], ["version", "serveurs", "occurrences", "hors_paquet", "applications_plates_formes", "liste_serveurs"]),
+      rows: ord.map(e => [e.name].concat(anyDist ? [e.dist] : [], [e.version, e.nh, e.n, e.um,
+        [...e.apf.values()].sort((x, y) => y.hosts.size - x.hosts.size).map(a => `${a.app} / ${a.pf} (${a.hosts.size})`).join(", "),
+        [...e.hosts].map(k => hsplit(k).host).join(" ")]))};
   } else {
     body = swTable(res.rows, res.terms);
+    const cols = SW.cols.concat(["running"]);
+    SW_CSV = {name: "cmdb_logiciels.csv", header: cols,
+      rows: res.rows.map(r => cols.map(c => c === "managed" ? (swMan(r) ? "paquet" : "hors paquet") : swVal(r, c)))};
   }
   const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
   return `<h2>Logiciels${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
     <p class="lede">${q ? `${fmt(res.rows.length)} composants correspondent à « ${esc(q)} ».` : `${fmt(SW.rows.length)} composants inventoriés. Tapez un nom, une version ou un chemin dans la barre de recherche.`}
       Syntaxe : plusieurs mots se combinent (ET) ; <code>&lt;2.17.1</code>, <code>&gt;=1.0</code> ou <code>=5.4.2</code> comparent la version, à la précision donnée
       (<code>java &gt;17</code> : 18 et au-delà ; <code>=17</code> : toute 17.x) ;
-      <code>serveur:</code>, <code>app:</code>, <code>pf:</code>, <code>famille:</code>, <code>cat:</code>, <code>chemin:</code>, <code>paquet:</code> restreignent un champ.
+      <code>serveur:</code>, <code>app:</code>, <code>pf:</code>, <code>famille:</code>, <code>cat:</code>, <code>chemin:</code>, <code>paquet:</code>,
+      <code>distrib:</code> (distribution Java : <code>distrib:temurin</code>, <code>distrib:oracle-jdk</code>) restreignent un champ.
+      L'export CSV reprend la vue affichée.
       ${SW.excluded && SW.excluded.length ? `Catégories exclues du rapport : ${esc(SW.excluded.join(", "))}.` : ""}</p>
     ${hosts.length ? `<p>Serveurs correspondants : ${hosts.slice(0, 20).map(h => hkLink(h.hk)).join(", ")}</p>` : ""}
-    ${q ? repart : ""}
+    ${q ? repart : javaDist}
     <div class="toolbar">
       <select id="f-cat" aria-label="Nature">${opt("", "Toutes natures", cat)}${cats.map(c => opt(c, c, cat)).join("")}</select>
       <select id="f-gestion" aria-label="Gestion">${opt("", "Gérés ou non", gestion)}${opt("um", "Hors paquet seulement", gestion)}${opt("m", "Paquets de distribution seulement", gestion)}</select>
@@ -1081,11 +1129,59 @@ function vExposition(params) {
     ${listeningTable(rows, true)}`;
 }
 
+// Processeurs : un mot est une extension (avx512f, avx512 pour toute la famille, !avx2 pour son absence)
+// ou un morceau du modèle, du serveur, de l'application
+function cpuMatch(o, words) {
+  const fl = (o.flags || "").split(" "), txt = [o.host, o.app, o.platform, o.vendor, o.model_name, o.isa_level, o.notable].join(" ").toLowerCase();
+  return words.every(w => {
+    const neg = w.startsWith("!"), x = neg ? w.slice(1) : w;
+    if (!x) return true;
+    const has = fl.some(f => f === x || (f.startsWith(x) && /^avx512|^amx|^sse|^sha/.test(x))) || txt.includes(x);
+    return neg ? !has : has;
+  });
+}
+function cpuIdent(o) {
+  return [o.family != null && o.family !== "" ? "famille " + o.family : "", o.model ? "modèle " + o.model : "", o.stepping ? "stepping " + o.stepping : ""].filter(Boolean).join(", ");
+}
+function cpuView(f, hcol) {
+  const words = f.split(/\s+/).filter(Boolean);
+  const all = rowsOf(D.cpus), rows = words.length ? all.filter(o => cpuMatch(o, words)) : all;
+  const vul = {};
+  rowsOf(D.cpu_vulns).forEach(v => { if (/^vulnerable/i.test(v.status || "")) (vul[hkey(v.app, v.platform, v.host)] = vul[hkey(v.app, v.platform, v.host)] || []).push(v.name); });
+  const nAvx = all.filter(o => (o.flags || "").split(" ").includes("avx512f")).length;
+  // synthèse par modèle de processeur
+  const g = new Map();
+  for (const o of rows) {
+    const k = [o.vendor, o.model_name, o.family, o.model, o.stepping].join("\u0000");
+    let e = g.get(k);
+    if (!e) { e = {o, hosts: new Set(), micro: new Set()}; g.set(k, e); }
+    e.hosts.add(hkey(o.app, o.platform, o.host)); if (o.microcode) e.micro.add(o.microcode);
+  }
+  const models = [...g.values()].map(e => ({...e.o, nh: e.hosts.size, micro: [...e.micro].sort().join(", "), hl: [...e.hosts]}));
+  return `<p class="lede">${fmt(all.length)} serveurs décrits, dont ${fmt(nAvx)} avec AVX-512 (avx512f).
+      ${words.length ? `${fmt(rows.length)} correspondent à « ${esc(f)} ».` : ""}
+      Tapez une extension (<code>avx512f</code>, <code>avx512</code> pour toute la famille, <code>sgx</code>, <code>!avx2</code> pour son absence) ou un modèle.
+      Sur une VM, ce sont les extensions que l'hyperviseur expose (un cluster VMware en mode EVC peut masquer AVX-512).
+      Windows ne donne qu'une liste partielle (sse3 à avx512f) ; AIX donne le type et le mode du processeur POWER.</p>
+    <h3>Par modèle</h3>` + table([
+      {k: "model_name", l: "Processeur", f: o => esc(o.model_name)}, {k: "vendor", l: "Fabricant"},
+      {k: "ident", l: "Identifiant", sortv: o => cpuIdent(o), f: o => esc(cpuIdent(o))},
+      {k: "isa_level", l: "Niveau"}, {k: "notable", l: "Extensions notables", cls: "wrap"},
+      {k: "nh", l: "Serveurs", cls: "num", f: o => fmt(o.nh)}, {k: "micro", l: "Microcodes", cls: "mono"},
+    ], models, {sort: "nh", dir: -1, empty: "Aucun processeur ne correspond."}) +
+    `<h3>Par serveur</h3>` + table([hcol,
+      {k: "model_name", l: "Processeur"}, {k: "ident", l: "Identifiant", sortv: o => cpuIdent(o), f: o => esc(cpuIdent(o))},
+      {k: "microcode", l: "Microcode", cls: "mono"}, {k: "isa_level", l: "Niveau"},
+      {k: "notable", l: "Extensions notables", cls: "wrap"},
+      {k: "vul", l: "Failles CPU non corrigées", sortv: o => (vul[hkey(o.app, o.platform, o.host)] || []).length,
+       f: o => (vul[hkey(o.app, o.platform, o.host)] || []).map(n => `<span class="badge warn">${esc(n)}</span>`).join(" ")},
+    ], rows, {sort: "host", empty: "Aucun processeur ne correspond."});
+}
 function vMateriel(params) {
   const tab = params.get("onglet") || "interfaces", f = (params.get("q") || "").toLowerCase();
   const filt = rs => f ? rs.filter(o => Object.values(o).join(" ").toLowerCase().includes(f)) : rs;
   const hcol = {k: "host", l: "Serveur", f: o => hostCell(o)};
-  const tabs = [["interfaces", "Interfaces réseau"], ["fs", "Systèmes de fichiers"], ["disques", "Disques"], ["pci", "PCI"], ["fc", "Fibre Channel"], ["memoire", "Mémoire"], ["serveurs", "Serveurs"]];
+  const tabs = [["interfaces", "Interfaces réseau"], ["fs", "Systèmes de fichiers"], ["disques", "Disques"], ["pci", "PCI"], ["fc", "Fibre Channel"], ["memoire", "Mémoire"], ["cpu", "Processeurs"], ["serveurs", "Serveurs"]];
   let body = "";
   if (tab === "interfaces") body = table([hcol, {k: "ifname", l: "Interface"}, {k: "kind", l: "Type"}, {k: "ipv4", l: "IPv4"},
     {k: "mac", l: "MAC", cls: "mono"}, {k: "permanent_mac", l: "MAC d'usine", cls: "mono"}, {k: "state", l: "État"},
@@ -1106,6 +1202,7 @@ function vMateriel(params) {
   else if (tab === "memoire") body = table([hcol, {k: "locator", l: "Emplacement"}, {k: "size", l: "Taille"}, {k: "type", l: "Type"},
     {k: "speed", l: "Vitesse"}, {k: "manufacturer", l: "Fabricant"}, {k: "part_number", l: "Référence"}, {k: "serial", l: "Série", cls: "mono"}],
     filt(rowsOf(D.memory)), {empty: "Le détail des barrettes exige une collecte en root (dmidecode)."});
+  else if (tab === "cpu") body = cpuView(f, hcol);
   else body = table([hcol, {k: "sys_vendor", l: "Constructeur"}, {k: "product_name", l: "Modèle"}, {k: "serial", l: "Série", cls: "mono"},
     {k: "chassis", l: "Châssis"}, {k: "bios_version", l: "BIOS", f: h => esc([h.bios_version, h.bios_date].filter(Boolean).join(" du "))},
     {k: "cpu_model", l: "Processeur"}, {k: "cpu_threads", l: "Threads", cls: "num"}, {k: "mem_total_mb", l: "Mémoire", cls: "num", f: h => h.mem_total_mb ? fmt(Math.round(h.mem_total_mb / 1024)) + " Go" : ""},
@@ -1113,7 +1210,7 @@ function vMateriel(params) {
     filt(D.H), {sort: "host"});
   return `<h2>Matériel</h2>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="${link("materiel", {onglet: k})}"${k === tab ? ' aria-current="page"' : ""}>${l}</a>`).join("")}</div>
-    <div class="toolbar"><input type="text" id="hwfilter" value="${esc(f)}" placeholder="Filtrer (serveur, MAC, modèle, série…)" aria-label="Filtrer"></div>
+    <div class="toolbar"><input type="text" id="hwfilter" value="${esc(f)}" placeholder="${tab === "cpu" ? "Extensions ou modèle : avx512f, !avx2, xeon gold…" : "Filtrer (serveur, MAC, modèle, série…)"}" aria-label="Filtrer"></div>
     ${body}`;
 }
 
@@ -1619,11 +1716,7 @@ function bindView(r, params) {
   if (r === "logiciels") {
     const upd = () => go("logiciels", {q: params.get("q") || "", cat: $("#f-cat").value, gestion: $("#f-gestion").value, vue: $("#f-vue").value});
     ["#f-cat", "#f-gestion", "#f-vue"].forEach(s => $(s).onchange = upd);
-    $("#swcsv").onclick = () => {
-      const res = searchSoftware(params.get("q") || "", {cat: params.get("cat") || "", managed: params.get("gestion") || ""});
-      const cols = SW.cols.concat(["running"]);
-      csvDownload("cmdb_logiciels.csv", cols, res.rows.map(r => cols.map(c => c === "managed" ? (swMan(r) ? "distribution" : "hors paquet") : swVal(r, c))));
-    };
+    $("#swcsv").onclick = () => { if (SW_CSV) csvDownload(SW_CSV.name, SW_CSV.header, SW_CSV.rows); };
   }
   if (r === "cles" && $("#c-etat")) {
     const upd = () => { const p = Object.fromEntries(params); Object.assign(p, {etat: $("#c-etat").value, du: $("#c-du").value, au: $("#c-au").value, ca: $("#c-ca").checked ? "1" : ""}); go("cles", p); };
