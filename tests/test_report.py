@@ -329,6 +329,10 @@ class DistributionJavaRapport(unittest.TestCase):
         self.assertIn("Par version majeure", self.pages["socle"])
         self.assertIn("RHEL 8.9", self.pages["socle?famille=systemes"])
         self.assertIn("Preuve : paquet jdk-17", self.pages["logiciels?q=distrib:oracle-jdk"])
+        self.assertIn("Licence probable des JDK Oracle", p)
+        self.assertIn("gratuit (NFTC)", p)
+        self.assertIn("licence%3Agratuit", p)
+        self.assertIn("gratuit (NFTC)", self.pages["logiciels?q=distrib:oracle-jdk"])
         self.assertIn("1 composants correspondent", self.pages[self.R[2]])
         self.assertIn("1 composants correspondent", self.pages[self.R[1]])
 

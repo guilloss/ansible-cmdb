@@ -36,7 +36,7 @@ def table(db, sql, params=()):
     return {"cols": [c[0] for c in cur.description], "rows": [list(r) for r in cur]}
 
 
-SW_COMP = ["category", "ecosystem", "family", "name", "version", "evidence", "managed", "owner_pkg", "purl", "cpe", "distribution", "distribution_evidence"]
+SW_COMP = ["category", "ecosystem", "family", "name", "version", "evidence", "managed", "owner_pkg", "purl", "cpe", "distribution", "distribution_evidence", "java_licence"]
 
 
 def software_tables(db, exclude_categories=()):
@@ -83,7 +83,7 @@ def software_tables(db, exclude_categories=()):
             locs.extend((si(head) if sep else -1, si(tail)))
         rows.extend((si(r[0]), si(r[1]), si(r[2]), c, l))
     return {"cols": ["app", "platform", "host", "category", "ecosystem", "family", "name", "version", "location", "evidence",
-                     "managed", "owner_pkg", "purl", "cpe", "distribution", "distribution_evidence"],
+                     "managed", "owner_pkg", "purl", "cpe", "distribution", "distribution_evidence", "java_licence"],
             "comp_cols": SW_COMP, "strings": strings, "comps": comps, "locs": locs, "rows": rows,
             "running": run_yes, "stopped": run_no,
             "excluded": list(exclude_categories)}

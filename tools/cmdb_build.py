@@ -420,6 +420,59 @@ def cpu_summary(flags):
     return level, ", ".join(notable)
 
 
+# Licence probable d'un Oracle JDK, d'après la version exacte (mise à jour) :
+#   6 et 7 : gratuites jusqu'à la dernière mise à jour publique (6u45, 7u80), ensuite clients du support ;
+#   8 : BCL gratuite jusqu'à 8u202, OTN (payante en production) à partir de 8u211 ;
+#   11 à 16 : OTN dès la première version ;
+#   LTS 17, 21, 25... : NFTC gratuite jusqu'à un an après la LTS suivante, soit jusqu'à la mise à jour .12
+#   (17.0.12 en juillet 2024, 21.0.12 en juillet 2026), OTN à partir de .13 ; 25 : selon le calendrier prévu ;
+#   versions non LTS à partir de 18 : NFTC pendant leur vie.
+# Indicatif : à faire valider par le gestionnaire des licences.
+ORACLE_PRODUCT_PATH = re.compile(r"/(oracle_common|wlserver[^/]*|[Mm]iddleware|fmw[^/]*|product/\d[\d.]*/[^/]+|grid)(/|$)")
+
+
+def oracle_jdk_version(version):
+    """(majeure, mise à jour) d'une version Java : 1.8.0_401, 1.8.0.401.b08-1, 17.0.13+10, 17.0.10-ga, 21."""
+    v = re.sub(r"^\d+:", "", str(version or ""))
+    m = re.match(r"^1\.(\d+)\.\d+[_.](\d+)", v)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.match(r"^1\.(\d+)", v)
+    if m:
+        return int(m.group(1)), None
+    m = re.match(r"^(\d+)(?:\.(\d+)(?:\.(\d+))?)?", v)
+    if not m:
+        return None, None
+    if m.group(3):
+        return int(m.group(1)), int(m.group(3))
+    return int(m.group(1)), 0 if m.group(2) is None else None   # « 21 » ou « 21+35 » : version initiale
+
+
+def oracle_jdk_licence(version):
+    """Licence probable d'un Oracle JDK : « gratuit (BCL) », « gratuit (NFTC) », « payant en production (OTN) »,
+    « support Oracle (mise à jour non publique) » ou « à vérifier »."""
+    major, upd = oracle_jdk_version(version)
+    if major is None:
+        return "à vérifier"
+    if major in (6, 7):
+        if upd is None:
+            return "à vérifier"
+        return "gratuit (BCL)" if upd <= (45 if major == 6 else 80) else "support Oracle (mise à jour non publique)"
+    if major == 8:
+        if upd is None:
+            return "à vérifier"
+        return "gratuit (BCL)" if upd <= 202 else "payant en production (OTN)"
+    if 9 <= major <= 10:
+        return "gratuit (BCL)"
+    if 11 <= major <= 16:
+        return "payant en production (OTN)"
+    if (major - 17) % 4 == 0:   # LTS : 17, 21, 25...
+        if upd is None:
+            return "à vérifier"
+        return "gratuit (NFTC)" if upd <= 12 else "payant en production (OTN)"
+    return "gratuit (NFTC)"
+
+
 def purl(ptype, name, version, namespace=None, qualifiers=None):
     if not name:
         return None
@@ -719,7 +772,7 @@ CREATE TABLE packages (host TEXT, manager TEXT, name TEXT, epoch TEXT, version T
   vendor TEXT, source TEXT, source_version TEXT, installtime TEXT, summary TEXT, purl TEXT);
 CREATE TABLE software (host TEXT, category TEXT, ecosystem TEXT, family TEXT, name TEXT, version TEXT,
   location TEXT, evidence TEXT, owner_pkg TEXT, managed INTEGER, purl TEXT, cpe TEXT, extra TEXT, running INTEGER, distribution TEXT,
-  distribution_evidence TEXT);
+  distribution_evidence TEXT, java_licence TEXT);
 CREATE TABLE java_markers (host TEXT, archive TEXT, marker TEXT, shaded INTEGER);
 CREATE TABLE processes (host TEXT, pid INTEGER, ppid INTEGER, user TEXT, comm TEXT, exe TEXT, exe_owner_pkg TEXT,
   cmdline TEXT, start TEXT, rss_mb REAL, in_container INTEGER, container_id TEXT, systemd_unit TEXT,
@@ -936,6 +989,10 @@ class Builder(cmdb_extras.ExtrasMixin):
         if not sw:
             return
         vendors = {(p[2], p[4]): p[9] for p in self.rows.get("packages") or [] if p[9]}
+        homes = {}
+        for o in self.rows.get("oracle_homes") or []:
+            if o[3]:
+                homes.setdefault(o[2], []).append((o[3].rstrip("/"), o[4] or "produit Oracle"))
         out = []
         for r in sw:
             if r[5] == "java" and r[3] in ("runtime", "os-package"):
@@ -947,9 +1004,21 @@ class Builder(cmdb_extras.ExtrasMixin):
                 dist, proof = java_distribution(extra, owner, vendors.get((r[2], owner)), self.os_ids.get(r[2]), r[8], r[6])
                 if dist != "Oracle JDK" and r[13] and ":oracle:jdk:" in r[13]:
                     r = r[:13] + (r[13].replace(":oracle:jdk:", ":oracle:openjdk:"),) + r[14:]   # CPE : pas de preuve du JDK commercial
-                out.append(tuple(r[:16]) + (dist, proof))
+                lic = None
+                if dist in ("Oracle JDK", "Oracle (JDK ou OpenJDK ?)"):
+                    loc = (r[8] or "").rstrip("/")
+                    home = next(((h, prod) for h, prod in homes.get(r[2], []) if loc == h or loc.startswith(h + "/")), None)
+                    if home:
+                        lic = "embarqué : %s (%s)" % (home[1], home[0])
+                    elif ORACLE_PRODUCT_PATH.search(loc):
+                        lic = "embarqué dans un produit Oracle ? (chemin)"
+                    elif dist == "Oracle JDK":
+                        lic = oracle_jdk_licence(extra.get("java.version") or extra.get("java_version") or r[7])
+                    else:
+                        lic = "à vérifier (Oracle JDK non prouvé)"
+                out.append(tuple(r[:16]) + (dist, proof, lic))
                 continue
-            out.append(tuple(r[:16]) + (None, None))
+            out.append(tuple(r[:16]) + (None, None, None))
         self.rows["software"] = out
 
     def cpus(self, host, doc):

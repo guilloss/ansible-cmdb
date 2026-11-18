@@ -615,7 +615,7 @@ function swVal(r, k) {
 const FIELDS = {serveur: "host", host: "host", app: "app", appli: "app", application: "app", pf: "platform",
   plateforme: "platform", platform: "platform", famille: "family", fam: "family", cat: "category", categorie: "category",
   version: "version", v: "version", chemin: "location", eco: "ecosystem", purl: "purl", paquet: "owner_pkg",
-  distrib: "distribution", distribution: "distribution"};
+  distrib: "distribution", distribution: "distribution", licence: "java_licence"};
 // distrib:oracle-jdk, distrib:oraclejdk ou distrib:"oracle jdk" : espaces, tirets et guillemets ignorés
 const squash = v => String(v || "").toLowerCase().replace(/["'\s_-]+/g, "");
 // Une comparaison s'écrit collée (>17), espacée (> 17) ou accrochée au nom (java>17)
@@ -963,11 +963,14 @@ function vServeur(key, params) {
 const swDist = r => SW.ci.distribution != null ? swVal(r, "distribution") : "";
 const distTag = (d, proof) => `<span class="badge${/^Oracle (JDK|GraalVM)$/.test(d) ? " warn" : (/^Inconnue|\?/.test(d) ? " muted" : "")}" title="${esc(proof ? "Preuve : " + proof : "Distribution Java")}">${esc(d)}</span>`;
 const swProof = r => SW.ci.distribution_evidence != null ? swVal(r, "distribution_evidence") : "";
+const swLic = r => SW.ci.java_licence != null ? swVal(r, "java_licence") : "";
+const LIC_HELP = "Licence probable d'un JDK Oracle, d'après la version exacte : indicatif, à faire valider par le gestionnaire des licences";
+const licTag = l => !l ? "" : `<span class="badge${/^payant|^support/.test(l) ? " risk" : (/^gratuit/.test(l) ? " ok" : " muted")}" title="${esc(LIC_HELP)}">${esc(l)}</span>`;
 function swTable(rs, terms) {
   const s = swVal;
   return table([
     {k: "host", l: "Serveur", sortv: r => s(r, "host"), f: r => hostLabel(s(r, "app"), s(r, "platform"), s(r, "host"), terms)},
-    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}${swDist(r) ? `<br>${distTag(swDist(r), swProof(r))}` : ""}`},
+    {k: "name", l: "Composant", sortv: r => s(r, "family") || s(r, "name"), f: r => `${hl(s(r, "name"), terms)}${s(r, "family") && s(r, "family") !== s(r, "name") ? `<br><span class="cat">${hl(s(r, "family"), terms)}</span>` : ""}${swDist(r) ? `<br>${distTag(swDist(r), swProof(r))}` : ""}${swLic(r) ? " " + licTag(swLic(r)) : ""}`},
     {k: "version", l: "Version", sortv: r => s(r, "version"), f: r => s(r, "version") ? verTag(s(r, "version"), !swMan(r)) : ""},
     {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
     {k: "managed", l: "Gestion", sortv: r => swMan(r), f: r => swMan(r) ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
@@ -1056,7 +1059,8 @@ function vLogiciels(params) {
       Syntaxe : plusieurs mots se combinent (ET) ; <code>&lt;2.17.1</code>, <code>&gt;=1.0</code> ou <code>=5.4.2</code> comparent la version, à la précision donnée
       (<code>java &gt;17</code> : 18 et au-delà ; <code>=17</code> : toute 17.x) ;
       <code>serveur:</code>, <code>app:</code>, <code>pf:</code>, <code>famille:</code>, <code>cat:</code>, <code>chemin:</code>, <code>paquet:</code>,
-      <code>distrib:</code> (distribution Java : <code>distrib:temurin</code>, <code>distrib:oracle-jdk</code>) restreignent un champ.
+      <code>distrib:</code> (distribution Java : <code>distrib:temurin</code>, <code>distrib:oracle-jdk</code>), <code>licence:</code>
+      (licence probable d'un JDK Oracle : <code>licence:payant</code>, <code>licence:embarqué</code>) restreignent un champ.
       L'export CSV reprend la vue affichée.
       ${SW.excluded && SW.excluded.length ? `Catégories exclues du rapport : ${esc(SW.excluded.join(", "))}.` : ""}</p>
     ${hosts.length ? `<p>Serveurs correspondants : ${hosts.slice(0, 20).map(h => hkLink(h.hk)).join(", ")}</p>` : ""}
@@ -1232,7 +1236,19 @@ function vSocle(params) {
       {k: "pr", l: "Preuves relevées", cls: "wrap", f: e => [...e.proofs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p, n]) => `${esc(p)} <span class="cat">(${fmt(n)})</span>`).join("<br>")},
       {k: "na", l: "Applications / plates-formes", f: apps},
     ], group(r => swDist(r) || "Inconnue"), {sort: "nh", dir: -1});
-  return head + tabs + `<h3>Par version majeure</h3>` + byMajor + byDist;
+  let byLic = "";
+  if (rows.some(r => swLic(r))) byLic = `<h3>Licence probable des JDK Oracle</h3>
+    <p class="hint">Calculée d'après la version exacte : 8 gratuit (BCL) jusqu'à 8u202 et payant en production (OTN) à partir de 8u211 ;
+      11 à 16 payants en production ; 17, 21 et 25 gratuits (NFTC) jusqu'à la mise à jour .12 puis payants à partir de .13 (17.0.13 en octobre 2024,
+      21.0.13 en octobre 2026, 25 selon le calendrier prévu) ; versions non LTS gratuites. Un JDK situé dans un ORACLE_HOME collecté est
+      « embarqué » : couvert par la licence du produit Oracle tant qu'il ne sert qu'à lui. Indicatif, à faire valider par le gestionnaire des licences.</p>` +
+    table([
+      {k: "k", l: "Licence probable", f: e => `<a href="${link("logiciels", {q: "famille:java licence:" + (e.k.startsWith("à vérifier") ? "vérifier" : e.k.split(/[\s:(]/)[0]), vue: "versions"})}">${licTag(e.k)}</a>`},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)}, {k: "n", l: "Installations", cls: "num", f: e => fmt(e.n)},
+      {k: "vl", l: "Versions", f: e => [...e.vers].sort(cmpVer).slice(0, 8).map(esc).join(", ") + (e.vers.size > 8 ? ` … (${fmt(e.vers.size)})` : "")},
+      {k: "na", l: "Applications / plates-formes", f: apps},
+    ], group(r => swLic(r) || "\u0000").filter(e => e.k !== "\u0000"), {sort: "nh", dir: -1});
+  return head + tabs + `<h3>Par version majeure</h3>` + byMajor + byDist + byLic;
 }
 
 function vMateriel(params) {

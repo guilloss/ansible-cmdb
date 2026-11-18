@@ -216,6 +216,22 @@ class DistributionJava(unittest.TestCase):
                          "release : IMPLEMENTOR=Oracle Corporation, BUILD_TYPE=commercial")
         self.assertEqual(B.java_distribution({}, "jdk-17", "Oracle Corporation")[1], "paquet jdk-17 (éditeur Oracle Corporation)")
 
+    def test_licence(self):
+        import cmdb_build as B
+        L = B.oracle_jdk_licence
+        self.assertEqual(L("1.8.0_202"), "gratuit (BCL)")
+        self.assertEqual(L("1.8.0_211"), "payant en production (OTN)")
+        self.assertEqual(L("2000:1.8.0_401-fcs"), "payant en production (OTN)")
+        self.assertEqual(L("11.0.22"), "payant en production (OTN)")
+        self.assertEqual(L("17.0.12"), "gratuit (NFTC)")
+        self.assertEqual(L("17.0.13+10"), "payant en production (OTN)")
+        self.assertEqual(L("21.0.12"), "gratuit (NFTC)")
+        self.assertEqual(L("21.0.13"), "payant en production (OTN)")
+        self.assertEqual(L("22.0.1"), "gratuit (NFTC)")
+        self.assertEqual(L("1.7.0_80"), "gratuit (BCL)")
+        self.assertEqual(L("1.7.0_351"), "support Oracle (mise à jour non publique)")
+        self.assertEqual(L("x"), "à vérifier")
+
     def test_base(self):
         d = tempfile.mkdtemp(prefix="cmdbj")
         self.addCleanup(shutil.rmtree, d, True)
@@ -224,17 +240,26 @@ class DistributionJava(unittest.TestCase):
             {"name": "java-17-openjdk-headless", "epoch": "1", "version": "17.0.9.0.9", "release": "2.el8", "arch": "x86_64"},
             {"name": "jdk-17", "version": "17.0.10", "release": "ga", "arch": "x86_64", "vendor": "Oracle Corporation"},
             {"name": "bash", "version": "4.4", "release": "1.el8", "arch": "x86_64"}]
-        a["filesystem"]["jdk_homes"] = [{"path": "/opt/temurin-21", "release": {"JAVA_VERSION": "21.0.2", "IMPLEMENTOR": "Eclipse Adoptium"}}]
-        fleet.write_store(os.path.join(d, "store"), [a])
+        a["filesystem"]["jdk_homes"] = [{"path": "/opt/temurin-21", "release": {"JAVA_VERSION": "21.0.2", "IMPLEMENTOR": "Eclipse Adoptium"}},
+                                        {"path": "/opt/jdk1.8.0_401", "release": {"JAVA_VERSION": "1.8.0_401", "IMPLEMENTOR": "Oracle Corporation", "BUILD_TYPE": "commercial"}}]
+        o = fleet.oracle_host()
+        o["filesystem"] = {"jdk_homes": [{"path": fleet.ORA_HOME + "/jdk", "release": {"JAVA_VERSION": "1.8.0_201", "IMPLEMENTOR": "Oracle Corporation", "BUILD_TYPE": "commercial"}}]}
+        fleet.write_store(os.path.join(d, "store"), [a, o])
         subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(d, "store"), "--out", os.path.join(d, "b")],
                               stdout=subprocess.DEVNULL)
         db = sqlite3.connect(os.path.join(d, "b", "cmdb.sqlite"))
-        got = dict(db.execute("SELECT name, distribution FROM software WHERE name IN ('java-17-openjdk-headless', 'jdk-17', 'jdk-home', 'bash', 'php')"))
+        got = dict(db.execute("SELECT name, distribution FROM software WHERE name IN ('java-17-openjdk-headless', 'jdk-17', 'bash', 'php') "
+                              "OR location = '/opt/temurin-21'"))
         proof = db.execute("SELECT distribution_evidence FROM software WHERE name = 'jdk-17'").fetchone()[0]
+        lic = dict(db.execute("SELECT CASE WHEN category = 'os-package' THEN name ELSE location END, java_licence FROM software WHERE family = 'java'"))
         db.close()
         self.assertEqual(got, {"java-17-openjdk-headless": "OpenJDK Red Hat", "jdk-17": "Oracle JDK", "jdk-home": "Eclipse Temurin",
                                "bash": None, "php": None})
         self.assertEqual(proof, "paquet jdk-17 (éditeur Oracle Corporation)")
+        self.assertEqual(lic["jdk-17"], "gratuit (NFTC)")                    # 17.0.10
+        self.assertEqual(lic["/opt/jdk1.8.0_401"], "payant en production (OTN)")
+        self.assertEqual(lic[fleet.ORA_HOME + "/jdk"], "embarqué : database (%s)" % fleet.ORA_HOME)
+        self.assertIsNone(lic["/opt/temurin-21"])
 
 
 class Processeurs(unittest.TestCase):
