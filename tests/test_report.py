@@ -247,5 +247,36 @@ class Rapport(unittest.TestCase):
         self.assertIn("www.key", self.pages[HOST + "?onglet=cles"])
 
 
+class RechercheVersion(unittest.TestCase):
+    """Comparaisons de version de la recherche des logiciels : écriture libre, précision de la référence."""
+    Q = {"java >17": ["21.0.1"], "java > 17": ["21.0.1"], "java>17": ["21.0.1"], "java >=17": ["17.0.9", "21.0.1"],
+         "java =17": ["17.0.9"], "java <=17": ["1.8.0", "17.0.9"], "java <17": ["1.8.0"], "java >17.0.8": ["17.0.9", "21.0.1"]}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = tempfile.mkdtemp(prefix="cmdbv")
+        store, out = os.path.join(cls.d, "store"), os.path.join(cls.d, "build")
+        a = fleet.app_host()
+        a["packages"]["managers"]["rpm"] = [
+            {"name": "java-%s-openjdk-headless" % n, "epoch": "1", "version": v, "release": "2.el8", "arch": "x86_64"}
+            for n, v in (("17", "17.0.9.0.9"), ("21", "21.0.1.0.12"), ("1.8.0", "1.8.0.392.b08"))]
+        fleet.write_store(store, [a])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", store, "--out", out], stdout=subprocess.DEVNULL)
+        res = subprocess.check_output(["node", os.path.join(ROOT, "tests", "report_harness.js"), os.path.join(out, "cmdb_rapport.html")]
+                                      + ["logiciels?q=" + quote(q, safe="") for q in cls.Q])
+        cls.pages = json.loads(res.decode("utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, ignore_errors=True)
+
+    def test_comparaisons(self):
+        for q, want in self.Q.items():
+            p = self.pages["logiciels?q=" + quote(q, safe="")]
+            self.assertIn("%d composants correspondent" % len(want), p, q)
+            for v in ("1.8.0", "17.0.9", "21.0.1"):
+                (self.assertIn if v in want else self.assertNotIn)(v + ".", p.split("<table")[-1], q)
+
+
 if __name__ == "__main__":
     unittest.main()

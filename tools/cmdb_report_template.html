@@ -378,6 +378,15 @@ function cmpVer(a, b) {
   }
   return 0;
 }
+// Comparaison à la précision de la référence : >17 veut dire 18 et au-delà (17.0.9 n'est pas « > 17 »),
+// =17 toute 17.x, <=2.17 jusqu'à 2.17.x inclus. L'epoch (1:) de la version installée est ignorée.
+function cmpVerAt(v, ref) {
+  const sep = /[.\-_+:~ ]/;
+  let x = String(v);
+  if (!ref.includes(":")) x = x.replace(/^\d+:/, "");
+  const n = String(ref).split(sep).length;
+  return cmpVer(x.split(sep).slice(0, n).join("."), ref);
+}
 function verTag(v, unmanaged) {
   return unmanaged
     ? '<span class="v um" title="Installation hors paquet de la distribution">' + esc(v) + '</span>'
@@ -603,11 +612,15 @@ function swVal(r, k) {
 const FIELDS = {serveur: "host", host: "host", app: "app", appli: "app", application: "app", pf: "platform",
   plateforme: "platform", platform: "platform", famille: "family", fam: "family", cat: "category", categorie: "category",
   version: "version", v: "version", chemin: "location", eco: "ecosystem", purl: "purl", paquet: "owner_pkg"};
+// Une comparaison s'écrit collée (>17), espacée (> 17) ou accrochée au nom (java>17)
 function parseQuery(q) {
   const out = {terms: [], fields: [], vers: []};
-  for (const t of (q || "").trim().split(/\s+/).filter(Boolean)) {
+  const toks = (q || "").trim().replace(/(<=|>=|<|>|=)\s+(?=\S)/g, "$1").split(/\s+/).filter(Boolean);
+  for (const t of toks) {
     let m = t.match(/^(<=|>=|<|>|=)(.+)$/);
     if (m) { out.vers.push({op: m[1], v: m[2]}); continue; }
+    m = t.match(/^([^<>=:]+?)(<=|>=|<|>|=)(\d.*)$/);
+    if (m) { out.terms.push(m[1].toLowerCase()); out.vers.push({op: m[2], v: m[3]}); continue; }
     m = t.match(/^([a-zé]+):(.+)$/i);
     if (m && FIELDS[m[1].toLowerCase()]) { out.fields.push({k: FIELDS[m[1].toLowerCase()], v: m[2].toLowerCase()}); continue; }
     out.terms.push(t.toLowerCase());
@@ -647,7 +660,7 @@ function searchSoftware(q, filt) {
       const v = swVal(r, "version");
       if (!v) continue;
       for (const c of P.vers) {
-        const d = cmpVer(v, c.v);
+        const d = cmpVerAt(v, c.v);
         if (!((c.op === "<" && d < 0) || (c.op === "<=" && d <= 0) || (c.op === ">" && d > 0) || (c.op === ">=" && d >= 0) || (c.op === "=" && d === 0))) { ok = false; break; }
       }
       if (!ok) continue;
@@ -979,7 +992,8 @@ function vLogiciels(params) {
   const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
   return `<h2>Logiciels${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
     <p class="lede">${q ? `${fmt(res.rows.length)} composants correspondent à « ${esc(q)} ».` : `${fmt(SW.rows.length)} composants inventoriés. Tapez un nom, une version ou un chemin dans la barre de recherche.`}
-      Syntaxe : plusieurs mots se combinent (ET) ; <code>&lt;2.17.1</code>, <code>&gt;=1.0</code> ou <code>=5.4.2</code> comparent la version ;
+      Syntaxe : plusieurs mots se combinent (ET) ; <code>&lt;2.17.1</code>, <code>&gt;=1.0</code> ou <code>=5.4.2</code> comparent la version, à la précision donnée
+      (<code>java &gt;17</code> : 18 et au-delà ; <code>=17</code> : toute 17.x) ;
       <code>serveur:</code>, <code>app:</code>, <code>pf:</code>, <code>famille:</code>, <code>cat:</code>, <code>chemin:</code>, <code>paquet:</code> restreignent un champ.
       ${SW.excluded && SW.excluded.length ? `Catégories exclues du rapport : ${esc(SW.excluded.join(", "))}.` : ""}</p>
     ${hosts.length ? `<p>Serveurs correspondants : ${hosts.slice(0, 20).map(h => hkLink(h.hk)).join(", ")}</p>` : ""}
