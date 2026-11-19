@@ -40,6 +40,7 @@ import cmdb_hardening  # noqa: E402
 import cmdb_dossier  # noqa: E402
 import cmdb_maps  # noqa: E402
 import cmdb_cve  # noqa: E402
+import cmdb_updates  # noqa: E402
 
 BUILD_VERSION = "1.2.0"
 
@@ -836,6 +837,7 @@ CREATE VIEW v_applications AS
   FROM hosts GROUP BY app, platform ORDER BY app, platform;
 """
 SCHEMA += cmdb_extras.SCHEMA_HOST
+SCHEMA += cmdb_updates.SCHEMA_HOST
 # Toutes les tables de données portent l'application et la plate-forme en tête
 SCHEMA = re.sub(r"CREATE TABLE (\w+) \(host TEXT", r"CREATE TABLE \1 (app TEXT, platform TEXT, host TEXT", SCHEMA)
 SCHEMA += """
@@ -843,6 +845,7 @@ CREATE TABLE runs (run_id TEXT, app TEXT, platform TEXT, host TEXT, status TEXT,
   file TEXT, detail TEXT, manifest TEXT);
 """
 SCHEMA += cmdb_extras.SCHEMA_GLOBAL
+SCHEMA += cmdb_updates.SCHEMA_GLOBAL
 SCHEMA += """
 CREATE TABLE eol_reference (product TEXT, cycle TEXT, eol TEXT, extended TEXT);
 """
@@ -901,7 +904,7 @@ def parse_lssrc(text):
     return units
 
 
-class Builder(cmdb_extras.ExtrasMixin):
+class Builder(cmdb_extras.ExtrasMixin, cmdb_updates.UpdatesMixin):
 
     def __init__(self, db, java_db=None):
         self.db = db
@@ -1202,6 +1205,7 @@ class Builder(cmdb_extras.ExtrasMixin):
 
         self.fp_seen = set()
         self.packages(host, doc, os_id, os_ver)
+        self.host_updates(host, doc)
         self.processes(host, doc)
         self.network(host, doc)
         self.services(host, doc)
@@ -2046,6 +2050,8 @@ def main():
                     help="CVE sans correctif à garder : toutes, hautes et critiques seulement (défaut), aucune")
     ap.add_argument("--no-raw-documents", action="store_true", help="Ne pas stocker les documents JSON bruts dans SQLite")
     ap.add_argument("--no-report", action="store_true", help="Ne pas générer le rapport HTML")
+    ap.add_argument("--update-alert-days", type=int, default=cmdb_updates.UPDATE_ALERT_DAYS,
+                    help="Alerte quand un serveur n'a reçu aucune mise à jour depuis ce nombre de jours, ou que son cache est plus ancien (défaut : %(default)s)")
     ap.add_argument("--no-history", action="store_true", help="Ne pas comparer aux collectes précédentes")
     ap.add_argument("--no-dossiers", action="store_true", help="Ne pas produire les dossiers d'application")
     ap.add_argument("--dossier-mention", default=cmdb_dossier.DEFAULT_MENTION,
@@ -2145,6 +2151,9 @@ def main():
                           important=PRODUCT_FAMILIES | frozenset(MATRIX_FAMILIES))
     nchanges = cmdb_extras.build_changes(db, Builder, SCHEMA, store.previous_docs(), store.metas())
     vstats = cmdb_cve.build_vulnerabilities(db, a.trivy_db, a.cve_unfixed) if a.trivy_db else None
+    cmdb_updates.build_fleet_gaps(db)
+    cmdb_updates.build_cve_fixes(db)
+    cmdb_updates.build_update_status(db, alert_days=a.update_alert_days)
     db.commit()
     db.close()
     os.replace(tmp, dbpath)

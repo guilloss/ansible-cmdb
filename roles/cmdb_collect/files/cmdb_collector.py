@@ -25,6 +25,7 @@ Sortie : un document JSON compressé (gzip) + un résumé JSON sur stdout.
 from __future__ import print_function
 
 import base64
+import glob
 import gzip
 import hashlib
 import io
@@ -3778,6 +3779,54 @@ class Collector(object):
             d["zypper_patches"] = run_out(["zypper", "--non-interactive", "list-patches", "--category", "security"], 600)
         return d
 
+    def update_cache(self):
+        """Mises à jour connues du cache local du gestionnaire de paquets, sans le rafraîchir ni contacter
+        les dépôts : apt-get -s (simulation), dnf / yum -C (cache seul), zypper --no-refresh. Lecture seule,
+        sans privilège. La date du cache (fichiers de métadonnées les plus récents) dit sa fraîcheur."""
+        d = {"commands": []}
+
+        def newest(patterns):
+            best = None
+            for pat in patterns:
+                for f in glob.glob(pat):
+                    try:
+                        m = os.path.getmtime(f)
+                    except OSError:
+                        continue
+                    if best is None or m > best:
+                        best = m
+            return now_iso(best) if best else None
+
+        def cmd(name, args, timeout=180):
+            r = run(args, timeout=timeout, max_out=8 << 20)
+            if r is None:
+                return
+            d["commands"].append({"name": name, "args": args[1:], "rc": r["rc"], "timeout": r["timeout"],
+                                  "output": r["out"], "error": (r["err"] or "")[-4000:]})
+        # dernière installation ou mise à jour de paquet : rpm l'a dans INSTALLTIME, dpkg non
+        d["last_change"] = newest(["/var/lib/dpkg/info/*.list", "/var/lib/dpkg/status"]) if os.path.isdir("/var/lib/dpkg/info") else None
+        if which("apt-get"):
+            d["manager"] = "apt"
+            d["cache_date"] = newest(["/var/lib/apt/lists/*InRelease", "/var/lib/apt/lists/*_Release"])
+            cmd("apt_simulate", ["apt-get", "-s", "-q", "-o", "Debug::NoLocking=1", "-o", "Dir::Cache::pkgcache=",
+                                 "-o", "Dir::Cache::srcpkgcache=", "dist-upgrade"])
+        elif which("dnf"):
+            d["manager"] = "dnf"
+            d["cache_date"] = newest(["/var/cache/dnf/*/repodata/repomd.xml", "/var/cache/libdnf5/*/repodata/repomd.xml"])
+            cmd("check_update", ["dnf", "-C", "-q", "check-update"])
+            cmd("updateinfo_security", ["dnf", "-C", "-q", "updateinfo", "list", "--security"])
+        elif which("yum"):
+            d["manager"] = "yum"
+            d["cache_date"] = newest(["/var/cache/yum/*/*/*/repomd.xml", "/var/cache/yum/*/repomd.xml"])
+            cmd("check_update", ["yum", "-C", "-q", "check-update"])
+            cmd("updateinfo_security", ["yum", "-C", "-q", "updateinfo", "list", "security"])
+        elif which("zypper"):
+            d["manager"] = "zypper"
+            d["cache_date"] = newest(["/var/cache/zypp/raw/*/repodata/repomd.xml"])
+            cmd("list_updates", ["zypper", "--non-interactive", "--no-refresh", "-q", "list-updates"])
+            cmd("list_patches_security", ["zypper", "--non-interactive", "--no-refresh", "-q", "list-patches", "--category", "security"])
+        return d
+
     # -- orchestration ----------------------------------------------------
     def collect(self):
         a = self.args
@@ -3810,6 +3859,8 @@ class Collector(object):
         doc["go_binaries"] = self.section("go_binaries", self.scan_go_binaries)
         if a.pending_updates:
             doc["pending_updates"] = self.section("pending_updates", self.pending_updates)
+        if a.update_cache:
+            doc["update_cache"] = self.section("update_cache", self.update_cache)
         procs = (doc.get("processes") or {}).get("list") or []
         hide = [m["options"] for m in parse_mounts() if m["fstype"] == "proc" and "hidepid" in m["options"]]
         doc["meta"]["visibility"] = {
@@ -4066,6 +4117,8 @@ def parse_args(argv=None):
     p.add_argument("--no-file-owners", dest="file_owners", action="store_false", default=True)
     p.add_argument("--pending-updates", action="store_true", default=False,
                    help="Interroge le gestionnaire de paquets sur les mises à jour de sécurité (peut contacter les dépôts)")
+    p.add_argument("--no-update-cache", dest="update_cache", action="store_false", default=True,
+                   help="Ne pas lire les mises à jour connues du cache local (apt-get -s, dnf/yum -C, zypper --no-refresh)")
     p.add_argument("--no-nice", dest="nice", action="store_false", default=True)
     p.add_argument("--pretty", action="store_true", default=False)
     a = p.parse_args(argv)

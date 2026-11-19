@@ -484,7 +484,7 @@ function bars(items, opts) { // items: [{label, value, href, um}]
 const SCOPED = ["hosts", "filesystems", "interfaces", "addresses", "disks", "pci", "fc", "memory", "listening", "services", "containers", "container_images",
   "cpu_vulns", "cpus", "java_risky", "restart", "deleted_running", "errors", "runs_failed",
   "oracle_homes", "oracle_patches", "db_instances", "oracle_licence", "modules", "endpoints", "crypto_files", "crypto_certs",
-  "runtime_services", "php_settings", "changes", "eol", "hardening", "hardening_scores", "cert_usage", "vulns"];
+  "runtime_services", "php_settings", "updates", "update_status", "hotfixes", "windows_os", "changes", "eol", "hardening", "hardening_scores", "cert_usage", "vulns"];
 // Étiquettes libres d'un serveur (cmdb_tags), sans app et platform qui ont leurs propres filtres
 function hostTags(h) {
   let t = {};
@@ -614,6 +614,8 @@ function prepare() {
     certs: rowsOf(D.crypto_certs).filter(c => !c.is_ca && c.days_left != null && c.days_left <= 30).length,
     oracle: rowsOf(D.oracle_homes).filter(oracleLate).length,
     eol: rowsOf(D.eol).filter(e => e.status === "expiré" && (!e.managed || e.location === "système")).length,
+    updates: rowsOf(D.update_status).filter(u => u.alerts).length,
+    oseol: rowsOf(D.eol).filter(e => e.location === "système" && e.status !== "supporté").length,
   };
 }
 const keyExposed = f => (f.has_private_key || ["gskit-stash", "oracle-wallet", "pkcs12"].includes(f.kind)) && (f.world_readable || f.empty_password);
@@ -737,7 +739,7 @@ const NAV_GROUPS = [
   ["Vue d'ensemble", [["accueil", "Accueil"], ["alertes", "Alertes"], ["evolutions", "Évolutions"]]],
   ["Inventaire", [["serveurs", "Serveurs"], ["materiel", "Matériel"], ["logiciels", "Logiciels"], ["versions", "Versions"], ["socle", "Socle logiciel"], ["bases", "Bases de données"]]],
   ["Réseau et services", [["carte", "Carte des flux"], ["services", "Services réseau"], ["systeme", "Services système"], ["exposition", "Exposition"]]],
-  ["Sécurité et conformité", [["vulnerabilites", "Vulnérabilités"], ["support", "Fins de support"], ["cles", "Clés et certificats"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"]]],
+  ["Sécurité et conformité", [["vulnerabilites", "Vulnérabilités"], ["misesajour", "Mises à jour"], ["support", "Fins de support"], ["cles", "Clés et certificats"], ["durcissement", "Durcissement"], ["ecarts", "Écarts"]]],
 ];
 const ROUTES = NAV_GROUPS.flatMap(g => g[1]);
 const NAV_KEY = "cmdb-nav-repliees";
@@ -746,7 +748,8 @@ function navCounts() {
   const a = D.alerts;
   return {serveurs: D.H.length, logiciels: SW.rows.length, exposition: D.exposed.length, bases: rowsOf(D.db_instances).length,
     services: rowsOf(D.endpoints).length, systeme: rowsOf(D.services).length, cles: rowsOf(D.crypto_files).length, evolutions: rowsOf(D.changes).length, carte: rowsOf(D.flows).length, vulnerabilites: rowsOf(D.vulns).filter(vulnUrgent).length, ecarts: rowsOf(D.drift_matrix).filter(o => o.importance <= 2).length + rowsOf(D.drift).filter(o => o.scope === "jumeaux").length,
-    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol + a.svcfail};
+    alertes: a.java + a.restart + a.reboot + a.deleted + a.failed + a.fsfull + a.keys + a.certs + a.oracle + a.eol + a.svcfail + a.updates,
+    misesajour: a.updates};
 }
 function renderNav(route) {
   const c = navCounts(), folded = navFolded();
@@ -754,7 +757,7 @@ function renderNav(route) {
     let alert = 0;
     const lis = items.map(([k, l]) => {
       const cur = route === k || (route === "serveur" && k === "serveurs");
-      const isAlert = (k === "alertes" || k === "vulnerabilites") && c[k];
+      const isAlert = (k === "alertes" || k === "vulnerabilites" || k === "misesajour") && c[k];
       if (isAlert) alert += c[k];
       const n = c[k] != null ? `<span class="count${isAlert && k === "alertes" ? " alert" : ""}">${fmt(c[k])}</span>` : "";
       return `<li><a href="${link(k)}"${cur ? ' aria-current="page"' : ""}><span>${l}</span>${n}</a></li>`;
@@ -799,6 +802,8 @@ function vAccueil() {
     ["keys", a.keys, "risk", "Clés privées exposées", "Lisibles par tous les comptes, ou PKCS#12 sans mot de passe", "cles"],
     ["certs", a.certs, "warn", "Certificats expirés ou à moins de 30 jours", "Certificats hors autorités", "cles?onglet=certs&etat=30x"],
     ["oracle", a.oracle, "warn", "ORACLE_HOME en retard de correctifs", "Plus de 200 jours, ou plus ancien que le reste du parc", "bases?onglet=homes"],
+    ["oseol", a.oseol, "risk", "Systèmes hors support ou à moins de 6 mois", "Plus de correctifs de sécurité de l'éditeur, ou bientôt", "support?onglet=systemes"],
+    ["updates", a.updates, "warn", "Serveurs en retard de mises à jour", "Correctifs de sécurité non appliqués, aucune mise à jour récente, cache périmé, système hors support", "misesajour?onglet=alertes"],
     ["eol", a.eol, "warn", "Fins de support dépassées", "Systèmes et composants hors paquet", "support"],
     ["fsfull", a.fsfull, "warn", "Systèmes de fichiers presque pleins", "Occupation ou inodes à 90 % ou plus", "alertes"],
     ["svcfail", a.svcfail, "warn", "Services en échec", "Unités systemd en échec : à relancer ou à désactiver", "systeme?onglet=echec"],
@@ -899,7 +904,7 @@ function vServeur(key, params) {
     + (byName.length > 1 ? `<p>Ce nom correspond à plusieurs fiches : ${byName.map(x => hkLink(x.hk) + " (" + esc(x.app + " / " + x.platform) + ")").join(", ")}.</p>` : "");
   const host = h.hk;
   const tab = params.get("onglet") || "synthese";
-  const tabs = [["synthese", "Synthèse"], ["reseau", "Réseau"], ["stockage", "Stockage et matériel"], ["composants", "Composants"],
+  const tabs = [["synthese", "Synthèse"], ["reseau", "Réseau"], ["stockage", "Stockage et matériel"], ["composants", "Composants"], ["paquets", "Paquets et mises à jour"],
     ["exposition", "Ports et services"], ["bases", "Bases"], ["web", "Services réseau"], ["cles", "Clés"], ["dependances", "Dépendances"], ["durcissement", "Durcissement"], ["evolutions", "Évolutions"], ["alertes", "Alertes"]];
   const base = "serveur/" + encodeURIComponent(host);
   const others = rowsOf(D0.hosts).filter(x => x.host === h.host && x.hk !== h.hk);
@@ -918,7 +923,9 @@ function vServeur(key, params) {
       ["Mémoire", h.mem_total_mb ? fmt(Math.round(h.mem_total_mb / 1024)) + " Go" : ""], ["Disques", h.disk_total_gb ? fmt(h.disk_total_gb) + " Go" : ""],
       ["Adresses", esc((h.ip_addresses || "").split(" ").join(", "))], ["MAC (cartes physiques)", esc((h.mac_addresses || "").split(" ").join(", "))],
       ["Démarré le", esc(h.boot_time)], ["Uptime", h.uptime_days != null ? fmt(h.uptime_days) + " jours" : ""],
-      ["SELinux", esc(h.selinux)], ["Redémarrage requis", esc(h.reboot_required)], ["Identifiant machine", `<code>${esc(h.machine_id)}</code>`],
+      ["SELinux", esc(h.selinux)], ["Redémarrage requis", esc(h.reboot_required)],
+      ...hostRows("update_status").slice(0, 1).flatMap(u => [["Fin de support du système", osEolCell(u)],
+        ["Mises à jour", `<a href="${link("serveur/" + encodeURIComponent(host), {onglet: "paquets"})}">${updState(u)}</a>` + (u.alerts ? ` <span class="cat">${esc(u.alerts)}</span>` : "")]]), ["Identifiant machine", `<code>${esc(h.machine_id)}</code>`],
       ["Collecte", esc((h.collected_at || "").replace("T", " ").replace("Z", " UTC")) + " par " + esc(h.collect_user) + (h.privileged ? " (root)" : " (non privilégiée)")],
       ["Visibilité", h.processes_visible != null ? `${fmt(h.processes_exe_readable)} exécutables lisibles sur ${fmt(h.processes_visible)} processus` + (h.fs_unreadable_dirs ? `, ${fmt(h.fs_unreadable_dirs)} répertoires illisibles` : "") : ""],
       ["Version du collecteur", esc(h.collector_version)],
@@ -963,6 +970,8 @@ function vServeur(key, params) {
     body = `<p class="lede">Moteurs d'exécution, serveurs, applications et bibliothèques embarquées détectés.
       <a href="${link("logiciels", sq)}">Voir les ${fmt(mine.length)} composants de ce serveur</a>
       ou seulement <a href="${link("logiciels", {...sq, gestion: "um"})}">ceux hors paquet</a>.</p>` + swTable(rs, []);
+  } else if (tab === "paquets") {
+    body = hostPackages(h, hostRows);
   } else if (tab === "exposition") {
     body = `<h3>Ports en écoute</h3>` + listeningTable(hostRows("listening"), false) + `<h3>Services</h3>`
       + `<p class="hint">En marche, en échec ou activés au démarrage. <a href="${link("systeme", {onglet: "tout", q: h.host})}">Voir dans les services du parc</a>.</p>`
@@ -1412,6 +1421,116 @@ function socleModules(params) {
   ], list, {sort: "nh", dir: -1, name: "modules", empty: "Aucun module ne correspond."});
 }
 
+// ---------------------------------------------------------------- paquets et mises à jour
+const UPD_KIND_HELP = {
+  "cache local": "Connue du cache du gestionnaire de paquets du serveur, lu sans le rafraîchir : aussi récent que ce cache",
+  "Windows Update": "Connue de l'agent Windows Update à sa dernière recherche (lue hors ligne)",
+  "écart au parc": "Une version plus récente du même paquet est installée ailleurs sur le parc, sur le même système : indépendant des caches",
+  "base CVE": "Version qui corrige les CVE connues de la base de vulnérabilités du contrôleur (--trivy-db)",
+};
+const updKind = k => `<span class="badge${k === "base CVE" ? " risk" : (k === "écart au parc" ? " muted" : "")}" title="${esc(UPD_KIND_HELP[k] || "")}">${esc(k)}</span>`;
+const updSec = u => u.security ? `<span class="badge risk">sécurité${u.severity ? " · " + esc(u.severity) : ""}</span>` : (u.severity ? esc(u.severity) : "");
+const ageCell = (d, days, warn) => d ? esc(String(d).slice(0, 10)) + (days != null ? ` <span class="${days > warn ? "badge warn" : "cat"}">${fmt(days)} j</span>` : "") : '<span class="cat">inconnue</span>';
+function updState(u) {
+  const c = {"à traiter": "risk", "mises à jour disponibles": "warn", "à jour": "ok", "inconnu": "muted"}[u.state] || "";
+  return `<span class="badge ${c}">${esc(u.state || "")}</span>`;
+}
+function osEolCell(u) {
+  if (!u.os_eol) return '<span class="cat">inconnue</span>';
+  const d = u.os_eol_days, cls = d < 0 ? "risk" : (d <= 180 ? "warn" : "ok");
+  return `${esc(u.os_eol)} <span class="badge ${cls}">${d < 0 ? "dépassée de " + fmt(-d) + " j" : "dans " + fmt(d) + " j"}</span>` + (u.os_extended ? ` <span class="cat">étendu ${esc(u.os_extended)}</span>` : "");
+}
+function updStatusTable(rows, host, opts) {
+  return table(hcolOf(host).concat([
+    {k: "state", l: "État", f: updState},
+    {k: "manager", l: "Source", f: u => esc(u.manager || "")},
+    {k: "last_change_days", l: "Dernière mise à jour", sortv: u => u.last_change_days == null ? 1e9 : u.last_change_days, csv: u => (u.last_change || "").slice(0, 10), f: u => ageCell(u.last_change, u.last_change_days, u.alert_days || 60)},
+    {k: "cache_age_days", l: "Cache du", sortv: u => u.cache_age_days == null ? 1e9 : u.cache_age_days, csv: u => (u.cache_date || "").slice(0, 10), f: u => ageCell(u.cache_date, u.cache_age_days, u.alert_days || 60)},
+    {k: "pending", l: "Disponibles", cls: "num"},
+    {k: "pending_security", l: "Dont sécurité", cls: "num", f: u => u.pending_security ? `<span class="badge risk">${fmt(u.pending_security)}</span>` : ""},
+    {k: "cve_fixes", l: "Correctifs CVE", cls: "num", f: u => u.cve_fixes ? `<span class="badge risk">${fmt(u.cve_fixes)}</span>` : ""},
+    {k: "fleet_gap", l: "Écart au parc", cls: "num", f: u => u.fleet_gap ? fmt(u.fleet_gap) : ""},
+    {k: "os_eol_days", l: "Fin de support du système", csv: u => u.os_eol || "", f: osEolCell},
+    {k: "alerts", l: "Alertes", cls: "wrap"},
+  ]), rows, Object.assign({sort: host ? undefined : "host"}, opts || {}));
+}
+function updTable(rows, host) {
+  return table(hcolOf(host).concat([
+    {k: "name", l: "Paquet ou mise à jour", f: u => `<b>${esc(u.name)}</b>` + (u.arch ? ` <span class="cat">${esc(u.arch)}</span>` : "")},
+    {k: "installed", l: "Installée", cls: "mono"}, {k: "available", l: "Disponible", cls: "mono"},
+    {k: "kind", l: "Source", f: u => updKind(u.kind)}, {k: "security", l: "Sécurité", sortv: u => u.security, csv: u => u.security ? "oui" + (u.severity ? " (" + u.severity + ")" : "") : (u.severity || ""), f: updSec},
+    {k: "advisory", l: "Avis ou KB", cls: "wrap"}, {k: "detail", l: "Détail", cls: "path"},
+  ]), rows, {sort: "security", dir: -1, empty: "Aucune mise à jour connue."});
+}
+function hostPackages(h, hostRows) {
+  const host = h.hk, st = hostRows("update_status")[0], ups = hostRows("updates");
+  const byName = new Map();
+  ups.forEach(u => { const e = byName.get(u.name) || byName.set(u.name, []).get(u.name); e.push(u); });
+  const pk = SW.rows.filter(r => swHk(r) === host && swVal(r, "category") === "os-package");
+  const s = swVal, win = ["windows", "windows-server"].includes(h.os_id);
+  const kbs = hostRows("hotfixes"), wo = hostRows("windows_os")[0];
+  return (st ? `<p class="lede">${updState(st)} ${st.alerts ? esc(st.alerts) + "." : ""}
+      Dernière mise à jour : ${ageCell(st.last_change, st.last_change_days, st.alert_days || 60)} ;
+      ${win ? "dernière recherche Windows Update" : "cache du gestionnaire de paquets"} : ${ageCell(st.cache_date, st.cache_age_days, st.alert_days || 60)} ;
+      fin de support du système : ${osEolCell(st)}.</p>` : "")
+    + `<h3>Mises à jour connues (${fmt(ups.length)})</h3>
+      <p class="hint">Quatre sources : le cache local du serveur (jamais rafraîchi par la collecte : aussi récent que sa date), Windows Update (dernière recherche
+      de l'agent), l'écart au parc (version plus récente installée ailleurs sur le même système) et la base CVE du contrôleur.</p>` + updTable(ups, host)
+    + (win && wo ? `<h3>Windows</h3>` + `<p>${esc(wo.caption || "")} ${esc(wo.display_version || "")}, build <code>${esc(wo.build)}.${esc(wo.ubr || "?")}</code>.
+      ${fmt(kbs.length)} KB installés${kbs.find(k => k.installed_on) ? ", le plus récent le " + esc(kbs.filter(k => k.installed_on).map(k => k.installed_on).sort().pop()) : ""}.</p>`
+      + table([{k: "kb", l: "KB", cls: "mono"}, {k: "description", l: "Type"}, {k: "installed_on", l: "Installé le"}], kbs, {sort: "installed_on", dir: -1, name: "kb", empty: "Aucun KB relevé."}) : "")
+    + `<h3>${win ? "Programmes installés" : "Paquets installés"} (${fmt(pk.length)})</h3>` + table([
+      {k: "name", l: win ? "Programme" : "Paquet", sortv: r => s(r, "name"), f: r => `<b>${esc(s(r, "name"))}</b>`},
+      {k: "version", l: "Version", cls: "mono", sortv: r => s(r, "version"), f: r => esc(s(r, "version"))},
+      {k: "eco", l: "Gestionnaire", sortv: r => s(r, "ecosystem"), f: r => esc(s(r, "ecosystem"))},
+      {k: "upd", l: "Mise à jour", sortv: r => (byName.get(s(r, "name")) || []).length, f: r => (byName.get(s(r, "name")) || []).map(u => `${esc(u.available || "")} ${updKind(u.kind)}${u.security ? ' <span class="badge risk">sécurité</span>' : ""}`).join("<br>")},
+      {k: "evidence", l: "Source", sortv: r => s(r, "evidence"), f: r => `<span class="cat">${esc(s(r, "evidence"))}</span>`},
+    ], pk, {sort: "name", name: "paquets", empty: "Aucun paquet relevé."});
+}
+function vMisesajour(params) {
+  const st = rowsOf(D.update_status), ups = rowsOf(D.updates), wo = rowsOf(D.windows_os);
+  const UPD_DAYS = (st[0] || {}).alert_days || 60;
+  const al = st.filter(u => u.alerts);
+  const g = new Map();
+  for (const u of ups) {
+    const k = u.manager + "\u0000" + u.name;
+    const e = g.get(k) || g.set(k, {manager: u.manager, name: u.name, hosts: new Set(), inst: new Set(), avail: new Set(), kinds: new Set(), sec: 0, apps: new Set()}).get(k);
+    e.hosts.add(u.hk); if (u.installed) e.inst.add(u.installed); if (u.available) e.avail.add(u.available); e.kinds.add(u.kind);
+    if (u.security) e.sec++; e.apps.add(u.app + " / " + u.platform);
+  }
+  const pk = [...g.values()].map(e => ({...e, nh: e.hosts.size}));
+  const list = xs => { const a = [...xs].sort(cmpVer); return a.slice(0, 4).map(esc).join(", ") + (a.length > 4 ? ` … (${fmt(a.length)})` : ""); };
+  const top = {};
+  wo.forEach(w => { if (w.ubr != null && /^\d+$/.test(w.ubr)) top[w.build] = Math.max(top[w.build] || 0, +w.ubr); });
+  const kb = byHost(D.hotfixes);
+  return tabbed("misesajour", "Mises à jour", `Ce qui reste à appliquer, serveur par serveur, de quatre sources : le <b>cache local</b> du gestionnaire de paquets
+    (apt-get -s, dnf / yum -C, zypper --no-refresh : lu sans être rafraîchi, donc aussi récent que la date indiquée), <b>Windows Update</b> (dernière recherche
+    de l'agent, lue hors ligne), l'<b>écart au parc</b> (version plus récente du même paquet installée ailleurs sur le même système, indépendante des caches)
+    et la <b>base CVE</b> du contrôleur (--trivy-db). Alerte : correctifs de sécurité non appliqués, aucune mise à jour depuis plus de ${UPD_DAYS} jours,
+    cache plus ancien, système hors support ou à moins de 6 mois.`, [
+    ["alertes", `À traiter (${fmt(al.length)})`, m => updStatusTable(m(al), null, {empty: "Aucun serveur en retard."})],
+    ["serveurs", `Par serveur (${fmt(st.length)})`, m => updStatusTable(m(st), null)],
+    ["paquets", `Par paquet (${fmt(pk.length)})`, m => table([
+      {k: "name", l: "Paquet ou mise à jour", f: e => `<a href="${link("misesajour", {onglet: "detail", q: e.name})}"><b>${esc(e.name)}</b></a>`},
+      {k: "manager", l: "Gestionnaire"}, {k: "nh", l: "Serveurs", cls: "num"},
+      {k: "sec", l: "Sécurité", cls: "num", f: e => e.sec ? `<span class="badge risk">${fmt(e.sec)}</span>` : ""},
+      {k: "inst", l: "Versions installées", sortv: e => e.inst.size, f: e => list(e.inst)},
+      {k: "avail", l: "Versions disponibles", sortv: e => e.avail.size, f: e => list(e.avail)},
+      {k: "kinds", l: "Sources", sortv: e => [...e.kinds].sort().join(), f: e => [...e.kinds].sort().map(updKind).join(" ")},
+      {k: "apps", l: "Applications / plates-formes", f: e => [...e.apps].sort().slice(0, 5).map(esc).join(", ") + (e.apps.size > 5 ? ` … (${fmt(e.apps.size)})` : "")},
+    ], m(pk), {sort: "nh", dir: -1, name: "par_paquet", empty: "Aucune mise à jour connue."})],
+    ["detail", `Détail (${fmt(ups.length)})`, m => updTable(m(ups), null)],
+    ...(wo.length ? [["windows", `Windows (${fmt(wo.length)})`, m => `<p class="hint">Révision (UBR) : le numéro après le build, qui augmente à chaque mise à jour cumulative ;
+      la plus haute du parc pour le même build sert de référence.</p>` + table([{k: "host", l: "Serveur", f: o => hostCell(o)}, {k: "caption", l: "Système"},
+      {k: "display_version", l: "Version"}, {k: "ubr", l: "Build", sortv: w => +w.ubr || 0, csv: w => w.build + "." + (w.ubr || ""), f: w => `<code>${esc(w.build)}.${esc(w.ubr || "?")}</code>`
+        + (top[w.build] > +w.ubr ? ` <span class="badge warn" title="Révision la plus haute du parc pour ce build">parc : ${esc(w.build)}.${top[w.build]}</span>` : "")},
+      {k: "last_search", l: "Dernière recherche WU", f: w => day(w.last_search)}, {k: "last_install", l: "Dernière installation WU", f: w => day(w.last_install)},
+      {k: "kbs", l: "KB installés", cls: "num", sortv: w => (kb[w.hk] || []).length, f: w => fmt((kb[w.hk] || []).length)},
+      {k: "kbl", l: "Dernier KB", sortv: w => (kb[w.hk] || []).map(k => k.installed_on || "").sort().pop() || "", f: w => esc((kb[w.hk] || []).map(k => k.installed_on || "").sort().pop() || "")},
+    ], m(wo), {sort: "host", name: "windows"})]] : []),
+  ], params, "Filtrer (serveur, paquet, avis, KB…)");
+}
+
 function vMateriel(params) {
   const tab = params.get("onglet") || "interfaces", f = (params.get("q") || "").toLowerCase();
   const filt = rs => f ? rs.filter(o => Object.values(o).join(" ").toLowerCase().includes(f)) : rs;
@@ -1670,6 +1789,8 @@ function vSupport(params) {
     {k: "managed", l: "Origine", f: e => e.location === "système" ? "système" : (e.managed ? '<span title="Le support suit celui de la distribution">paquet de distribution</span>' : "hors paquet")},
     {k: "location", l: "Emplacement", cls: "path"}];
   return tabbed("support", "Fins de support", "Dates issues de tools/cmdb_eol.csv, à confirmer auprès de l'éditeur. Pour un paquet de distribution, la date amont est indicative : le support suit celui du système.", [
+    ["systemes", `Systèmes (${fmt(rows.filter(e => e.location === "système").length)})`, m => `<p class="hint">Fin du support standard de l'éditeur ; Windows : fin du support étendu,
+      « Support étendu » étant alors l'ESU payant (Windows 11 : Famille et Professionnel, puis Entreprise et Éducation).</p>` + table(cols, m(rows.filter(e => e.location === "système")), {sort: "days_left", name: "systemes"})],
     ["depasse", `Dépassées (${fmt(rows.filter(e => e.status === "expiré").length)})`, m => table(cols, m(rows.filter(e => e.status === "expiré")), {sort: "days_left", empty: "Aucune."})],
     ["bientot", `Moins de 6 mois (${fmt(rows.filter(e => e.status === "bientôt").length)})`, m => table(cols, m(rows.filter(e => e.status === "bientôt")), {sort: "days_left", empty: "Aucune."})],
     ["tout", "Tout", m => table(cols, m(rows), {sort: "days_left"})],
@@ -1891,7 +2012,13 @@ function alertsHtml(host) {
   const only = rs => host ? rs.filter(r => r.hk === host) : rs;
   const hcol = host ? [] : [{k: "host", l: "Serveur", f: o => hostCell(o)}];
   const H = host ? D.H.filter(h => h.hk === host) : D.H;
-  return `<h3>Clés privées exposées</h3>` + keysTable(only(rowsOf(D.crypto_files).filter(keyExposed)), host)
+  const us = only(rowsOf(D.update_status).filter(u => u.alerts));
+  return `<h3>Mises à jour en retard</h3>` + updStatusTable(us, host, {empty: "Aucun serveur en retard de mises à jour."})
+    + `<h3>Systèmes hors support ou à moins de 6 mois</h3>` + table(hcol.concat([{k: "product", l: "Système", f: e => esc(e.product + " " + e.cycle)}, {k: "version", l: "Version"},
+      {k: "eol", l: "Fin de support"}, {k: "extended", l: "Support étendu"},
+      {k: "days_left", l: "Jours restants", cls: "num", f: e => `<span class="badge ${e.days_left < 0 ? "risk" : "warn"}">${fmt(e.days_left)}</span>`}]),
+      only(rowsOf(D.eol).filter(e => e.location === "système" && e.status !== "supporté")), {sort: "days_left", empty: "Aucun."})
+    + `<h3>Clés privées exposées</h3>` + keysTable(only(rowsOf(D.crypto_files).filter(keyExposed)), host)
     + `<h3>Certificats expirés ou à moins de 30 jours</h3>` + certsTable(only(rowsOf(D.crypto_certs).filter(c => !c.is_ca && c.days_left != null && c.days_left <= 30)), host)
     + `<h3>ORACLE_HOME en retard de correctifs</h3>` + oracleHomesTable(only(rowsOf(D.oracle_homes).filter(oracleLate)), host)
     + `<h3>Archives Java à risque</h3>` + table(hcol.concat([
@@ -1932,7 +2059,7 @@ function route() {
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, socle: vSocle, exposition: vExposition,
-      materiel: vMateriel, alertes: vAlertes, bases: vBases, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, systeme: vSysteme, cles: vCles, support: vSupport, vulnerabilites: vVulns, evolutions: vEvolutions}[r] || vAccueil)(params);
+      materiel: vMateriel, alertes: vAlertes, bases: vBases, misesajour: vMisesajour, carte: vCarte, ecarts: vEcarts, durcissement: vDurcissement, services: vServices, systeme: vSysteme, cles: vCles, support: vSupport, vulnerabilites: vVulns, evolutions: vEvolutions}[r] || vAccueil)(params);
   } catch (e) { html = `<p class="err">Erreur d'affichage : ${esc(e.message)}</p>`; console.error(e); }
   renderNav(r);
   $("#topbar").hidden = r === "accueil";

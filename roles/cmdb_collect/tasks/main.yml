@@ -68,6 +68,7 @@
             + ([] if cmdb_container_content | bool else ['--no-container-content'])
             + ['--container-max-seconds', cmdb_container_max_seconds | string]
             + (['--pending-updates'] if cmdb_pending_updates | bool else [])
+            + ([] if cmdb_update_cache | bool else ['--no-update-cache'])
             + (cmdb_scan_roots | map('regex_replace', '^', '--scan-root=') | list)
             + (cmdb_scan_replace_excludes | map('regex_replace', '^', '--exclude=') | list)
             + (cmdb_scan_extra_excludes | map('regex_replace', '^', '--extra-exclude=') | list)

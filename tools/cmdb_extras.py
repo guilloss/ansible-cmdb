@@ -953,7 +953,7 @@ def aix_cycle(level):
 
 
 OS_PRODUCTS = {"rhel": "rhel", "redhat": "rhel", "centos": "centos", "ol": "ol", "debian": "debian", "ubuntu": "ubuntu", "sles": "sles",
-               "sled": "sles", "rocky": "rocky", "almalinux": "almalinux"}
+               "sled": "sles", "rocky": "rocky", "almalinux": "almalinux", "windows-server": "windows-server", "windows": "windows"}
 SOFT_PRODUCTS = {"oracle-database": "oracle-database", "postgresql": "postgresql", "mysql": "mysql", "mariadb": "mariadb", "php": "php",
                  "python": "python", "tomcat": "tomcat", "node": "node", "mongodb": "mongodb", "redis": "redis", "nginx": "nginx"}
 
@@ -973,8 +973,14 @@ def build_eol(db, today=None, path=EOL_FILE):
         status = "expiré" if left < 0 else ("bientôt" if left <= EOL_SOON_DAYS else "supporté")
         db.execute("INSERT INTO eol_status VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (app, pf, host, product, cycle, version, location, managed, eol, extended, left, status))
+    # Windows 11 : le cycle est la version de fonctionnalités (24H2…), relevée dans windows_os
+    dv = dict(((a, p, h), (d or "").lower()) for a, p, h, d in db.execute("SELECT app, platform, host, display_version FROM windows_os"))
     for app, pf, host, os_id, os_version in db.execute("SELECT app, platform, host, os_id, os_version FROM hosts").fetchall():
         product = OS_PRODUCTS.get(os_id or "")
+        if product == "windows" and os_version == "11":
+            if not dv.get((app, pf, host)):
+                continue
+            os_version = "11-" + dv[(app, pf, host)]
         if product and os_version:
             cycle = cycle_of(ref[product], os_version)
             if not cycle and "." in os_version:

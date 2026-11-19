@@ -43,6 +43,7 @@ param(
     [string[]]$ScanPath = @(),
     [string[]]$ExcludePath = @(),
     [switch]$NoScan,
+    [switch]$NoUpdateSearch,
     [switch]$NoHash
 )
 
@@ -489,6 +490,32 @@ Invoke-Section 'programs' {
 Invoke-Section 'hotfixes' {
     $Win['hotfixes'] = @(Get-Wmi Win32_QuickFixEngineering | ForEach-Object {
         [ordered]@{ id = [string]$_.HotFixID; description = [string]$_.Description; installed_on = [string]$_.InstalledOn } })
+}
+# Mises à jour connues de l'agent Windows Update, d'après sa dernière recherche : recherche hors ligne
+# (Online = false), sans contacter Windows Update ni WSUS, sans rien télécharger ni installer.
+Invoke-Section 'updates' {
+    if ($NoUpdateSearch) { return }
+    $u = [ordered]@{ source = 'Windows Update (recherche hors ligne)'; last_search = $null; last_install = $null; pending = @(); error = $null }
+    try {
+        $r = (New-Object -ComObject Microsoft.Update.AutoUpdate).Results
+        $u['last_search'] = ConvertTo-Iso $r.LastSearchSuccessDate
+        $u['last_install'] = ConvertTo-Iso $r.LastInstallationSuccessDate
+    } catch { }
+    try {
+        $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
+        $searcher.Online = $false
+        $res = $searcher.Search('IsInstalled=0 and IsHidden=0')
+        $list = New-Object System.Collections.ArrayList
+        foreach ($x in $res.Updates) {
+            [void]$list.Add([ordered]@{
+                title = [string]$x.Title; kb = @($x.KBArticleIDs | ForEach-Object { 'KB' + $_ }); severity = [string]$x.MsrcSeverity
+                categories = @($x.Categories | ForEach-Object { [string]$_.CategoryID }); published = ConvertTo-Iso $x.LastDeploymentChangeTime
+                downloaded = [bool]$x.IsDownloaded; mandatory = [bool]$x.IsMandatory
+            })
+        }
+        $u['pending'] = $list
+    } catch { $u['error'] = $_.Exception.Message }
+    $Win['updates'] = $u
 }
 
 # --- SQL Server (registre seulement, aucune connexion) --------------------------

@@ -191,6 +191,10 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "runtime_services": table(db, "SELECT * FROM runtime_services ORDER BY %s, port" % K),
         "php_settings": table(db, "SELECT app, platform, host, runtime, binary, key, value FROM runtime_settings WHERE key IN (%s) "
                                   "ORDER BY %s, binary, key" % (",".join("'%s'" % k for k in PHP_KEYS), K)),
+        "updates": table(db, "SELECT * FROM updates ORDER BY %s, security DESC, kind, name" % K),
+        "update_status": table(db, "SELECT * FROM update_status ORDER BY %s" % K),
+        "hotfixes": table(db, "SELECT * FROM hotfixes ORDER BY %s, installed_on DESC" % K),
+        "windows_os": table(db, "SELECT * FROM windows_os ORDER BY %s" % K),
         "changes": table(db, "SELECT * FROM changes ORDER BY to_at DESC, %s, kind LIMIT 50000" % K),
         "eol": table(db, "SELECT * FROM eol_status ORDER BY days_left"),
         "cert_usage": table(db, "SELECT * FROM cert_usage ORDER BY days_left"),

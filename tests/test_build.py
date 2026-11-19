@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from tests import fleet
@@ -573,3 +574,67 @@ class Reglages(unittest.TestCase):
                                ("php", "php.ini", "apache2 8.2", "session.upload_progress.enabled", "Off"),  # conf.d l'emporte
                                ("php", "pool PHP-FPM", "pool www", "session.upload_progress.enabled", "Off")])
         self.assertEqual(mem, [("php.ini", "512M")])
+
+
+class MisesAJour(unittest.TestCase):
+    """Paquets et mises à jour : cache local, Windows Update, écart au parc, état et alertes par serveur."""
+
+    def test_lecture(self):
+        import cmdb_updates as U
+        apt = U.parse_apt_simulate("Inst libssl3 [3.0.11-1~deb12u1] (3.0.15-1~deb12u1 Debian-Security:12/stable-security [amd64])\n"
+                                   "Inst tzdata [2024a-0+deb12u1] (2025b-0+deb12u1 Debian:12.11/stable [all])\nInst newdep (1.0 Debian:12/stable [amd64])\n")
+        self.assertEqual(apt, [("libssl3", "amd64", "3.0.11-1~deb12u1", "3.0.15-1~deb12u1", "Debian-Security:12/stable-security", 1),
+                               ("tzdata", "all", "2024a-0+deb12u1", "2025b-0+deb12u1", "Debian:12.11/stable", 0)])
+        cu = U.parse_check_update("\nopenssl-libs.x86_64    1:3.0.7-27.el9    baseos\na-very-long-package-name-for-wrapping.noarch\n"
+                                  "                       2.0-1.el9         appstream\nObsoleting Packages\nfoo.x86_64 1-1 baseos\n")
+        self.assertEqual(cu, [("openssl-libs", "x86_64", "1:3.0.7-27.el9", "baseos"),
+                              ("a-very-long-package-name-for-wrapping", "noarch", "2.0-1.el9", "appstream")])
+        ui = U.parse_updateinfo("RHSA-2024:2447 Important/Sec. openssl-libs-1:3.0.7-27.el9.x86_64\nRLSA-2024:1 Moderate/Sec. curl-7.76.1-29.el9_4.x86_64\n")
+        self.assertEqual(ui, [("RHSA-2024:2447", "Important", "openssl-libs", "x86_64", "1:3.0.7-27.el9"),
+                              ("RLSA-2024:1", "Moderate", "curl", "x86_64", "7.76.1-29.el9_4")])
+        z = U.parse_zypper_table("S | Repository | Name | Current Version | Available Version | Arch\n--+---\nv | SLES-Updates | curl | 8.0.1-1 | 8.0.1-2 | x86_64\n")
+        self.assertEqual(z[0]["available version"], "8.0.1-2")
+        self.assertEqual(U.parse_win_date("11/12/2024 00:00:00"), "2024-11-12")
+        self.assertEqual(U.parse_win_date("20241112"), "2024-11-12")
+
+    def test_base(self):
+        d = tempfile.mkdtemp(prefix="cmdbu")
+        self.addCleanup(shutil.rmtree, d, True)
+        old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        recent = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        a = fleet.doc("a1.exemple.test", "APP", "prod", "10.0.0.1", "r1", "2026-11-02T08:00:00Z")
+        b = fleet.doc("a2.exemple.test", "APP", "prod", "10.0.0.2", "r1", "2026-11-02T08:00:00Z")
+        a["packages"]["managers"]["rpm"] = [{"name": "openssl-libs", "epoch": "1", "version": "3.0.7", "release": "24.el9", "arch": "x86_64",
+                                             "vendor": "Red Hat, Inc.", "installtime": str(int(time.time()) - 200 * 86400)}]
+        b["packages"]["managers"]["rpm"] = [{"name": "openssl-libs", "epoch": "1", "version": "3.0.7", "release": "27.el9", "arch": "x86_64",
+                                             "vendor": "Red Hat, Inc.", "installtime": str(int(time.time()) - 3 * 86400)}]
+        a["update_cache"] = {"manager": "dnf", "cache_date": old, "commands": [
+            {"name": "check_update", "rc": 100, "output": "openssl-libs.x86_64  1:3.0.7-25.el9  baseos\n"},
+            {"name": "updateinfo_security", "rc": 0, "output": "RHSA-2024:1 Important/Sec. openssl-libs-1:3.0.7-25.el9.x86_64\n"}]}
+        b["update_cache"] = {"manager": "dnf", "cache_date": recent, "commands": [{"name": "check_update", "rc": 0, "output": ""}]}
+        w = fleet.doc("w1.exemple.test", "APP", "prod", "10.0.0.3", "r1", "2026-11-02T08:00:00Z")
+        w["os"]["os_release"] = {"ID": "windows", "VERSION_ID": "11", "PRETTY_NAME": "Windows 11"}
+        w["windows"] = {"os": {"caption": "Microsoft Windows 11 Pro", "build": "26100", "ubr": "2033", "display_version": "24H2"},
+                        "programs": [{"name": "7-Zip 24.08 (x64)", "version": "24.08", "publisher": "Igor Pavlov"},
+                                     {"name": "Composant", "version": "1", "system_component": True}],
+                        "hotfixes": [{"id": "KB5044284", "description": "Security Update", "installed_on": "10/20/2026"}],
+                        "updates": {"source": "Windows Update (recherche hors ligne)", "last_search": recent, "last_install": recent,
+                                    "pending": [{"title": "Mise à jour cumulative", "kb": ["KB5099999"], "severity": "Critical", "categories": []}]}}
+        fleet.write_store(os.path.join(d, "store"), [a, b, w])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(d, "store"), "--out", os.path.join(d, "b")],
+                              stdout=subprocess.DEVNULL)
+        db = sqlite3.connect(os.path.join(d, "b", "cmdb.sqlite"))
+        ups = sorted(db.execute("SELECT host, name, installed, available, kind, security, advisory FROM updates"))
+        st = {r[0]: r[1:] for r in db.execute("SELECT host, state, last_change_days, pending_security, fleet_gap, os_cycle, alerts FROM update_status")}
+        progs = db.execute("SELECT name FROM software WHERE ecosystem = 'windows'").fetchall()
+        db.close()
+        self.assertIn(("a1.exemple.test", "openssl-libs", "1:3.0.7-24.el9", "1:3.0.7-25.el9", "cache local", 1, "RHSA-2024:1"), ups)
+        self.assertIn(("a1.exemple.test", "openssl-libs", "1:3.0.7-24.el9", "1:3.0.7-27.el9", "écart au parc", 0, None), ups)
+        self.assertIn(("w1.exemple.test", "Mise à jour cumulative", None, None, "Windows Update", 1, "KB5099999"), ups)
+        self.assertEqual(progs, [("7-Zip 24.08 (x64)",)])
+        self.assertEqual(st["a1.exemple.test"][0], "à traiter")
+        self.assertIn("aucune mise à jour depuis 200 jours", st["a1.exemple.test"][5])
+        self.assertIn("correctifs de sécurité non appliqués", st["a1.exemple.test"][5])
+        self.assertIn("cache des mises à jour vieux de 200 jours", st["a1.exemple.test"][5])
+        self.assertEqual(st["a2.exemple.test"][:4], ("à jour", 3, 0, 0))
+        self.assertEqual(st["w1.exemple.test"][4], "11-24h2")

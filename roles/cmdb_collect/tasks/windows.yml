@@ -39,6 +39,7 @@
           {{ ('-Tag ' ~ q ~ (tags_kv | join(',')) ~ q) if tags_kv | length > 0 else '' }}
           {{ '' if cmdb_scan_filesystem | bool else '-NoScan' }}
           {{ '' if cmdb_hash_archives | bool else '-NoHash' }}
+          {{ '' if cmdb_update_cache | bool else '-NoUpdateSearch' }}
           {{ ('-ScanPath ' ~ (cmdb_win_scan_paths | map('replace', q, q ~ q) | map('regex_replace', '^|$', q) | join(',')))
              if cmdb_win_scan_paths | length > 0 else '' }}
           {{ ('-ExcludePath ' ~ (cmdb_win_exclude_paths | map('replace', q, q ~ q) | map('regex_replace', '^|$', q) | join(',')))

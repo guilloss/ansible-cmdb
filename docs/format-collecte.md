@@ -64,6 +64,12 @@ des fichiers de configuration actifs de PHP (php.ini, conf.d, pools PHP-FPM, `ph
 PostgreSQL, MySQL et Redis ; une valeur qui ressemble à un secret vaut `***`. Le collecteur shell copie en plus, de ces
 mêmes fichiers, les lignes « clé = valeur », les en-têtes de section et une liste fermée de directives Apache, nginx et
 Redis, sans les lignes dont la clé ressemble à un secret ; la conversion en tire `config_directives`.
+Le 19/11/2026 encore : clé de premier niveau `update_cache` (`manager` : apt, dnf, yum ou zypper ; `cache_date`,
+`last_change` : dates ISO ; `commands[]` : `name`, `args`, `rc`, `timeout`, `output`, `error`), les mises à jour connues du
+cache local, lu sans le rafraîchir ; option `--no-update-cache` des collecteurs Python et shell, variable
+`cmdb_update_cache` (vrai par défaut). Côté Windows, `windows.updates` (`source`, `last_search`, `last_install`, `error`,
+`pending[]` : `title`, `kb[]`, `severity`, `categories[]` en identifiants, `published`, `downloaded`, `mandatory`), et l'option
+`-NoUpdateSearch`.
 Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, `filesystem` et `windows`.
 
 - `meta` : `collector_version`, `started_at`, `finished_at`, `host_label`, `run_id`, `tags` (dont

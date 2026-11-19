@@ -428,3 +428,55 @@ class ReglagesRapport(unittest.TestCase):
         self.assertEqual(m["header"][:3], ["Application", "Plate-forme", "Serveur"])
         self.assertTrue(m["rows"] and all("mbstring" in " ".join(map(str, r)) for r in m["rows"]))
         self.assertFalse(any("<" in str(c) for r in m["rows"] for c in r))
+
+
+class MisesAJourRapport(unittest.TestCase):
+    """Page Mises à jour, onglet Paquets de la fiche serveur, alertes de mises à jour et de fin de support."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = tempfile.mkdtemp(prefix="cmdbu")
+        store, out = os.path.join(cls.d, "store"), os.path.join(cls.d, "build")
+        a = fleet.app_host()
+        a["packages"]["managers"]["rpm"] = [{"name": "openssl-libs", "epoch": "1", "version": "3.0.7", "release": "24.el9", "arch": "x86_64", "vendor": "Red Hat, Inc."}]
+        a["update_cache"] = {"manager": "dnf", "cache_date": "2026-01-01T00:00:00Z", "last_change": "2026-01-01T00:00:00Z", "commands": [
+            {"name": "check_update", "rc": 100, "output": "openssl-libs.x86_64  1:3.0.7-25.el9  baseos\n"},
+            {"name": "updateinfo_security", "rc": 0, "output": "RHSA-2024:1 Important/Sec. openssl-libs-1:3.0.7-25.el9.x86_64\n"}]}
+        w = fleet.doc("w1.exemple.test", "APPDEMO", "prod", "10.0.0.3", "r2", "2026-11-02T08:00:00Z")
+        w["os"]["os_release"] = {"ID": "windows-server", "VERSION_ID": "2012-r2", "PRETTY_NAME": "Windows Server 2012 R2"}
+        w["windows"] = {"os": {"caption": "Microsoft Windows Server 2012 R2", "build": "9600", "ubr": "21000"},
+                        "programs": [{"name": "7-Zip", "version": "24.08"}], "hotfixes": [{"id": "KB5044284", "installed_on": "10/20/2026"}]}
+        fleet.write_store(store, [a, w])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", store, "--out", out], stdout=subprocess.DEVNULL)
+        cls.R = ["misesajour", "misesajour?onglet=serveurs", "misesajour?onglet=paquets", "misesajour?onglet=windows", "alertes", "accueil",
+                 "serveur/" + quote("APPDEMO|prod|app1.exemple.test", safe="") + "?onglet=paquets",
+                 "serveur/" + quote("APPDEMO|prod|w1.exemple.test", safe="") + "?onglet=paquets",
+                 "serveur/" + quote("APPDEMO|prod|w1.exemple.test", safe=""), "support?onglet=systemes"]
+        res = subprocess.check_output(["node", os.path.join(ROOT, "tests", "report_harness.js"), os.path.join(out, "cmdb_rapport.html")] + cls.R)
+        cls.pages = json.loads(res.decode("utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, ignore_errors=True)
+
+    def test_pages(self):
+        p = self.pages["misesajour"]
+        self.assertIn("À traiter", p)
+        self.assertIn("correctifs de sécurité non appliqués", p)
+        self.assertIn("système hors support depuis le 2023-10-10<", self.pages["misesajour?onglet=serveurs"])
+        self.assertIn("openssl-libs", self.pages["misesajour?onglet=paquets"])
+        self.assertIn("9600.21000", self.pages["misesajour?onglet=windows"])
+        self.assertIn("Mises à jour en retard", self.pages["alertes"])
+        self.assertIn("Systèmes hors support", self.pages["alertes"])
+        self.assertIn("Serveurs en retard de mises à jour", self.pages["accueil"])
+        s = self.pages[self.R[6]]
+        self.assertIn("1:3.0.7-25.el9", s)
+        self.assertIn("RHSA-2024:1", s)
+        self.assertIn("Paquets installés", s)
+        wp = self.pages[self.R[7]]
+        self.assertIn("Programmes installés", wp)
+        self.assertIn("7-Zip", wp)
+        self.assertIn("KB5044284", wp)
+        self.assertIn("2026-10-20", wp)
+        self.assertIn("Fin de support du système", self.pages[self.R[8]])
+        self.assertIn("windows-server", self.pages["support?onglet=systemes"])

@@ -1056,6 +1056,35 @@ class DumpScanner(C.Collector):
         return {}           # pas de résolution depuis le contrôleur : le DNS n'est pas celui de la cible
 
 
+UPDATE_ARGS = {
+    "upd_apt_simulate": ("apt_simulate", ["-s", "-q", "-o", "Debug::NoLocking=1", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "dist-upgrade"]),
+    "upd_check_update": ("check_update", ["-C", "-q", "check-update"]),
+    "upd_updateinfo_security": ("updateinfo_security", ["-C", "-q", "updateinfo", "list", "--security"]),
+    "upd_list_updates": ("list_updates", ["--non-interactive", "--no-refresh", "-q", "list-updates"]),
+    "upd_list_patches_security": ("list_patches_security", ["--non-interactive", "--no-refresh", "-q", "list-patches", "--category", "security"]),
+}
+
+
+def build_update_cache(d):
+    """cmd/upd_* -> update_cache, comme le collecteur Python."""
+    mgr = (d.cmd("upd_manager") or "").strip()
+    if not mgr:
+        return None
+    out = {"manager": mgr, "cache_date": (d.cmd("upd_cache_date") or "").strip() or None,
+           "last_change": (d.cmd("upd_last_change") or "").strip() or None, "commands": []}
+    for f, (name, args) in sorted(UPDATE_ARGS.items()):
+        if not os.path.exists(os.path.join(d.root, "cmd", f + ".out")):
+            continue
+        err = os.path.join(d.root, "cmd", f + ".err")
+        try:
+            with open(err, "rb") as fh:
+                etxt = fh.read()[-4000:].decode("utf-8", "replace")
+        except (OSError, IOError):
+            etxt = ""
+        out["commands"].append({"name": name, "args": args, "rc": d.rc(f), "timeout": False, "output": d.cmd(f) or "", "error": etxt})
+    return out
+
+
 def strip_prefix(obj, prefix):
     if isinstance(obj, dict):
         return dict((k, strip_prefix(v, prefix)) for k, v in obj.items())
@@ -1387,6 +1416,9 @@ def convert(tgz_bytes):
             "fingerprints": [v for (path, reason), v in sorted(fps.items()) if reason != "probe"],
         }
         doc["go_binaries"] = {"list": [], "note": "non collecté par le collecteur shell"}
+        upd = build_update_cache(d)
+        if upd:
+            doc["update_cache"] = upd
         return C.sanitize(doc)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

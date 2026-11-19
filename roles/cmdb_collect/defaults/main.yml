@@ -57,6 +57,7 @@ cmdb_exec_max_seconds: 600
 # --- Divers ------------------------------------------------------------------
 cmdb_file_owners: true              # index fichier -> paquet (rpm/dpkg/apk)
 cmdb_pending_updates: false         # dnf/yum updateinfo, apt -s, debsecan : peut contacter les dépôts
+cmdb_update_cache: true             # mises à jour connues du cache local (apt-get -s, dnf/yum -C) : sans réseau ni privilège
 cmdb_nice: true                     # nice 19 + ionice idle
 
 # --- Windows (cmdb_collector.ps1, par WinRM ou SSH) ----------------------------

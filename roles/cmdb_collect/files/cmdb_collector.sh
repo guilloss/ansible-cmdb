@@ -33,6 +33,7 @@ HOST_LABEL=""
 DO_SCAN=1
 DO_EXEC=1
 DO_HASH=1
+DO_UPD=1
 SCAN_MAX=900
 EXEC_MAX=300
 EXEC_TIMEOUT=20
@@ -59,6 +60,7 @@ while [ $# -gt 0 ]; do
         --no-scan-filesystem) DO_SCAN=0 ;;
         --no-exec-probes) DO_EXEC=0 ;;
         --no-hash-archives) DO_HASH=0 ;;
+        --no-update-cache) DO_UPD=0 ;;
         --extra-exclude) EXTRA_PRUNE="$EXTRA_PRUNE -o -path $2"; EXTRA_EXCL="$EXTRA_EXCL $2"; shift ;;
         --extra-exclude=*) EXTRA_PRUNE="$EXTRA_PRUNE -o -path ${1#*=}"; EXTRA_EXCL="$EXTRA_EXCL ${1#*=}" ;;
         --tag) TAGS="$TAGS $2"; shift ;;
@@ -312,6 +314,34 @@ dpkg_owners() {
         _pkg=${_l##*/}; _pkg=${_pkg%.list}; _pkg=${_pkg%%:*}
         sed "s|\$|	$_pkg|" "$_l" | grep -E "$OWN_RX"
     done
+}
+
+# Mises à jour connues du cache local, sans le rafraîchir ni contacter les dépôts (lecture seule, sans privilège)
+upd_newest() { _nf=$(ls -t "$@" 2>/dev/null | head -n 1); [ -n "$_nf" ] && date -u -r "$_nf" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null; }
+section_updates() {
+    [ "$DO_UPD" = 1 ] || return 0
+    log "mises à jour (cache local)"
+    [ -d /var/lib/dpkg/info ] && upd_newest /var/lib/dpkg/info/*.list /var/lib/dpkg/status >"$W/cmd/upd_last_change.out"
+    if have apt-get; then
+        echo apt >"$W/cmd/upd_manager.out"
+        upd_newest /var/lib/apt/lists/*InRelease /var/lib/apt/lists/*_Release >"$W/cmd/upd_cache_date.out"
+        capt 180 upd_apt_simulate env LC_ALL=C apt-get -s -q -o Debug::NoLocking=1 -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= dist-upgrade
+    elif have dnf; then
+        echo dnf >"$W/cmd/upd_manager.out"
+        upd_newest /var/cache/dnf/*/repodata/repomd.xml /var/cache/libdnf5/*/repodata/repomd.xml >"$W/cmd/upd_cache_date.out"
+        capt 180 upd_check_update env LC_ALL=C dnf -C -q check-update
+        capt 180 upd_updateinfo_security env LC_ALL=C dnf -C -q updateinfo list --security
+    elif have yum; then
+        echo yum >"$W/cmd/upd_manager.out"
+        upd_newest /var/cache/yum/*/*/*/repomd.xml /var/cache/yum/*/repomd.xml >"$W/cmd/upd_cache_date.out"
+        capt 180 upd_check_update env LC_ALL=C yum -C -q check-update
+        capt 180 upd_updateinfo_security env LC_ALL=C yum -C -q updateinfo list security
+    elif have zypper; then
+        echo zypper >"$W/cmd/upd_manager.out"
+        upd_newest /var/cache/zypp/raw/*/repodata/repomd.xml >"$W/cmd/upd_cache_date.out"
+        capt 180 upd_list_updates env LC_ALL=C zypper --non-interactive --no-refresh -q list-updates
+        capt 180 upd_list_patches_security env LC_ALL=C zypper --non-interactive --no-refresh -q list-patches --category security
+    fi
 }
 
 section_packages() {
@@ -1328,6 +1358,7 @@ else
     section_os
     section_hw
     section_packages
+    section_updates
     section_processes
     section_network
     section_services
