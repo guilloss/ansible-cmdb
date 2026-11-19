@@ -28,6 +28,7 @@ cmdb-ansible/
     ├── cmdb_report.py          # génération du rapport HTML (appelé par cmdb_build.py)
     ├── cmdb_report_template.html # gabarit du rapport (HTML/CSS/JS sans dépendance)
     ├── cmdb_unpack.py          # décodage du mode « flux » (collect_legacy.yml)
+    ├── cmdb_retag.py           # correction des étiquettes (app, plate-forme) d'un lot mal étiqueté
     ├── cmdb_cve.py             # croisement avec la base de vulnérabilités de Trivy (--trivy-db)
     ├── cmdb_bolt.py            # lecture seule des bases BoltDB (trivy.db), en Python pur
     ├── cmdb_shell_parse.py     # conversion des collectes shell (Linux et AIX) au format JSON commun
@@ -172,6 +173,18 @@ Quand les plates-formes ne sont pas joignables depuis un même contrôleur, chaq
    ```
 
 **Refaire des lots après coup.** `tools/cmdb_store2lots.py store lots` transforme un magasin en lots, un par passage, nommés comme ceux du playbook ; il accepte aussi des collectes sans manifeste ni rangement `<app>/<pf>/<hôte>/`. Si les `.json.gz` ont disparu mais qu'une consolidation a été faite, `--from-sqlite build/cmdb.sqlite` refait les lots depuis la dernière collecte de chaque serveur gardée dans la base (sans l'historique). Le magasin et la base ne sont jamais modifiés.
+
+**Corriger un lot mal étiqueté.** `tools/cmdb_retag.py` réécrit un lot reçu avec de mauvaises étiquettes, par exemple des lots de plusieurs plates-formes tous étiquetés `APPDEMO`/`prod` :
+
+```bash
+python3 tools/cmdb_retag.py lots/APPDEMO__prod__<run_id>.tar.gz                        # contenu du lot
+python3 tools/cmdb_retag.py lots/APPDEMO__prod__<run_id>.tar.gz --platform preprod -n  # simulation
+python3 tools/cmdb_retag.py lots/APPDEMO__prod__<run_id>.tar.gz --platform preprod
+python3 tools/cmdb_retag.py LOT --platform recette --host 'rec-*'   # une partie des serveurs seulement
+python3 tools/cmdb_retag.py LOT --app APPAUTRE --tag site=Paris --untag squad
+```
+
+Il corrige les étiquettes des collectes (`meta.tags`, l'étiquetage d'origine reste dans `meta.retag`), leurs chemins `<app>/<pf>/<hôte>/` dans le lot et les statuts d'hôtes du manifeste, y compris ceux des hôtes injoignables. Le lot corrigé prend le nom que la collecte lui aurait donné ; l'original est renommé en `.orig` (`-o` : écrire ailleurs sans toucher l'original). Ne laisser aucune copie de l'ancien lot en `.tar.gz` dans le répertoire des lots, notamment `<run_id>.tar.gz`, sinon la consolidation lit les deux et compte les serveurs deux fois. Pour plusieurs plates-formes dans un même lot : un appel par plate-forme avec `--host`, en reprenant à chaque fois le lot produit par l'appel précédent.
 
 Un lot dont le passage figure déjà dans le magasin lu (`_runs/<run_id>/`) est ignoré, avec le message « Lot ignoré ». C'est le cas des lots de `store/_lots/`, déjà présents dans `store/` : inutile de les repasser à `cmdb_lots` sur le contrôleur qui a collecté.
 
