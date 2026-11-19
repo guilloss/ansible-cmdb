@@ -89,6 +89,23 @@ def software_tables(db, exclude_categories=()):
             "excluded": list(exclude_categories)}
 
 
+SETTINGS_COLS = ["app", "platform", "host", "product", "source", "scope", "key", "value", "path"]
+
+
+def settings_table(db):
+    """Réglages de configuration (config_settings), chaînes dédoublonnées : une ligne = len(cols) entiers."""
+    strings, index, rows = [], {}, []
+    for r in db.execute("SELECT %s FROM config_settings ORDER BY app, platform, host, product, key" % ", ".join(SETTINGS_COLS)):
+        for v in r:
+            v = "" if v is None else str(v)
+            i = index.get(v)
+            if i is None:
+                i = index[v] = len(strings)
+                strings.append(v)
+            rows.append(i)
+    return {"cols": SETTINGS_COLS, "strings": strings, "rows": rows}
+
+
 def compat_old_base(db):
     """Base produite par une version précédente de cmdb_build.py : chaque colonne, table ou vue apparue depuis
     est simulée (colonne vide, table vide) par des vues temporaires, prioritaires sur la base dans SQLite.
@@ -188,6 +205,7 @@ def build_report(dbpath, outpath, matrix_csv=None, exclude_categories=(), build_
         "vuln_meta": table(db, "SELECT * FROM vuln_meta"),
     }
     data["sw"] = software_tables(db, exclude_categories)
+    data["settings"] = settings_table(db)
     if matrix_csv and os.path.exists(matrix_csv):
         with open(matrix_csv, encoding="utf-8") as f:
             m = list(csv.reader(f, delimiter=";"))

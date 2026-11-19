@@ -162,6 +162,8 @@ td.num { text-align: right; }
 td.wrap { word-break: break-all; }
 td.path { font-family: var(--f-mono); font-size: 12px; word-break: break-all; color: var(--ink-2); min-width: 16ch; }
 .more { margin: 10px 0; display: flex; gap: 10px; align-items: center; }
+.tcsv { display: flex; justify-content: flex-end; margin: 4px 0 14px; }
+.btn.small { padding: 2px 9px; font-size: 12px; }
 
 /* --- étiquettes --- */
 .v { display: inline-block; padding: 0 7px; margin: 1px 4px 1px 0; border: 1px solid var(--line); border-radius: 3px;
@@ -224,6 +226,7 @@ a:hover .v { border-color: var(--accent); }
 .dl dt { color: var(--muted); font-size: 13px; }
 .dl dd { margin: 0; word-break: break-word; }
 .tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--line); margin: 22px 0 14px; }
+.tabs.sub { margin: 4px 0 12px; font-size: 13px; }
 .tabs a { padding: 8px 14px; color: var(--ink-2); border-bottom: 3px solid transparent; margin-bottom: -1px; }
 .tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
 .tabs a:hover { text-decoration: none; color: var(--ink); }
@@ -288,7 +291,10 @@ a:hover .v { border-color: var(--accent); }
 "use strict";
 let D0 = null;         // données complètes
 let D = null;          // données du périmètre courant (application / plate-forme)
-let SW_CSV = null;     // export de la page Logiciels : la vue affichée (détail ou regroupée)
+let VIEW_CSV = null;   // export propre à la page (Logiciels, Serveurs, Versions) : la vue affichée
+let TABLES = [];       // tableaux de la vue affichée, chacun exportable en CSV (lignes filtrées, dans l'ordre du tri)
+let VIEW = {r: "", params: new URLSearchParams()};
+let CF = null;         // réglages de configuration : chaînes dédoublonnées, une ligne = CF.n entiers
 let SW = null;         // logiciels : tables compactes, une ligne = un entier, lue par swVal
 let SCOPE = {app: "", pf: "", tag: ""};
 let MULTI = false;     // plusieurs couples application / plate-forme dans l'inventaire
@@ -400,6 +406,8 @@ function table(cols, rows, opts) {
   opts = opts || {};
   const id = "t" + Math.random().toString(36).slice(2, 8);
   const st = {sort: opts.sort != null ? String(opts.sort) : null, dir: opts.dir || 1, shown: opts.page || PAGE};
+  const reg = {cols, rows, opts, st, n: TABLES.length};
+  if (opts.csv !== false) TABLES.push(reg);
   const render = () => {
     let rs = rows;
     if (st.sort != null) {
@@ -411,29 +419,56 @@ function table(cols, rows, opts) {
         return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y), "fr", {numeric: true})) * st.dir;
       });
     }
+    st.rs = rs;
     const head = cols.map(c => `<th scope="col" class="sortable" data-k="${c.k}">${esc(c.l)}${st.sort === String(c.k) ? ` <span class="dir">${st.dir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("");
     const body = rs.slice(0, st.shown).map(r => "<tr>" + cols.map(c => `<td class="${c.cls || ""}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join("") + "</tr>").join("");
     const more = rs.length > st.shown
       ? `<div class="more"><button class="btn ghost" type="button" data-more="${id}">Afficher ${fmt(Math.min(PAGE * 5, rs.length - st.shown))} lignes de plus</button><span class="hint">${fmt(st.shown)} affichées sur ${fmt(rs.length)}</span></div>` : "";
     const el = document.getElementById(id);
+    const csv = opts.csv !== false ? `<div class="tcsv"><button class="btn ghost small" type="button" data-csv="${id}" title="Toutes les lignes du tableau (${fmt(rs.length)}), dans l'ordre du tri">Exporter en CSV</button></div>` : "";
     el.innerHTML = rows.length
-      ? `<div class="tablewrap"><table${opts.cls ? ` class="${opts.cls}"` : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}`
+      ? `<div class="tablewrap"><table${opts.cls ? ` class="${opts.cls}"` : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}${csv}`
       : `<div class="empty">${opts.empty || "Aucune ligne."}</div>`;
     el.querySelectorAll("th.sortable").forEach(th => th.onclick = () => {
       const k = th.dataset.k; st.dir = st.sort === k ? -st.dir : 1; st.sort = k; render();
     });
     const mb = el.querySelector("[data-more]");
     if (mb) mb.onclick = () => { st.shown += PAGE * 5; render(); };
+    const cb = el.querySelector("[data-csv]");
+    if (cb) cb.onclick = () => { const x = tableCsv(reg); csvDownload(x.name, x.header, x.rows); };
   };
   setTimeout(render, 0);
   return `<div id="${id}"></div>`;
 }
 function csvDownload(name, header, rows) {
-  const q = v => { v = v == null ? "" : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const q = v => { v = v == null ? "" : (typeof v === "number" ? String(v).replace(".", ",") : String(v)); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const txt = "﻿" + [header.join(";")].concat(rows.map(r => r.map(q).join(";"))).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([txt], {type: "text/csv;charset=utf-8"}));
   a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+// Texte d'une cellule HTML produite par le rapport (balises retirées, entités décodées)
+const htmlText = h => String(h == null ? "" : h).replace(/<br\s*\/?>/gi, " ; ").replace(/<[^>]*>/g, " ")
+  .replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'"}[e]))
+  .replace(/\s+/g, " ").replace(/ ([,;)])(?! )/g, "$1").replace(/\( /g, "(").trim();
+// Export d'un tableau : les colonnes affichées, toutes les lignes retenues par les filtres, dans l'ordre du tri.
+// Un nombre reste un nombre ; une colonne Serveur donne le nom seul, précédé de l'application et de la plate-forme.
+function tableCsv(t) {
+  const rs = t.st.rs || t.rows;
+  const obj = rs.length && rs[0] && typeof rs[0] === "object" && !Array.isArray(rs[0]);
+  const apf = obj && "app" in rs[0] && "platform" in rs[0] && t.cols.some(c => c.k === "host") && !t.cols.some(c => c.k === "app" || c.k === "platform");
+  const cell = (c, r) => {
+    if (c.csv) return c.csv(r);
+    const raw = r != null && typeof r === "object" ? r[c.k] : undefined;
+    if (c.k === "host" && typeof raw === "string") return raw;
+    if (typeof raw === "number" && (!c.f || c.cls === "num")) return raw;
+    return c.f ? htmlText(c.f(r)) : (raw == null ? "" : raw);
+  };
+  const p = VIEW.params, part = v => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9.-]+/g, "_").replace(/^_|_$/g, "");
+  const name = ["cmdb", VIEW.r === "serveur" ? "serveur_" + part(hsplit(decodeURIComponent(VIEW.path.split("/").slice(1).join("/"))).host) : VIEW.r,
+    p.get("onglet"), p.get("famille"), p.get("produit"), p.get("cle"), t.opts.name || (TABLES.length > 1 ? String(t.n + 1) : "")].map(part).filter(Boolean).join("_") + ".csv";
+  return {name, header: (apf ? ["Application", "Plate-forme"] : []).concat(t.cols.map(c => c.l)),
+    rows: rs.map(r => (apf ? [r.app, r.platform] : []).concat(t.cols.map(c => cell(c, r))))};
 }
 function bars(items, opts) { // items: [{label, value, href, um}]
   opts = opts || {};
@@ -497,6 +532,7 @@ function applyScope() {
   D.drift_matrix = on ? {cols: DM.cols, rows: DM.rows.filter(r => JSON.parse(r[mc("platforms")]).some(p => keep(r[mc("app")], p, null)))} : DM;
   const s = D0.sw;
   D.sw = Object.assign({}, s, {rows: on ? s.rows.filter(r => keep(swVal(r, "app"), swVal(r, "platform"), swVal(r, "host"))) : s.rows});
+  D.cfr = on ? CF.rows.filter(i => keep(cfv(i, "app"), cfv(i, "platform"), cfv(i, "host"))) : CF.rows;
   const M = D0.matrix;
   D.matrix = on && M.cols[0] === "app" ? {cols: M.cols, rows: M.rows.filter(r => keep(r[0], r[1], r[2]))} : M;
   prepare();
@@ -595,6 +631,12 @@ function swPack(s) {
   s.run = new Set(s.running || []); s.stop = new Set(s.stopped || []);
   return s;
 }
+function cfPack(c) {
+  c = c || {cols: ["app", "platform", "host", "product", "source", "scope", "key", "value", "path"], strings: [], rows: []};
+  const n = c.cols.length, t = Int32Array.from(c.rows);
+  return {s: c.strings, t, n, ci: Object.fromEntries(c.cols.map((k, i) => [k, i])), rows: Array.from({length: t.length / n}, (_, i) => i)};
+}
+const cfv = (i, k) => CF.s[CF.t[i * CF.n + CF.ci[k]]];
 function swLoc(l) {
   const d = SW.lt[l * 2], b = SW.strings[SW.lt[l * 2 + 1]];
   return d < 0 ? b : SW.strings[d] + "/" + b;
@@ -841,10 +883,12 @@ function vServeurs(params) {
         + (h.fs_scan_truncated ? ' <span class="badge warn">parcours partiel</span>' : "")},
     {k: "collected_at", l: "Collecté le", f: h => esc((h.collected_at || "").replace("T", " ").replace("Z", ""))},
   ]);
+  // export : toutes les colonnes de la table hosts, pour les serveurs retenus par le filtre
+  VIEW_CSV = {name: "cmdb_serveurs.csv", header: D.hosts.cols, rows: hs.slice().sort((a, b) => String(a.host).localeCompare(String(b.host), "fr", {numeric: true})).map(h => D.hosts.cols.map(c => h[c]))};
   return `<h2>Serveurs${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
     <div class="toolbar"><input type="text" id="hostfilter" value="${esc(q)}" placeholder="Filtrer par nom, application, étiquette, IP, MAC, système…" aria-label="Filtrer les serveurs">
     <span class="spacer"></span><button class="btn ghost" type="button" id="hostcsv">Exporter en CSV</button></div>
-    ${table(cols, hs, {sort: "host", empty: "Aucun serveur ne correspond."})}`;
+    ${table(cols, hs, {sort: "host", csv: false, empty: "Aucun serveur ne correspond."})}`;
 }
 
 function vServeur(key, params) {
@@ -975,7 +1019,7 @@ function swTable(rs, terms) {
     {k: "category", l: "Nature", sortv: r => s(r, "category"), f: r => `<span class="cat">${esc(s(r, "category"))}${s(r, "ecosystem") && s(r, "ecosystem") !== "generic" ? " / " + esc(s(r, "ecosystem")) : ""}</span>`},
     {k: "managed", l: "Gestion", sortv: r => swMan(r), f: r => swMan(r) ? `<span class="cat">${esc(s(r, "owner_pkg") || "distribution")}</span>` : '<span class="badge warn">hors paquet</span>'},
     {k: "location", l: "Emplacement", cls: "path", sortv: r => s(r, "location"), f: r => hl(s(r, "location"), terms) + runBadge(r) + (s(r, "evidence") ? `<br><span class="cat">${esc(s(r, "evidence"))}</span>` : "")},
-  ], rs, {empty: "Aucun composant ne correspond à cette recherche."});
+  ], rs, {csv: false, empty: "Aucun composant ne correspond à cette recherche."});
 }
 
 function vLogiciels(params) {
@@ -1039,10 +1083,10 @@ function vLogiciels(params) {
       .sort((x, y) => y.hosts.size - x.hosts.size || (x.app + x.pf).localeCompare(y.app + y.pf))
       .map(a => apfLink(a.app, a.pf, `${a.app} / ${a.pf}`, {q: verQ(e), vue: "detail"}) + ` <span class="cat">(${fmt(a.hosts.size)})</span>`).join("<br>")});
     cols.push({k: "hl", l: "Exemples de serveurs", f: e => [...e.hosts].slice(0, 5).map(hkLink).join(", ") + (e.nh > 5 ? "…" : "")});
-    body = table(cols, rows, {sort: "nh", dir: -1, empty: "Aucun composant ne correspond à cette recherche."});
+    body = table(cols, rows, {sort: "nh", dir: -1, csv: false, empty: "Aucun composant ne correspond à cette recherche."});
     // export : la vue affichée, une ligne par composant, distribution et version
     const ord = rows.slice().sort((x, y) => y.nh - x.nh || x.name.localeCompare(y.name) || cmpVer(x.version, y.version));
-    SW_CSV = {name: "cmdb_logiciels_par_version.csv",
+    VIEW_CSV = {name: "cmdb_logiciels_par_version.csv",
       header: ["composant"].concat(anyDist ? ["distribution"] : [], ["version", "serveurs", "occurrences", "hors_paquet", "applications_plates_formes", "liste_serveurs"]),
       rows: ord.map(e => [e.name].concat(anyDist ? [e.dist] : [], [e.version, e.nh, e.n, e.um,
         [...e.apf.values()].sort((x, y) => y.hosts.size - x.hosts.size).map(a => `${a.app} / ${a.pf} (${a.hosts.size})`).join(", "),
@@ -1050,7 +1094,7 @@ function vLogiciels(params) {
   } else {
     body = swTable(res.rows, res.terms);
     const cols = SW.cols.concat(["running"]);
-    SW_CSV = {name: "cmdb_logiciels.csv", header: cols,
+    VIEW_CSV = {name: "cmdb_logiciels.csv", header: cols,
       rows: res.rows.map(r => cols.map(c => c === "managed" ? (swMan(r) ? "paquet" : "hors paquet") : swVal(r, c)))};
   }
   const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(l)}</option>`;
@@ -1085,12 +1129,13 @@ function vVersions(params) {
       const um = v.endsWith("*"), vv = um ? v.slice(0, -1) : v;
       return `<a href="${link("logiciels", {q: "famille:" + fam + " =" + vv, ...(um ? {gestion: "um"} : {})})}">${verTag(vv, um)}</a>`;
     }).join("")})));
+  VIEW_CSV = {name: "cmdb_versions.csv", header: M.cols, rows};
   return `<h2>Versions par serveur</h2>
     <div class="legend"><span>${verTag("1.2.3", false)} paquet de la distribution</span><span>${verTag("1.2.3", true)} installation hors paquet</span>
       <span class="hint">Cliquez une version pour voir où elle est installée.</span></div>
     <div class="toolbar"><input type="text" id="mxfilter" value="${esc(f)}" placeholder="Filtrer (serveur, application, système, version…)" aria-label="Filtrer la matrice">
       <span class="spacer"></span><button class="btn ghost" type="button" id="mxcsv">Exporter en CSV</button></div>
-    ${table(cols, rows, {sort: 2, cls: "matrix", page: 500})}`;
+    ${table(cols, rows, {sort: 2, cls: "matrix", page: 500, csv: false})}`;
 }
 
 function listeningTable(rows, withHost) {
@@ -1181,12 +1226,15 @@ function vSocle(params) {
     if (c !== "runtime" && c !== "os-package") continue;
     (fams.get(f) || fams.set(f, []).get(f)).push(r);
   }
-  const present = SOCLE.filter(([k]) => fams.has(k)).concat([["systemes", "Systèmes"]]);
+  const present = SOCLE.filter(([k]) => fams.has(k)).concat([["systemes", "Systèmes"]],
+    D.cfr.length ? [["reglages", "Réglages"]] : [], rowsOf(D.modules).length ? [["modules", "Modules"]] : []);
   const fam = present.some(([k]) => k === params.get("famille")) ? params.get("famille") : present[0][0];
-  const tabs = `<div class="tabs">${present.map(([k, l]) => `<a href="${link("socle", {famille: k})}"${k === fam ? ' aria-current="page"' : ""}>${esc(l)}${k !== "systemes" ? ` <span class="cat">${fmt(new Set(fams.get(k).map(swHk)).size)}</span>` : ""}</a>`).join("")}</div>`;
+  const tabs = `<div class="tabs">${present.map(([k, l]) => `<a href="${link("socle", {famille: k})}"${k === fam ? ' aria-current="page"' : ""}>${esc(l)}${fams.has(k) ? ` <span class="cat">${fmt(new Set(fams.get(k).map(swHk)).size)}</span>` : ""}</a>`).join("")}</div>`;
   const head = `<h2>Socle logiciel${scopeText() ? ` <span class="cat">${esc(scopeText())}</span>` : ""}</h2>
     <p class="lede">Grandes familles installées sur le parc, par version majeure. Les paquets et les installations hors paquet comptent ;
       les bibliothèques et les applications web n'y sont pas (voir Logiciels). Un clic sur une ligne ouvre le détail dans Logiciels.</p>`;
+  if (fam === "reglages") return head + tabs + socleSettings(params);
+  if (fam === "modules") return head + tabs + socleModules(params);
   if (fam === "systemes") {
     const g = new Map();
     for (const h of D.H) {
@@ -1198,7 +1246,7 @@ function vSocle(params) {
       {k: "os", l: "Système", f: e => `<a href="${link("serveurs", {q: e.os})}">${esc(e.os)}</a>`},
       {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
       {k: "na", l: "Applications / plates-formes", f: e => [...e.apps].sort().slice(0, 8).map(esc).join(", ") + (e.apps.size > 8 ? ` … (${fmt(e.apps.size)})` : "")},
-    ], [...g.values()].map(e => ({...e, nh: e.hosts.length, na: e.apps.size})), {sort: "nh", dir: -1});
+    ], [...g.values()].map(e => ({...e, nh: e.hosts.length, na: e.apps.size})), {sort: "nh", dir: -1, name: "systemes"});
   }
   const rows = fams.get(fam), label = present.find(([k]) => k === fam)[1];
   const group = keyf => {
@@ -1222,7 +1270,7 @@ function vSocle(params) {
     ...(anyDist ? [{k: "nd", l: "Distributions", sortv: e => e.dists.size, f: e => [...e.dists].sort((a, b) => b[1] - a[1]).map(([d, n]) => `${distTag(d)} <span class="cat">${fmt(n)}</span>`).join(" ")}] : []),
     {k: "na", l: "Applications / plates-formes", f: apps},
     {k: "vl", l: "Versions exactes", f: e => [...e.vers].sort(cmpVer).slice(0, 6).map(esc).join(", ") + (e.vers.size > 6 ? ` … (${fmt(e.vers.size)})` : "")},
-  ], group(r => majorOf(fam, swVal(r, "version"))), {sort: "k", dir: -1});
+  ], group(r => majorOf(fam, swVal(r, "version"))), {sort: "k", dir: -1, name: "par_version"});
   let byDist = "";
   if (anyDist) byDist = `<h3>Par distribution</h3>
     <p class="hint">« Oracle JDK » n'est retenu que sur preuve du JDK commercial : JVM « Java(TM) » ou « HotSpot(TM) », <code>BUILD_TYPE="commercial"</code>
@@ -1235,7 +1283,7 @@ function vSocle(params) {
       {k: "vl", l: "Versions majeures", f: e => [...new Set([...e.vers].map(v => majorOf("java", v)))].sort(cmpVer).map(esc).join(", ")},
       {k: "pr", l: "Preuves relevées", cls: "wrap", f: e => [...e.proofs].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p, n]) => `${esc(p)} <span class="cat">(${fmt(n)})</span>`).join("<br>")},
       {k: "na", l: "Applications / plates-formes", f: apps},
-    ], group(r => swDist(r) || "Inconnue"), {sort: "nh", dir: -1});
+    ], group(r => swDist(r) || "Inconnue"), {sort: "nh", dir: -1, name: "par_distribution"});
   let byLic = "";
   if (rows.some(r => swLic(r))) byLic = `<h3>Licence probable des JDK Oracle</h3>
     <p class="hint">Calculée d'après la version exacte : 8 gratuit (BCL) jusqu'à 8u202 et payant en production (OTN) à partir de 8u211 ;
@@ -1247,8 +1295,121 @@ function vSocle(params) {
       {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)}, {k: "n", l: "Installations", cls: "num", f: e => fmt(e.n)},
       {k: "vl", l: "Versions", f: e => [...e.vers].sort(cmpVer).slice(0, 8).map(esc).join(", ") + (e.vers.size > 8 ? ` … (${fmt(e.vers.size)})` : "")},
       {k: "na", l: "Applications / plates-formes", f: apps},
-    ], group(r => swLic(r) || "\u0000").filter(e => e.k !== "\u0000"), {sort: "nh", dir: -1});
+    ], group(r => swLic(r) || "\u0000").filter(e => e.k !== "\u0000"), {sort: "nh", dir: -1, name: "licence"});
   return head + tabs + `<h3>Par version majeure</h3>` + byMajor + byDist + byLic;
+}
+
+// Réglages de configuration : PHP (php -i, php.ini, pools PHP-FPM), Apache, nginx, PostgreSQL, MySQL, Redis
+const CF_PRODUCTS = {php: "PHP", "php-fpm": "PHP-FPM", apache: "Apache httpd", ihs: "IBM HTTP Server", nginx: "Nginx",
+  postgresql: "PostgreSQL", mysql: "MySQL / MariaDB", redis: "Redis"};
+const CF_HELP = {
+  php: `Sources, de la plus sûre à la moins sûre : <b>php -i</b> et <b>php-fpm -i</b> donnent la valeur effective du binaire (CLI, FPM) ;
+    <b>pool PHP-FPM</b> (<code>php_value</code>, <code>php_admin_value</code> d'un pool) l'emporte sur php-fpm -i pour ce pool ;
+    <b>Apache (php_value)</b> fixe la valeur d'un hôte virtuel ou d'un répertoire ; <b>php.ini</b> : jeu de fichiers qu'aucun binaire collecté ne lit,
+    par exemple celui du module Apache (<code>/etc/php/8.2/apache2</code>), où la dernière valeur lue l'emporte ; <b>défaut PHP</b> : directive absente de ce jeu.
+    Ne sont pas lus : les <code>.htaccess</code> et les <code>ini_set()</code> du code.`,
+  apache: `Directives des fichiers actifs (httpd.conf, apache2.conf, conf.d, conf-enabled, sites-enabled, mods-enabled), avec leur portée
+    (hôte virtuel, répertoire). Sans directive, le défaut d'Apache s'applique : <code>ServerTokens Full</code>, <code>ServerSignature Off</code>,
+    <code>TraceEnable On</code>. « (non relevé) » : serveur où Apache a d'autres directives mais pas celle-ci.`,
+  nginx: `Directives des fichiers actifs (nginx.conf, conf.d, sites-enabled), avec le bloc server ou location. Sans directive, le défaut de nginx
+    s'applique (<code>server_tokens on</code>, <code>autoindex off</code>).`,
+};
+function cfRows(prod) {
+  return D.cfr.filter(i => cfv(i, "product") === prod);
+}
+function socleSettings(params) {
+  const prods = [...new Set(D.cfr.map(i => cfv(i, "product")))].sort((a, b) => Object.keys(CF_PRODUCTS).indexOf(a) - Object.keys(CF_PRODUCTS).indexOf(b));
+  const prod = prods.includes(params.get("produit")) ? params.get("produit") : (prods.includes("php") ? "php" : prods[0]);
+  const key = params.get("cle") || "", val = params.get("valeur"), f = (params.get("q") || "").toLowerCase();
+  const rows = cfRows(prod), hk = i => hkey(cfv(i, "app"), cfv(i, "platform"), cfv(i, "host"));
+  const chips = `<div class="tabs sub">${prods.map(p => `<a href="${link("socle", {famille: "reglages", produit: p})}"${p === prod ? ' aria-current="page"' : ""}>${esc(CF_PRODUCTS[p] || p)}
+    <span class="cat">${fmt(new Set(cfRows(p).map(hk)).size)}</span></a>`).join("")}</div>`;
+  const prodHosts = new Set(rows.map(hk));
+  const help = CF_HELP[prod === "ihs" ? "apache" : prod] ? `<p class="hint">${CF_HELP[prod === "ihs" ? "apache" : prod]}</p>` : "";
+  const toolbar = `<div class="toolbar"><input type="text" id="pgfilter" value="${esc(params.get("q") || "")}" placeholder="${key ? "Filtrer (serveur, valeur, fichier…)" : "Filtrer les réglages : session.upload, ssl, expose…"}" aria-label="Filtrer"></div>`;
+  // casse ignorée pour regrouper les valeurs (Off / off), l'orthographe la plus fréquente est affichée
+  const norm = v => String(v == null ? "" : v).trim().toLowerCase();
+  if (!key) {
+    const g = new Map();
+    for (const i of rows) {
+      const k = cfv(i, "key");
+      const e = g.get(k) || g.set(k, {k, hosts: new Set(), vals: new Map(), srcs: new Set()}).get(k);
+      e.hosts.add(hk(i)); e.srcs.add(cfv(i, "source"));
+      const nv = norm(cfv(i, "value")), x = e.vals.get(nv) || e.vals.set(nv, {hosts: new Set(), spell: new Map()}).get(nv);
+      x.hosts.add(hk(i)); x.spell.set(cfv(i, "value"), (x.spell.get(cfv(i, "value")) || 0) + 1);
+    }
+    const spell = x => [...x.spell].sort((a, b) => b[1] - a[1])[0][0];
+    const list = [...g.values()].map(e => ({...e, nh: e.hosts.size, nv: e.vals.size,
+      top: [...e.vals.values()].sort((a, b) => b.hosts.size - a.hosts.size).map(x => [spell(x), x.hosts.size])}))
+      .filter(e => !f || (e.k + " " + e.top.map(x => x[0]).join(" ")).toLowerCase().includes(f));
+    return chips + help + toolbar + `<p class="hint">${fmt(prodHosts.size)} serveur${prodHosts.size > 1 ? "s" : ""} avec des réglages ${esc(CF_PRODUCTS[prod] || prod)} relevés.
+      Un clic sur un réglage montre sa valeur serveur par serveur.</p>` + table([
+      {k: "k", l: "Réglage", cls: "mono", f: e => `<a href="${link("socle", {famille: "reglages", produit: prod, cle: e.k})}">${esc(e.k)}</a>`},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
+      {k: "nv", l: "Valeurs distinctes", cls: "num", f: e => e.nv > 1 ? `<span class="badge warn">${fmt(e.nv)}</span>` : fmt(e.nv)},
+      {k: "top", l: "Répartition (serveurs)", cls: "wrap", sortv: e => e.top[0] && e.top[0][0], csv: e => e.top.map(([v, n]) => `${v} (${n})`).join(" ; "),
+       f: e => e.top.slice(0, 4).map(([v, n]) => `<a href="${link("socle", {famille: "reglages", produit: prod, cle: e.k, valeur: v})}"><code>${esc(v === "" ? "(vide)" : v)}</code></a> <span class="cat">${fmt(n)}</span>`).join(" · ") + (e.top.length > 4 ? ` … (${fmt(e.top.length)})` : "")},
+      {k: "srcs", l: "Sources", sortv: e => [...e.srcs].sort().join(), f: e => [...e.srcs].sort().map(esc).join(", ")},
+    ], list, {sort: "k", name: "reglages", empty: "Aucun réglage ne correspond."});
+  }
+  const kr = rows.filter(i => cfv(i, "key") === key);
+  const withKey = new Set(kr.map(hk)), missing = [...prodHosts].filter(h => !withKey.has(h));
+  const g = new Map();
+  for (const i of kr) {
+    const nv = norm(cfv(i, "value"));
+    const e = g.get(nv) || g.set(nv, {nv, spell: new Map(), hosts: new Set(), n: 0, srcs: new Map(), apps: new Map()}).get(nv);
+    e.hosts.add(hk(i)); e.n++;
+    e.spell.set(cfv(i, "value"), (e.spell.get(cfv(i, "value")) || 0) + 1);
+    e.srcs.set(cfv(i, "source"), (e.srcs.get(cfv(i, "source")) || 0) + 1);
+    const a = cfv(i, "app") + " / " + cfv(i, "platform"); (e.apps.get(a) || e.apps.set(a, new Set()).get(a)).add(hk(i));
+  }
+  const byVal = [...g.values()].map(e => ({...e, v: [...e.spell].sort((a, b) => b[1] - a[1])[0][0], nh: e.hosts.size}));
+  if (missing.length) byVal.push({v: "(non relevé)", nv: "\u0000", hosts: new Set(missing), nh: missing.length, n: 0, srcs: new Map(), apps: new Map(), none: true});
+  const valLink = e => `<a href="${link("socle", {famille: "reglages", produit: prod, cle: key, valeur: e.none ? "(non relevé)" : e.v})}"><code>${esc(e.v === "" ? "(vide)" : e.v)}</code></a>`;
+  const sel = val == null ? null : (val === "(non relevé)" ? "\u0000" : norm(val));
+  const detail = kr.filter(i => sel == null || norm(cfv(i, "value")) === sel).map(i => ({app: cfv(i, "app"), platform: cfv(i, "platform"), host: cfv(i, "host"),
+    source: cfv(i, "source"), scope: cfv(i, "scope"), value: cfv(i, "value"), path: cfv(i, "path")}))
+    .concat(sel === "\u0000" ? missing.map(k => { const x = hsplit(k); return {app: x.app, platform: x.pf, host: x.host, source: "", scope: "", value: "(non relevé)", path: ""}; }) : [])
+    .filter(o => !f || Object.values(o).join(" ").toLowerCase().includes(f));
+  return chips + help + `<h3><code>${esc(key)}</code> <span class="cat">${esc(CF_PRODUCTS[prod] || prod)}</span></h3>
+    <p><a href="${link("socle", {famille: "reglages", produit: prod})}">← Tous les réglages ${esc(CF_PRODUCTS[prod] || prod)}</a></p>
+    <h3>Par valeur</h3>` + table([
+      {k: "v", l: "Valeur", sortv: e => e.v, csv: e => e.v, f: valLink},
+      {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
+      {k: "n", l: "Occurrences", cls: "num", f: e => e.none ? "" : fmt(e.n)},
+      {k: "srcs", l: "Sources", sortv: e => e.srcs.size, f: e => [...e.srcs].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${esc(s)} <span class="cat">(${fmt(n)})</span>`).join(", ")},
+      {k: "apps", l: "Applications / plates-formes", f: e => [...e.apps].sort((a, b) => b[1].size - a[1].size).slice(0, 6).map(([a, h]) => `${esc(a)} <span class="cat">(${fmt(h.size)})</span>`).join(", ") + (e.apps.size > 6 ? ` … (${fmt(e.apps.size)})` : "")},
+      {k: "hl", l: "Exemples de serveurs", f: e => [...e.hosts].slice(0, 5).map(hkLink).join(", ") + (e.nh > 5 ? "…" : "")},
+    ], byVal, {sort: "nh", dir: -1, name: "par_valeur"})
+    + `<h3>Par serveur${val != null ? ` : <code>${esc(val)}</code> <a class="cat" href="${link("socle", {famille: "reglages", produit: prod, cle: key})}">(toutes les valeurs)</a>` : ""}</h3>` + toolbar
+    + table([{k: "host", l: "Serveur", f: o => hostCell(o)}, {k: "value", l: "Valeur", cls: "mono"}, {k: "source", l: "Source"}, {k: "scope", l: "Portée"},
+      {k: "path", l: "Fichier ou binaire", cls: "path"}], detail, {sort: "host", name: "par_serveur", empty: "Aucun serveur ne correspond."});
+}
+function socleModules(params) {
+  const all = rowsOf(D.modules), f = (params.get("q") || "").toLowerCase();
+  const prods = [...new Set(all.map(m => m.product))].sort();
+  const prod = prods.includes(params.get("produit")) ? params.get("produit") : (prods.includes("php") ? "php" : prods[0]);
+  const rows = all.filter(m => m.product === prod);
+  const hosts = new Set(rows.map(m => m.hk));
+  const g = new Map();
+  for (const m of rows) {
+    const e = g.get(m.module) || g.set(m.module, {k: m.module, hosts: new Set(), srcs: new Set(), apps: new Set()}).get(m.module);
+    e.hosts.add(m.hk); e.apps.add(m.app + " / " + m.platform); (m.source || "").split("+").forEach(x => x && e.srcs.add(x));
+  }
+  const list = [...g.values()].map(e => ({...e, nh: e.hosts.size, pc: Math.round(e.hosts.size * 100 / hosts.size)}))
+    .filter(e => !f || e.k.toLowerCase().includes(f));
+  const chips = `<div class="tabs sub">${prods.map(p => `<a href="${link("socle", {famille: "modules", produit: p})}"${p === prod ? ' aria-current="page"' : ""}>${esc(CF_PRODUCTS[p] || p)}
+    <span class="cat">${fmt(new Set(all.filter(m => m.product === p).map(m => m.hk)).size)}</span></a>`).join("")}</div>`;
+  return chips + `<p class="hint">Modules et extensions chargés : <code>php -m</code>, <code>httpd -M</code>, <code>nginx -V</code> et les directives de chargement
+      des fichiers actifs (LoadModule, extension=, shared_preload_libraries…). ${fmt(hosts.size)} serveur${hosts.size > 1 ? "s" : ""} ${esc(CF_PRODUCTS[prod] || prod)}.
+      Le détail par serveur est dans Services réseau › Modules activés.</p>
+    <div class="toolbar"><input type="text" id="pgfilter" value="${esc(params.get("q") || "")}" placeholder="Filtrer les modules" aria-label="Filtrer"></div>` + table([
+    {k: "k", l: "Module", cls: "mono", f: e => `<a href="${link("services", {onglet: "modules", q: e.k})}">${esc(e.k)}</a>`},
+    {k: "nh", l: "Serveurs", cls: "num", f: e => fmt(e.nh)},
+    {k: "pc", l: "Part du parc", cls: "num", f: e => e.pc + " %"},
+    {k: "srcs", l: "Relevé par", sortv: e => [...e.srcs].sort().join(), f: e => [...e.srcs].sort().map(esc).join(", ")},
+    {k: "apps", l: "Applications / plates-formes", f: e => [...e.apps].sort().slice(0, 6).map(esc).join(", ") + (e.apps.size > 6 ? ` … (${fmt(e.apps.size)})` : "")},
+  ], list, {sort: "nh", dir: -1, name: "modules", empty: "Aucun module ne correspond."});
 }
 
 function vMateriel(params) {
@@ -1767,6 +1928,7 @@ function route() {
   let r = parts[0] || "accueil", html;
   const ns = {app: params.get("app") || "", pf: params.get("pf") || "", tag: params.get("tag") || ""};
   if (ns.app !== SCOPE.app || ns.pf !== SCOPE.pf || ns.tag !== SCOPE.tag || !D) { SCOPE = ns; applyScope(); renderScope(); updateGen(); }
+  TABLES = []; VIEW_CSV = null; VIEW = {r, params, path: path || ""};
   try {
     if (r === "serveur") html = vServeur(decodeURIComponent(parts.slice(1).join("/")), params);
     else html = ({accueil: vAccueil, serveurs: vServeurs, logiciels: vLogiciels, versions: vVersions, socle: vSocle, exposition: vExposition,
@@ -1790,14 +1952,13 @@ function bindView(r, params) {
   if (r === "logiciels") {
     const upd = () => go("logiciels", {q: params.get("q") || "", cat: $("#f-cat").value, gestion: $("#f-gestion").value, vue: $("#f-vue").value});
     ["#f-cat", "#f-gestion", "#f-vue"].forEach(s => $(s).onchange = upd);
-    $("#swcsv").onclick = () => { if (SW_CSV) csvDownload(SW_CSV.name, SW_CSV.header, SW_CSV.rows); };
+    $("#swcsv").onclick = () => { if (VIEW_CSV) csvDownload(VIEW_CSV.name, VIEW_CSV.header, VIEW_CSV.rows); };
   }
   if (r === "cles" && $("#c-etat")) {
     const upd = () => { const p = Object.fromEntries(params); Object.assign(p, {etat: $("#c-etat").value, du: $("#c-du").value, au: $("#c-au").value, ca: $("#c-ca").checked ? "1" : ""}); go("cles", p); };
     ["#c-etat", "#c-du", "#c-au", "#c-ca"].forEach(s => $(s).onchange = upd);
   }
-  if (r === "serveurs") $("#hostcsv").onclick = () => csvDownload("cmdb_serveurs.csv", D.hosts.cols, D.hosts.rows);
-  if (r === "versions") { const b = $("#mxcsv"); if (b) b.onclick = () => csvDownload("cmdb_versions.csv", D.matrix.cols, D.matrix.rows); }
+  for (const b of ["#hostcsv", "#mxcsv"]) { const e = $(b); if (e) e.onclick = () => { if (VIEW_CSV) csvDownload(VIEW_CSV.name, VIEW_CSV.header, VIEW_CSV.rows); }; }
 }
 
 // ---------------------------------------------------------------- démarrage
@@ -1821,6 +1982,7 @@ async function load() {
   const txt = await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
   D0 = JSON.parse(txt);
   SW = swPack(D0.sw);
+  CF = cfPack(D0.settings);
   MULTI = new Set(D0.hosts.rows.map(r => r[0] + "|" + r[1])).size > 1;
 }
 function updateGen() {

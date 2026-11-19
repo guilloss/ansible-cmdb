@@ -361,3 +361,70 @@ class DistributionJavaRapport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReglagesRapport(unittest.TestCase):
+    """Socle logiciel › Réglages et Modules ; export CSV de chaque tableau, conforme à la vue affichée."""
+    K = "session.upload_progress.enabled"
+    R = ["socle?famille=reglages", "socle?famille=reglages&produit=php&cle=" + K,
+         "socle?famille=reglages&produit=php&cle=" + K + "&valeur=Off", "socle?famille=reglages&produit=apache&cle=ServerTokens",
+         "socle?famille=modules", "socle?famille=java", "serveurs?q=t1", "versions?q=t1", "services?onglet=modules&q=mbstring"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = tempfile.mkdtemp(prefix="cmdbr")
+        store, out = os.path.join(cls.d, "store"), os.path.join(cls.d, "build")
+        a = fleet.app_host()
+        a["filesystem"]["config_directives"] = [
+            {"product": "php", "key": cls.K, "value": "0", "path": "/etc/php/8.1/apache2/php.ini"},
+            {"product": "apache", "key": "ServerTokens", "value": "Prod", "path": "/etc/httpd/conf/httpd.conf"}]
+        t = fleet.twin("t1.exemple.test", "10.0.1.1", pf="recette")
+        t["filesystem"] = {"config_directives": [{"product": "php", "key": "memory_limit", "value": "256M", "path": "/etc/php/8.1/apache2/php.ini"},
+                                                 {"product": "apache", "key": "TraceEnable", "value": "Off", "path": "/etc/httpd/conf/httpd.conf"}]}
+        fleet.write_store(store, [a, t])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", store, "--out", out], stdout=subprocess.DEVNULL)
+        res = subprocess.check_output(["node", os.path.join(ROOT, "tests", "report_harness.js"), os.path.join(out, "cmdb_rapport.html")] + cls.R)
+        cls.pages = json.loads(res.decode("utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, ignore_errors=True)
+
+    def csv(self, route, name):
+        return next(t for t in self.pages["__tcsv"][route] if t["name"] == name)
+
+    def test_reglages(self):
+        p = self.pages[self.R[0]]
+        self.assertIn("Réglages", p)
+        self.assertIn(self.K, p)
+        x = self.csv(self.R[0], "cmdb_socle_reglages_reglages.csv")
+        self.assertEqual(x["header"], ["Réglage", "Serveurs", "Valeurs distinctes", "Répartition (serveurs)", "Sources"])
+        row = next(r for r in x["rows"] if r[0] == self.K)
+        self.assertEqual(row[1:4], [2, 2, "Off (1) ; On (1)"])   # mod_php : 0 -> Off ; t1 : défaut PHP On
+        v = self.csv(self.R[1], "cmdb_socle_reglages_php_" + self.K + "_par_valeur.csv")
+        self.assertEqual(sorted((r[0], r[1]) for r in v["rows"]), [("Off", 1), ("On", 1)])
+        s = self.csv(self.R[2], "cmdb_socle_reglages_php_" + self.K + "_par_serveur.csv")
+        self.assertEqual(s["header"][:4], ["Application", "Plate-forme", "Serveur", "Valeur"])
+        self.assertEqual([r[2:4] for r in s["rows"]], [["app1.exemple.test", "Off"]])
+        # Apache : t1 a des directives Apache, mais pas ServerTokens
+        st = self.csv(self.R[3], "cmdb_socle_reglages_apache_ServerTokens_par_valeur.csv")
+        self.assertEqual(sorted(r[0] for r in st["rows"]), ["(non relevé)", "Prod"])
+
+    def test_modules(self):
+        p = self.pages["socle?famille=modules"]
+        self.assertIn("mbstring", p)
+        x = self.csv("socle?famille=modules", "cmdb_socle_modules_modules.csv")
+        self.assertIn("mbstring", [r[0] for r in x["rows"]])
+
+    def test_exports(self):
+        # Socle par version : export du tableau affiché
+        names = [t["name"] for t in self.pages["__tcsv"]["socle?famille=java"]]
+        self.assertIn("cmdb_socle_java_par_version.csv", names)
+        # Serveurs et Versions : le bouton de la page suit le filtre
+        self.assertEqual([r[2] for r in self.pages["__csv"]["serveurs?q=t1"]["rows"]], ["t1.exemple.test"])
+        self.assertEqual([r[2] for r in self.pages["__csv"]["versions?q=t1"]["rows"]], ["t1.exemple.test"])
+        # un tableau quelconque : filtre appliqué, texte sans balises, serveur précédé de l'application
+        m = self.pages["__tcsv"]["services?onglet=modules&q=mbstring"][0]
+        self.assertEqual(m["header"][:3], ["Application", "Plate-forme", "Serveur"])
+        self.assertTrue(m["rows"] and all("mbstring" in " ".join(map(str, r)) for r in m["rows"]))
+        self.assertFalse(any("<" in str(c) for r in m["rows"] for c in r))

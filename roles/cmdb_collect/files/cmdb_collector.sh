@@ -474,14 +474,19 @@ CRYPTO_FIND="-o -name *.key -o -name *.pem -o -name *.crt -o -name *.cer -o -nam
  -o -name *.p8 -o -name *.pk8 -o -name *.ppk -o -name *.truststore -o -name *.sso -o -name id_rsa -o -name id_dsa \
  -o -name id_ecdsa -o -name id_ed25519 -o -name keystore -o -name truststore -o -name secring.gpg -o -name ssh_host_*_key"
 
-# grab_mod FICHIER... : seules les directives de chargement sont copiées (pas de secret dans ces lignes)
+# grab_mod FICHIER... : seules sont copiées les directives de chargement, les points d'entrée et les
+# réglages (php.ini, pools PHP-FPM, PostgreSQL, MySQL : lignes « clé = valeur » ; Apache, nginx, Redis :
+# liste fermée). Une ligne dont la clé ressemble à un secret (pass, secret, token, _key…) ne sort pas.
+GRAB_DIR_RX='^[ 	]*(\[|\}|[A-Za-z_][A-Za-z0-9_.-]*(\[[^]]*\])?[ 	]*=|[a-z][a-z0-9_-]*[ 	]*$|</?(Directory|Location|Files|Proxy)|(Server(Tokens|Signature|Limit)|TraceEnable|FileETag|HostnameLookups|UseCanonicalName|Timeout|KeepAlive|KeepAliveTimeout|MaxKeepAliveRequests|LimitRequest[A-Za-z]*|Options|AllowOverride|Protocols|MaxRequestWorkers|MaxClients|StartServers|ThreadsPerChild|MaxConnectionsPerChild|MaxRequestsPerChild|User|Group|ExtendedStatus|LogLevel|SSLProtocol|SSLCipherSuite|SSLHonorCipherOrder|SSLCompression|SSLSessionTickets|SSLUseStapling|SSLInsecureRenegotiation|SSLVerifyClient|SSLStrictSNIVHostCheck|SSLProxy[A-Za-z]*|php_(admin_)?(value|flag)|Header|add_header|more_set_headers|server_tokens|ssl_[a-z_]*|autoindex|client_[a-z_]*|keepalive_timeout|send_timeout|http2|user|worker_[a-z_]*|large_client_header_buffers|proxy_ssl_verify|http|port|protected-mode|tls-port|maxmemory[a-z-]*|appendonly|save|rename-command|enable-[a-z-]*)[ 	])'
+GRAB_SECRET_RX='^[ 	]*[^ 	=]*(pass|secret|token|_key|_pw|auth|credential|private)[^ 	=]*([ 	]*=|[ 	]*$)|^[ 	]*(requirepass|masterauth|masteruser)[ 	]'
 grab_mod() {
     for _f in "$@"; do
         [ -f "$_f" ] && [ -r "$_f" ] || continue
         _d="$W/fs${_f%/*}"
         if [ "$_d" != "$_lastdir" ]; then mkdir -p "$_d" 2>/dev/null; _lastdir=$_d; fi
-        dd if="$_f" bs=1024 count=1024 2>/dev/null | grep -iE \
-            '^[ 	]*(LoadModule|load_module|extension|zend_extension|shared_preload_libraries|loadmodule|plugin[-_]load|</?VirtualHost|ServerName|ServerAlias|DocumentRoot|Listen|ProxyPass|SSLEngine|SSLCertificateFile|server[ 	]|server\{|server_name|root[ 	]|proxy_pass|ssl_certificate[ 	]|upstream[ 	]|location[ 	]|frontend[ 	]|backend[ 	]|bind[ 	])' >>"$W/fs$_f"
+        dd if="$_f" bs=1024 count=2048 2>/dev/null | grep -iE \
+            '^[ 	]*(LoadModule|load_module|extension|zend_extension|shared_preload_libraries|loadmodule|plugin[-_]load|</?VirtualHost|ServerName|ServerAlias|DocumentRoot|Listen|ProxyPass|SSLEngine|SSLCertificateFile|server[ 	]|server\{|server_name|root[ 	]|proxy_pass|ssl_certificate[ 	]|upstream[ 	]|location[ 	]|frontend[ 	]|backend[ 	]|bind[ 	])'"|$GRAB_DIR_RX" \
+            | grep -viE "$GRAB_SECRET_RX" >>"$W/fs$_f"
     done
 }
 # Les répertoires de modules activés sont faits de liens symboliques, invisibles de "find -type f"
@@ -490,7 +495,10 @@ section_modules() {
     grab_mod /etc/apache2/mods-enabled/*.load /etc/httpd/conf.modules.d/*.conf /etc/nginx/modules-enabled/*.conf \
         /etc/php.d/*.ini /etc/php/*/*/conf.d/*.ini /etc/php/conf.d/*.ini \
         /etc/apache2/sites-enabled/* /etc/apache2/vhosts.d/*.conf /etc/httpd/conf.d/*.conf /etc/httpd/vhosts.d/*.conf \
-        /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf /opt/IBM/HTTPServer/conf/*.conf /usr/IBM/HTTPServer/conf/*.conf
+        /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf /opt/IBM/HTTPServer/conf/*.conf /usr/IBM/HTTPServer/conf/*.conf \
+        /etc/apache2/conf-enabled/*.conf /etc/apache2/mods-enabled/*.conf /etc/php-fpm.conf /etc/php-fpm.d/*.conf \
+        /etc/php/*/fpm/php-fpm.conf /etc/php/*/fpm/pool.d/*.conf /etc/my.cnf.d/*.cnf /etc/mysql/conf.d/*.cnf \
+        /etc/mysql/mariadb.conf.d/*.cnf /etc/mysql/mysql.conf.d/*.cnf
 }
 
 # crypto_one FICHIER NUMERO : ce fichier est toujours mentionné. Seuls sortent les certificats

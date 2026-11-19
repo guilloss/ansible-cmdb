@@ -50,6 +50,7 @@ CREATE TABLE crypto_certs (host TEXT, path TEXT, alias TEXT, subject TEXT, cn TE
   days_left INTEGER, serial TEXT, sans TEXT, sig_alg TEXT, key_alg TEXT, key_bits INTEGER, self_signed INTEGER, is_ca INTEGER,
   sha256 TEXT);
 CREATE TABLE runtime_settings (host TEXT, runtime TEXT, binary TEXT, section TEXT, key TEXT, value TEXT);
+CREATE TABLE config_settings (host TEXT, product TEXT, source TEXT, scope TEXT, key TEXT, value TEXT, path TEXT);
 CREATE TABLE runtime_services (host TEXT, proto TEXT, address TEXT, port INTEGER, exposed INTEGER, pid INTEGER, user TEXT,
   runtime TEXT, version TEXT, process TEXT, app_ref TEXT, options TEXT, exe TEXT);
 CREATE TABLE changes (host TEXT, from_run TEXT, to_run TEXT, from_at TEXT, to_at TEXT, kind TEXT, change TEXT, item TEXT,
@@ -286,6 +287,7 @@ class ExtrasMixin(object):
         self.endpoints(host, doc, fs, listening)
         self.crypto(host, fs)
         self.runtime_details(host, doc, procs, net)
+        self.config_settings(host, doc, fs)
         if cmdb_hardening.is_linux(doc):
             for r, status, seen in cmdb_hardening.evaluate(doc, self.hardening_rules()):
                 self.add("hardening_results", (host, r["id"], r["ref"], r["level"], r["title"], status, seen, r["expected"], r["note"] or None))
@@ -575,6 +577,96 @@ class ExtrasMixin(object):
             addr = l.get("address")
             self.add("runtime_services", (host, l.get("proto"), addr, l.get("port"), 0 if addr in LOOPBACK else 1, l.get("pid"), p.get("user"),
                                           runtime, version, p.get("comm"), ref, opts, p.get("exe")))
+
+
+# -- Réglages de configuration -------------------------------------------------------
+# Valeur par défaut de PHP quand aucun php.ini ne fixe la directive (stable de PHP 5.4 à 8.x)
+PHP_DEFAULTS = {"session.upload_progress.enabled": "On", "session.upload_progress.cleanup": "On", "expose_php": "On",
+                "allow_url_fopen": "On", "allow_url_include": "Off", "file_uploads": "On", "short_open_tag": "On",
+                "session.use_only_cookies": "On", "memory_limit": "128M", "upload_max_filesize": "2M", "post_max_size": "8M",
+                "max_execution_time": "30", "max_input_time": "-1", "max_file_uploads": "20"}
+PHP_DIRECTIVE_RX = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
+PHP_INFO_KEYS = ("PHP Version", "Server API", "Loaded Configuration File")
+PHP_SAPI = {"Command Line Interface": "cli", "FPM/FastCGI": "fpm", "CGI/FastCGI": "cgi", "Apache 2.0 Handler": "apache2"}
+PHP_INI_GROUP_RX = re.compile(r"^(.*/php/(\d[\d.]*)/([^/]+))/(?:php\.ini|conf\.d/[^/]+)$")
+ON_WORDS, OFF_WORDS = ("1", "on", "yes", "true"), ("0", "off", "no", "false", "none", "")
+
+
+def php_ini_group(path):
+    """(répertoire, libellé) du jeu de php.ini auquel un fichier appartient : /etc/php/8.2/apache2 -> « apache2 8.2 »."""
+    m = PHP_INI_GROUP_RX.match(path or "")
+    if m:
+        return m.group(1), "%s %s" % (m.group(3), m.group(2))
+    d = os.path.dirname(path or "")
+    if os.path.basename(d) in ("php.d", "conf.d"):
+        d = os.path.dirname(d)
+    return d, "php.ini " + (d or "?")
+
+
+def php_bool(value):
+    v = (value or "").strip().lower()
+    return "On" if v in ON_WORDS else ("Off" if v in OFF_WORDS else value)
+
+
+class ConfigMixin(object):
+    def config_settings(self, host, doc, fs):
+        """config_settings : php -i et php-fpm -i (valeurs effectives) ; php.ini des jeux qu'aucun binaire ne lit
+        (mod_php d'Apache : valeur explicite, sinon défaut de PHP) ; pools PHP-FPM et php_value d'Apache ;
+        directives d'Apache, nginx, PostgreSQL, MySQL, Redis et PHP-FPM."""
+        rows, covered, bools = [], set(), set(k for k, v in PHP_DEFAULTS.items() if v in ("On", "Off"))
+        for r in ((doc.get("runtimes") or {}).get("list") or []):
+            if r.get("probe") not in ("php", "php-fpm"):
+                continue
+            for o in r.get("outputs") or []:
+                if "-i" not in (o.get("args") or []) or not o.get("output"):
+                    continue
+                kv = parse_phpinfo(o["output"])
+                info = dict((k, v) for _s, k, v in kv if k in PHP_INFO_KEYS or k == "Scan this dir for additional .ini files")
+                sapi = PHP_SAPI.get(info.get("Server API"), (info.get("Server API") or r["probe"]).lower())
+                for k in ("Loaded Configuration File", "Scan this dir for additional .ini files"):
+                    v = info.get(k) or ""
+                    if v.startswith("/"):
+                        covered.add(php_ini_group(v if k.startswith("Loaded") else v.rstrip("/") + "/x.ini")[0])
+                seen = set()
+                for _s, k, v in kv:
+                    if (k in PHP_INFO_KEYS or PHP_DIRECTIVE_RX.match(k)) and k not in seen:
+                        seen.add(k)
+                        if v in ("On", "Off"):
+                            bools.add(k)
+                        rows.append(("php", r["probe"] + " -i", sapi, k, v, r.get("realpath")))
+        ini = {}
+        for d in fs.get("config_directives") or []:
+            prod, key, value, scope, path = d.get("product"), d.get("key"), d.get("value"), d.get("scope"), d.get("path")
+            if not prod or not key:
+                continue
+            if prod == "php" and scope and scope.startswith("pool "):
+                rows.append(("php", "pool PHP-FPM", scope, key, value, path))
+            elif prod == "php" and scope and scope.split()[0] in ("apache", "ihs"):
+                rows.append(("php", "Apache (php_value)", scope.split(None, 1)[1] if " " in scope else None, key, value, path))
+            elif prod == "php":
+                grp, lab = php_ini_group(path)
+                if grp not in covered:
+                    ini.setdefault((grp, lab), []).append((scope, key, value, path))
+            else:
+                rows.append((prod, "configuration", scope, key, value, path))
+        for (grp, lab), items in sorted(ini.items()):
+            # php.ini d'abord, puis les fichiers de conf.d par ordre alphabétique : la dernière valeur l'emporte
+            items.sort(key=lambda x: (0 if x[3].endswith("/php.ini") else 1, x[3]))
+            eff = {}
+            for scope, key, value, path in items:
+                eff[(scope, key)] = (value, path)
+            for (scope, key), (value, path) in sorted(eff.items(), key=lambda x: (x[0][0] or "", x[0][1])):
+                rows.append(("php", "php.ini", lab + (" [%s]" % scope if scope else ""), key, value, path))
+            for key, value in sorted(PHP_DEFAULTS.items()):
+                if (None, key) not in eff:
+                    rows.append(("php", "défaut PHP", lab, key, value, grp))
+        for prod, src, scope, key, value, path in rows:
+            if prod == "php" and key in bools and src != "défaut PHP":
+                value = php_bool(value)
+            self.add("config_settings", (host, prod, src, scope, key, value, path))
+
+
+ExtrasMixin.config_settings = ConfigMixin.config_settings
 
 
 def oracle_fleet(db):

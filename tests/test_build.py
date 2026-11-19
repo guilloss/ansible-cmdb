@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from tests import fleet
-from tests.common import TOOLS
+from tests.common import TOOLS, C
 import cmdb_extras as X
 
 
@@ -522,3 +522,54 @@ class BaseAncienne(unittest.TestCase):
         self.assertTrue(os.path.getsize(os.path.join(d, "r.html")) > 10000)
         with open(dbp, "rb") as f:
             self.assertEqual(hashlib.sha1(f.read()).hexdigest(), before)
+
+
+class Reglages(unittest.TestCase):
+    """config_settings : php -i effectif, php.ini des jeux sans binaire, pools PHP-FPM, directives Apache et nginx."""
+
+    def test_parseur(self):
+        P = C.parse_directives
+        self.assertEqual(C.directive_product("/etc/php/8.2/apache2/conf.d/90-local.ini", "90-local.ini"), "php")
+        self.assertEqual(C.directive_product("/etc/php/8.2/fpm/pool.d/www.conf", "www.conf"), "php-fpm")
+        self.assertEqual(C.directive_product("/etc/apache2/conf-enabled/security.conf", "security.conf"), "apache")
+        self.assertIsNone(C.directive_product("/etc/apache2/conf-available/security.conf", "security.conf"))
+        php = P("[PHP]\nsession.upload_progress.enabled = Off ; x\n;expose_php = On\nmysqli.default_pw = s\nextension=gd\n", "x", "php")
+        self.assertEqual([(d["key"], d["value"]) for d in php], [("session.upload_progress.enabled", "Off"), ("mysqli.default_pw", "***")])
+        fpm = P("[www]\nphp_admin_value[session.upload_progress.enabled] = 0\npm.max_children = 5\n", "x", "php-fpm")
+        self.assertEqual([(d["product"], d["key"], d["value"], d["scope"]) for d in fpm],
+                         [("php", "session.upload_progress.enabled", "0", "pool www"), ("php-fpm", "pm.max_children", "5", "pool www")])
+        ap = P("ServerTokens Prod\n<VirtualHost *:443>\nServerName www.exemple.test\n<Directory /srv>\nOptions Indexes\n</Directory>\n"
+               "SetEnv DB_PASSWORD x\n</VirtualHost>\n", "x", "apache")
+        self.assertEqual([(d["key"], d["value"], d["scope"]) for d in ap],
+                         [("ServerTokens", "Prod", None), ("Options", "Indexes", "vhost www.exemple.test / Directory /srv")])
+        ng = P("http { server_tokens off; server { server_name a.exemple.test; location / { autoindex on; } } }", "x", "nginx")
+        self.assertEqual([(d["key"], d["value"], d["scope"]) for d in ng],
+                         [("server_tokens", "off", None), ("autoindex", "on", "server a.exemple.test / location /")])
+
+    def test_base(self):
+        d = tempfile.mkdtemp(prefix="cmdbr")
+        self.addCleanup(shutil.rmtree, d, True)
+        a = fleet.app_host()
+        a["runtimes"]["list"][0]["outputs"].append({"args": ["-i"], "rc": 0, "output": (
+            "phpinfo()\nPHP Version => 8.2.7\nServer API => Command Line Interface\nLoaded Configuration File => /etc/php/8.2/cli/php.ini\n\n"
+            "session\n\nDirective => Local Value => Master Value\nsession.upload_progress.enabled => On => On\n")})
+        a["filesystem"]["config_directives"] = [
+            {"product": "php", "key": "session.upload_progress.enabled", "value": "Off", "scope": None, "path": "/etc/php/8.2/cli/php.ini"},
+            {"product": "php", "key": "session.upload_progress.enabled", "value": "1", "scope": None, "path": "/etc/php/8.2/apache2/php.ini"},
+            {"product": "php", "key": "session.upload_progress.enabled", "value": "off", "scope": None, "path": "/etc/php/8.2/apache2/conf.d/99-local.ini"},
+            {"product": "php", "key": "memory_limit", "value": "512M", "scope": None, "path": "/etc/php/8.2/cgi/php.ini"},
+            {"product": "php", "key": "session.upload_progress.enabled", "value": "0", "scope": "pool www", "path": "/etc/php/8.2/fpm/pool.d/www.conf"},
+            {"product": "apache", "key": "ServerTokens", "value": "Prod", "scope": None, "path": "/etc/apache2/conf-enabled/security.conf"}]
+        fleet.write_store(os.path.join(d, "store"), [a])
+        subprocess.check_call([sys.executable, os.path.join(TOOLS, "cmdb_build.py"), "--store", os.path.join(d, "store"), "--out", os.path.join(d, "b")],
+                              stdout=subprocess.DEVNULL)
+        db = sqlite3.connect(os.path.join(d, "b", "cmdb.sqlite"))
+        got = sorted(db.execute("SELECT product, source, scope, key, value FROM config_settings WHERE key IN ('session.upload_progress.enabled', 'ServerTokens')"))
+        mem = db.execute("SELECT source, value FROM config_settings WHERE key = 'memory_limit' AND scope = 'cgi 8.2'").fetchall()
+        db.close()
+        self.assertEqual(got, [("apache", "configuration", None, "ServerTokens", "Prod"),
+                               ("php", "défaut PHP", "cgi 8.2", "session.upload_progress.enabled", "On"),
+                               ("php", "php -i", "cli", "session.upload_progress.enabled", "On"),      # le php.ini de cli est lu par php -i
+                               ("php", "php.ini", "apache2 8.2", "session.upload_progress.enabled", "Off"),  # conf.d l'emporte
+                               ("php", "pool PHP-FPM", "pool www", "session.upload_progress.enabled", "Off")])
+        self.assertEqual(mem, [("php.ini", "512M")])

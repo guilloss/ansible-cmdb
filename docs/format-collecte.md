@@ -59,6 +59,11 @@ Le 18/11/2026, dans `hardware.cpu` : les clés ARM de `/proc/cpuinfo` (`Features
 `CPU part`, `CPU variant`, `CPU revision`) ; côté Windows, `vendor_id`, `cpu family`, `model`, `stepping` (tirés de
 `Win32_Processor.Description`), `flags` (extensions de sse3 à avx512f, par `IsProcessorFeaturePresent`) et
 `flags_source`.
+Le 19/11/2026, dans `filesystem` : `config_directives` (`product`, `key`, `value`, `scope`, `path`), les directives
+des fichiers de configuration actifs de PHP (php.ini, conf.d, pools PHP-FPM, `php_value` d'Apache), Apache, IHS, nginx,
+PostgreSQL, MySQL et Redis ; une valeur qui ressemble à un secret vaut `***`. Le collecteur shell copie en plus, de ces
+mêmes fichiers, les lignes « clé = valeur », les en-têtes de section et une liste fermée de directives Apache, nginx et
+Redis, sans les lignes dont la clé ressemble à un secret ; la conversion en tire `config_directives`.
 Le collecteur Windows produit `meta`, `os`, `hardware`, `processes`, `network`, `filesystem` et `windows`.
 
 - `meta` : `collector_version`, `started_at`, `finished_at`, `host_label`, `run_id`, `tags` (dont

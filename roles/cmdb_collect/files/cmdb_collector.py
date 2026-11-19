@@ -1406,6 +1406,203 @@ def parse_modules(text, path):
 
 
 # --------------------------------------------------------------------------
+# Réglages de configuration (PHP, PHP-FPM, Apache, IHS, nginx, PostgreSQL, MySQL, Redis)
+# PHP, PHP-FPM, PostgreSQL et MySQL : toutes les directives actives, sauf celles qui ressemblent à un
+# secret (valeur remplacée par ***). Apache, nginx et Redis : une liste fermée de directives.
+# Partagé avec cmdb_shell_parse.py (le collecteur shell copie les mêmes lignes, sans secret).
+# --------------------------------------------------------------------------
+SECRET_KEY_RX = re.compile(r"pass(word)?$|passwd|_pw$|^pw$|secret|token$|_key$|auth$|authkey|credential|private", re.I)
+APACHE_DIRECTIVES = dict((k.lower(), k) for k in (
+    "ServerTokens", "ServerSignature", "TraceEnable", "FileETag", "HostnameLookups", "UseCanonicalName", "Timeout", "KeepAlive",
+    "KeepAliveTimeout", "MaxKeepAliveRequests", "LimitRequestBody", "LimitRequestFields", "LimitRequestFieldSize", "LimitRequestLine",
+    "Options", "AllowOverride", "Protocols", "ServerLimit", "MaxRequestWorkers", "MaxClients", "StartServers", "ThreadsPerChild",
+    "MaxConnectionsPerChild", "MaxRequestsPerChild", "User", "Group", "ExtendedStatus", "LogLevel", "SSLProtocol", "SSLCipherSuite",
+    "SSLHonorCipherOrder", "SSLCompression", "SSLSessionTickets", "SSLUseStapling", "SSLInsecureRenegotiation", "SSLVerifyClient",
+    "SSLStrictSNIVHostCheck", "SSLProxyEngine", "SSLProxyVerify", "SSLProxyProtocol"))
+NGINX_DIRECTIVES = set(["server_tokens", "ssl_protocols", "ssl_ciphers", "ssl_prefer_server_ciphers", "ssl_session_tickets",
+                        "ssl_stapling", "autoindex", "client_max_body_size", "keepalive_timeout", "client_body_timeout", "send_timeout",
+                        "http2", "user", "worker_processes", "worker_connections", "large_client_header_buffers", "proxy_ssl_verify"])
+REDIS_DIRECTIVES = set(["bind", "port", "protected-mode", "tls-port", "maxmemory", "maxmemory-policy", "appendonly", "save",
+                        "rename-command", "enable-debug-command", "enable-protected-configs"])
+SECURITY_HEADERS = set(["strict-transport-security", "x-frame-options", "x-content-type-options", "content-security-policy",
+                        "referrer-policy", "x-xss-protection", "permissions-policy"])
+MYSQL_SECTIONS = re.compile(r"^(mysqld(-\d.*)?|mariadb(-\d.*)?|server|galera|mysqld_safe|mariadbd)$", re.I)
+
+
+def directive_product(path, lname):
+    """Produit dont un fichier porte les réglages, ou None."""
+    if re.search(r"/usr/share/|/samples?/|/docs?/|/examples?/|/tests?/|/site-packages/|/node_modules/|-available/", path):
+        return None
+    if lname == "php-fpm.conf" or (lname.endswith(".conf") and re.search(r"/php-fpm\.d/|/fpm/pool\.d/|/php-fpm/", path)):
+        return "php-fpm"
+    if lname.endswith(".ini") and (lname == "php.ini" or "/php.d/" in path or ("/conf.d/" in path and "/php" in path)):
+        return "php"
+    if lname in ("postgresql.conf", "postgresql.auto.conf"):
+        return "postgresql"
+    if lname in ("my.cnf", "mysqld.cnf", "mariadb.cnf", "server.cnf") or (
+            lname.endswith(".cnf") and re.search(r"/(my\.cnf\.d|mysql/conf\.d|mariadb\.conf\.d|mysql\.conf\.d)/", path)):
+        return "mysql"
+    if lname == "redis.conf":
+        return "redis"
+    if lname == "nginx.conf" or (re.search(r"/nginx/", path) and (lname.endswith(".conf") or "/sites-enabled/" in path)):
+        return "nginx"
+    web = lname in ("httpd.conf", "apache2.conf", "ports.conf", "ssl.conf", "httpd-vhosts.conf", "httpd-ssl.conf", "vhosts.conf",
+                    "httpd-default.conf", "httpd-mpm.conf", "security.conf")
+    if web or re.search(r"/(httpd|apache2?|HTTPServer)/", path) and (lname.endswith((".conf", ".load")) or "/sites-enabled/" in path):
+        return "ihs" if "/HTTPServer/" in path else "apache"
+    return None
+
+
+def _secret(key, value):
+    return "***" if value not in (None, "") and SECRET_KEY_RX.search(key) else value
+
+
+def _ini_value(v):
+    v = v.strip()
+    if v[:1] in ('"', "'"):
+        q = v[0]
+        end = v.find(q, 1)
+        return v[1:end] if end > 0 else v[1:]
+    return v
+
+
+def parse_directives(text, path, product):
+    """Directives actives d'un fichier -> [{product, key, value, scope}]"""
+    out = []
+
+    def add(prod, key, value, scope=None):
+        if prod in ("php", "php-fpm", "postgresql", "mysql"):
+            value = _secret(key, value)
+        out.append({"product": prod, "key": key, "value": value, "scope": scope})
+    if product in ("php", "php-fpm", "postgresql", "mysql"):
+        section = None
+        for line in (text or "").splitlines():
+            s = line.strip()
+            if not s or s[0] in ";#":
+                continue
+            m = re.match(r"^\[([^\]]+)\]", s)
+            if m:
+                section = m.group(1).strip()
+                continue
+            if product == "mysql" and section is not None and not MYSQL_SECTIONS.match(section):
+                continue
+            m = re.match(r"^([A-Za-z_][\w.\-]*(?:\[[^\]]*\])?)\s*(?:=\s*(.*))?$", s)
+            if not m or (m.group(2) is None and product != "mysql"):
+                continue
+            key, raw = m.group(1), m.group(2)
+            if raw is None:
+                value = "ON"
+            elif product in ("postgresql", "mysql"):
+                value = _ini_value(raw.split("#")[0] if raw.strip()[:1] not in "'\"" else raw)
+            else:
+                value = _ini_value(raw.split(";")[0] if raw.strip()[:1] not in "'\"" else raw)
+            if product == "php" and key.lower() in ("extension", "zend_extension"):
+                continue
+            pm = re.match(r"^php_(admin_)?(value|flag)\[(.+)\]$", key)
+            if product == "php-fpm" and pm:
+                add("php", pm.group(3).strip(), value, "pool %s" % section if section else None)
+            elif product == "php-fpm":
+                add("php-fpm", key, value, "pool %s" % section if section and section != "global" else None)
+            elif product == "mysql":
+                add("mysql", key.replace("-", "_"), value, section)
+            elif product == "php":
+                add("php", key, value, section if section and re.match(r"^(HOST|PATH)=", section, re.I) else None)
+            else:
+                add(product, key, value)
+        return out
+    if product == "redis":
+        for line in (text or "").splitlines():
+            p = line.split("#")[0].split(None, 1)
+            if len(p) == 2 and p[0].lower() in REDIS_DIRECTIVES:
+                add("redis", p[0].lower(), p[1].strip())
+        return out
+    if product == "nginx":
+        body = "\n".join(l.split("#")[0] for l in (text or "").splitlines())
+        stack, stmt, found = [], "", []
+        for ch in body:
+            if ch not in ";{}":
+                stmt += ch
+                continue
+            words = stmt.split()
+            stmt = ""
+            if ch == "{":
+                stack.append({"w": words, "name": None})
+                continue
+            if ch == "}":
+                if stack:
+                    stack.pop()
+                continue
+            if not words:
+                continue
+            k = words[0].lower()
+            if k == "server_name" and len(words) > 1:
+                for fr in stack:
+                    if fr["w"][:1] == ["server"] and fr["name"] is None:
+                        fr["name"] = words[1]
+            elif k in ("add_header", "more_set_headers") and len(words) > 2 and words[1].strip("\"'").lower() in SECURITY_HEADERS:
+                found.append(("add_header " + words[1].strip("\"'"), " ".join(words[2:]), list(stack)))
+            elif k in NGINX_DIRECTIVES and len(words) > 1:
+                found.append((k, " ".join(words[1:]), list(stack)))
+        for k, v, frames in found:
+            scope = []
+            for fr in frames:
+                if fr["w"][:1] == ["server"]:
+                    scope.append("server " + (fr["name"] or ""))
+                elif fr["w"][:1] == ["location"]:
+                    scope.append("location " + " ".join(fr["w"][1:]))
+            add("nginx", k, v, " / ".join(x.strip() for x in scope) or None)
+        return out
+    # Apache / IHS
+    stack, pending = [], ""
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if s.endswith("\\"):
+            pending += s[:-1] + " "
+            continue
+        s, pending = (pending + s).strip(), ""
+        if not s or s[0] == "#":
+            continue
+        m = re.match(r"^<(/?)(\w+)\s*([^>]*)>", s)
+        if m:
+            tag = m.group(2).lower()
+            if m.group(1):
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i][0] == tag:
+                        del stack[i:]
+                        break
+            else:
+                stack.append([tag, m.group(3).strip().strip('"')])
+            continue
+        p = s.split(None, 1)
+        k, rest = p[0].lower(), (p[1].strip() if len(p) > 1 else "")
+        if k == "servername":
+            for fr in stack:
+                if fr[0] == "virtualhost":
+                    fr.append(re.sub(r"^https?://|:\d+$", "", rest.split()[0]) if rest else "")
+            continue
+        scope = []
+        for fr in stack:
+            if fr[0] == "virtualhost":
+                scope.append("vhost " + (fr[2] if len(fr) > 2 and fr[2] else fr[1]))
+            elif fr[0] in ("directory", "directorymatch", "location", "locationmatch", "files", "filesmatch", "proxy"):
+                scope.append("%s %s" % (fr[0].replace("match", "Match").capitalize(), fr[1]))
+        scope = " / ".join(scope) or None
+        pm = re.match(r"^php_(admin_)?(value|flag)$", k)
+        if pm and rest:
+            kv = rest.split(None, 1)
+            add("php", kv[0], _ini_value(kv[1]) if len(kv) > 1 else "", "%s %s" % (product, scope) if scope else product)
+        elif k == "header" and rest:
+            w = rest.split()
+            if w and w[0].lower() in ("always", "onsuccess"):
+                w = w[1:]
+            if len(w) > 2 and w[0].lower() in ("set", "append", "add", "merge", "setifempty") and w[1].lower() in SECURITY_HEADERS:
+                add(product, "Header " + w[1], " ".join(w[2:]).strip('"'), scope)
+        elif k in APACHE_DIRECTIVES and rest:
+            add(product, APACHE_DIRECTIVES[k], rest.strip('"'), scope)
+    return out
+
+
+# --------------------------------------------------------------------------
 # Clés et certificats : tout fichier repéré est mentionné. On en tire ce qui est
 # public (sujet, émetteur, dates, empreinte du certificat), JAMAIS le contenu d'une
 # clé. Aucun mot de passe n'est essayé, hormis le mot de passe vide pour PKCS#12.
@@ -3019,7 +3216,7 @@ class Collector(object):
         res = dict((k, []) for k in (
             "java_archives", "maven_exploded", "jdk_homes", "python_packages", "python_venvs", "conda_packages",
             "npm_packages", "node_apps", "npm_lockfiles", "composer_installed", "composer_locks", "ruby_gems",
-            "dotnet_deps", "webapps", "js_libraries", "native_libs", "db_datadirs", "db_refs", "service_modules", "crypto_files", "endpoints"))
+            "dotnet_deps", "webapps", "js_libraries", "native_libs", "db_datadirs", "db_refs", "service_modules", "crypto_files", "endpoints", "config_directives"))
         stats = {"files": 0, "dirs": 0, "walk_errors": 0, "truncated": False, "db_config_files": 0, "db_config_unreadable": 0,
                  "crypto_files": 0, "p12_attempts": 0}
         t0 = time.time()
@@ -3129,6 +3326,11 @@ class Collector(object):
                         for ep in parse_endpoints(read_text(path, 2 << 20), path):
                             ep["path"] = path
                             res["endpoints"].append(ep)
+                    dprod = directive_product(path, lf)
+                    if dprod and os.path.isfile(path):
+                        for dv in parse_directives(read_text(path, 2 << 20), path, dprod):
+                            dv["path"] = path
+                            res["config_directives"].append(dv)
                     if is_crypto_file(path, lf):
                         self._crypto_file(path, lf, res, stats, add_owner)
                     if lf.endswith(ARCHIVE_EXT):
